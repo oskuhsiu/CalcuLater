@@ -7,7 +7,7 @@
 
 #import "ViewController.h"
 #import "DrawingCanvasView.h"
-#import "StandardHintView.h"
+#import "AdditionHintView.h"
 #import "MultiLayerHintView.h"
 #import "AnimatedHintView.h"
 #import "ArithmeticProblem.h"
@@ -20,7 +20,7 @@
 @property (nonatomic, strong) DrawingCanvasView *canvasView;
 @property (nonatomic, strong) UIButton *undoButton;
 @property (nonatomic, strong) UIButton *clearButton;
-@property (nonatomic, strong) StandardHintView *standardHintView;
+@property (nonatomic, strong) AdditionHintView *additionHintView;
 @property (nonatomic, strong) MultiLayerHintView *multiLayerHintView;
 @property (nonatomic, strong) AnimatedHintView *animatedHintView;
 @property (nonatomic, strong) ArithmeticProblem *currentProblem;
@@ -80,9 +80,9 @@
 	 self.clearButton.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightMedium];
 	 [self.clearButton addTarget:self action:@selector(clearTapped) forControlEvents:UIControlEventTouchUpInside];
 	 [self.view addSubview:self.clearButton];
-	 self.standardHintView = [[StandardHintView alloc] initWithFrame:self.canvasView.frame];
-	 self.standardHintView.hidden = YES;
-	 [self.view addSubview:self.standardHintView];
+	 self.additionHintView = [[AdditionHintView alloc] initWithFrame:self.canvasView.frame];
+	 self.additionHintView.hidden = YES;
+	 [self.view addSubview:self.additionHintView];
 	 self.multiLayerHintView = [[MultiLayerHintView alloc] initWithFrame:self.canvasView.frame];
 	 self.multiLayerHintView.hidden = YES;
 	 [self.view addSubview:self.multiLayerHintView];
@@ -131,8 +131,8 @@
 	 
 	 switch (self.currentHintType) {
 		  case 1:
-				self.standardHintView.hidden = NO;
-				[self.standardHintView configureWithProblem:self.currentProblem];
+				self.additionHintView.hidden = NO;
+				[self.additionHintView configureWithProblem:self.currentProblem];
 				break;
 		  case 2:
 				self.multiLayerHintView.hidden = NO;
@@ -149,7 +149,7 @@
 }
 
 - (void)hideAllHintViews {
-	 self.standardHintView.hidden = YES;
+	 self.additionHintView.hidden = YES;
 	 self.multiLayerHintView.hidden = YES;
 	 self.animatedHintView.hidden = YES;
 }

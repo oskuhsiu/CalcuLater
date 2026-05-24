@@ -269,7 +269,9 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 > **iOS 端修正**：穿過 0 時 `effective[j] = 9`（數學上：借 10 進來、借 1 出去 → 9）。詳見 `ArithmeticSolution.m` 的註解。
 > **TODO**：未來有機會回頭也修一下 Android 版（不影響本計畫進度）。
 
-### Phase 2 — Addition 直式 UI（兒童風格）
+### Phase 2 — Addition 直式 UI（兒童風格）✅ **DONE** (2026-05-24)
+**實作**：`AdditionHintView.h/.m` 取代舊的 `StandardHintView`，消費 `ArithmeticSolution` 在網格座標系統上排版，奶油白底圓角、SF Rounded monospaced 數字、深棕字、糖果色進位帽（軟陰影 + 顏色循環）、沉穩綠答案。視覺於 iPhone 17 / iOS 26.5 模擬器驗證了 4+12、28+47、99+1 三組典型場景。
+**未做**：基底 `VerticalLayoutHintView` 抽出延後到 Phase 3 真的需要共用時再做（YAGNI）。
 **範圍**
 - 實作 `VerticalLayoutHintView` 基底（網格座標系統，**SF Rounded monospaced** 字、cell 對齊、彩色邊框、底線、軟陰影）。
 - 套用 §1 視覺語言：糖果色配色、≥ 56pt 數字、圓角 cell、奶油白底。
