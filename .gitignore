@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserdatad/
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved
+
+# CocoaPods (if ever used)
+Pods/
+
+# Backup / obsolete files seen in this project
+*.backup
+
+# Android reference project — separate repo, vendored as read-only reference
+CalcuLaterAndroid/

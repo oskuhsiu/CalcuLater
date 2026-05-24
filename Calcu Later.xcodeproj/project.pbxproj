@@ -1,0 +1,564 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		189665CC2E447F2E00521781 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 189665A82E447F2B00521781 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 189665AF2E447F2B00521781;
+			remoteInfo = "Calcu Later";
+		};
+		189665D62E447F2E00521781 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 189665A82E447F2B00521781 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 189665AF2E447F2B00521781;
+			remoteInfo = "Calcu Later";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		189665B02E447F2B00521781 /* Calcu Later.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Calcu Later.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		189665CB2E447F2E00521781 /* Calcu LaterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Calcu LaterTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		189665D52E447F2E00521781 /* Calcu LaterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Calcu LaterUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		189665DD2E447F2E00521781 /* Exceptions for "Calcu Later" folder in "Calcu Later" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 189665AF2E447F2B00521781 /* Calcu Later */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		189665B22E447F2B00521781 /* Calcu Later */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				189665DD2E447F2E00521781 /* Exceptions for "Calcu Later" folder in "Calcu Later" target */,
+			);
+			path = "Calcu Later";
+			sourceTree = "<group>";
+		};
+		189665CE2E447F2E00521781 /* Calcu LaterTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Calcu LaterTests";
+			sourceTree = "<group>";
+		};
+		189665D82E447F2E00521781 /* Calcu LaterUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Calcu LaterUITests";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		189665AD2E447F2B00521781 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		189665C82E447F2E00521781 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		189665D22E447F2E00521781 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		189665A72E447F2B00521781 = {
+			isa = PBXGroup;
+			children = (
+				189665B22E447F2B00521781 /* Calcu Later */,
+				189665CE2E447F2E00521781 /* Calcu LaterTests */,
+				189665D82E447F2E00521781 /* Calcu LaterUITests */,
+				189665B12E447F2B00521781 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		189665B12E447F2B00521781 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				189665B02E447F2B00521781 /* Calcu Later.app */,
+				189665CB2E447F2E00521781 /* Calcu LaterTests.xctest */,
+				189665D52E447F2E00521781 /* Calcu LaterUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		189665AF2E447F2B00521781 /* Calcu Later */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 189665DE2E447F2E00521781 /* Build configuration list for PBXNativeTarget "Calcu Later" */;
+			buildPhases = (
+				189665AC2E447F2B00521781 /* Sources */,
+				189665AD2E447F2B00521781 /* Frameworks */,
+				189665AE2E447F2B00521781 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				189665B22E447F2B00521781 /* Calcu Later */,
+			);
+			name = "Calcu Later";
+			packageProductDependencies = (
+			);
+			productName = "Calcu Later";
+			productReference = 189665B02E447F2B00521781 /* Calcu Later.app */;
+			productType = "com.apple.product-type.application";
+		};
+		189665CA2E447F2E00521781 /* Calcu LaterTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 189665E32E447F2E00521781 /* Build configuration list for PBXNativeTarget "Calcu LaterTests" */;
+			buildPhases = (
+				189665C72E447F2E00521781 /* Sources */,
+				189665C82E447F2E00521781 /* Frameworks */,
+				189665C92E447F2E00521781 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				189665CD2E447F2E00521781 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				189665CE2E447F2E00521781 /* Calcu LaterTests */,
+			);
+			name = "Calcu LaterTests";
+			packageProductDependencies = (
+			);
+			productName = "Calcu LaterTests";
+			productReference = 189665CB2E447F2E00521781 /* Calcu LaterTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		189665D42E447F2E00521781 /* Calcu LaterUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 189665E62E447F2E00521781 /* Build configuration list for PBXNativeTarget "Calcu LaterUITests" */;
+			buildPhases = (
+				189665D12E447F2E00521781 /* Sources */,
+				189665D22E447F2E00521781 /* Frameworks */,
+				189665D32E447F2E00521781 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				189665D72E447F2E00521781 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				189665D82E447F2E00521781 /* Calcu LaterUITests */,
+			);
+			name = "Calcu LaterUITests";
+			packageProductDependencies = (
+			);
+			productName = "Calcu LaterUITests";
+			productReference = 189665D52E447F2E00521781 /* Calcu LaterUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		189665A82E447F2B00521781 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1620;
+				TargetAttributes = {
+					189665AF2E447F2B00521781 = {
+						CreatedOnToolsVersion = 16.2;
+					};
+					189665CA2E447F2E00521781 = {
+						CreatedOnToolsVersion = 16.2;
+						TestTargetID = 189665AF2E447F2B00521781;
+					};
+					189665D42E447F2E00521781 = {
+						CreatedOnToolsVersion = 16.2;
+						TestTargetID = 189665AF2E447F2B00521781;
+					};
+				};
+			};
+			buildConfigurationList = 189665AB2E447F2B00521781 /* Build configuration list for PBXProject "Calcu Later" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 189665A72E447F2B00521781;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 189665B12E447F2B00521781 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				189665AF2E447F2B00521781 /* Calcu Later */,
+				189665CA2E447F2E00521781 /* Calcu LaterTests */,
+				189665D42E447F2E00521781 /* Calcu LaterUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		189665AE2E447F2B00521781 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		189665C92E447F2E00521781 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		189665D32E447F2E00521781 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		189665AC2E447F2B00521781 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		189665C72E447F2E00521781 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		189665D12E447F2E00521781 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		189665CD2E447F2E00521781 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 189665AF2E447F2B00521781 /* Calcu Later */;
+			targetProxy = 189665CC2E447F2E00521781 /* PBXContainerItemProxy */;
+		};
+		189665D72E447F2E00521781 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 189665AF2E447F2B00521781 /* Calcu Later */;
+			targetProxy = 189665D62E447F2E00521781 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		189665DF2E447F2E00521781 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T9ZD5M42MB;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Calcu Later/Info.plist";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.changyow.Calcu-Later";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		189665E02E447F2E00521781 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T9ZD5M42MB;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Calcu Later/Info.plist";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.changyow.Calcu-Later";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		189665E12E447F2E00521781 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		189665E22E447F2E00521781 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		189665E42E447F2E00521781 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T9ZD5M42MB;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.changyow.Calcu-LaterTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Calcu Later.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Calcu Later";
+			};
+			name = Debug;
+		};
+		189665E52E447F2E00521781 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T9ZD5M42MB;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.changyow.Calcu-LaterTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Calcu Later.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Calcu Later";
+			};
+			name = Release;
+		};
+		189665E72E447F2E00521781 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T9ZD5M42MB;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.changyow.Calcu-LaterUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "Calcu Later";
+			};
+			name = Debug;
+		};
+		189665E82E447F2E00521781 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T9ZD5M42MB;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.changyow.Calcu-LaterUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "Calcu Later";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		189665AB2E447F2B00521781 /* Build configuration list for PBXProject "Calcu Later" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				189665E12E447F2E00521781 /* Debug */,
+				189665E22E447F2E00521781 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		189665DE2E447F2E00521781 /* Build configuration list for PBXNativeTarget "Calcu Later" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				189665DF2E447F2E00521781 /* Debug */,
+				189665E02E447F2E00521781 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		189665E32E447F2E00521781 /* Build configuration list for PBXNativeTarget "Calcu LaterTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				189665E42E447F2E00521781 /* Debug */,
+				189665E52E447F2E00521781 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		189665E62E447F2E00521781 /* Build configuration list for PBXNativeTarget "Calcu LaterUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				189665E72E447F2E00521781 /* Debug */,
+				189665E82E447F2E00521781 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 189665A82E447F2B00521781 /* Project object */;
+}
