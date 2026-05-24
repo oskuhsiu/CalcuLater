@@ -130,10 +130,12 @@
 	 self.currentHintType = (self.currentHintType + 1) % 4;
 	 
 	 switch (self.currentHintType) {
-		  case 1:
-				self.additionHintView.hidden = NO;
-				[self.additionHintView configureWithProblem:self.currentProblem];
+		  case 1: {
+				BOOL ok = [self.additionHintView configureWithProblem:self.currentProblem];
+				self.additionHintView.hidden = !ok;
+				// 若不適用（例如未來的減法題），這次 tap 不顯示任何 hint；下次 tap 再 cycle 下去。
 				break;
+		  }
 		  case 2:
 				self.multiLayerHintView.hidden = NO;
 				[self.multiLayerHintView configureWithProblem:self.currentProblem];

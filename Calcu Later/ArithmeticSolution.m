@@ -27,6 +27,7 @@
 
 @interface ArithmeticSolution ()
 @property (nonatomic, strong, readwrite) ArithmeticProblem *problem;
+@property (nonatomic, assign, readwrite, getter=isValid) BOOL valid;
 @property (nonatomic, assign, readwrite) NSInteger maxLength;
 @property (nonatomic, copy, readwrite) NSString *carries;
 @property (nonatomic, copy, readwrite) NSArray<BorrowInfo *> *borrows;
@@ -43,6 +44,23 @@
     ArithmeticSolution *s = [[ArithmeticSolution alloc] init];
     s.problem = problem;
 
+    // 輸入驗證 — 本 app 服務 5~8 歲兒童，不支援負數場景。
+    // 無效時回傳一個 valid=NO 的 sentinel solution，所有衍生陣列為空，
+    // UI 端可以依 valid flag 決定是否顯示。
+    BOOL nonNeg = (problem.number1 >= 0) && (problem.number2 >= 0) && (problem.answer >= 0);
+    BOOL subOK = ![problem.operatorSymbol isEqualToString:@"-"] || (problem.number1 >= problem.number2);
+    if (!nonNeg || !subOK) {
+        s.valid = NO;
+        s.maxLength = 0;
+        s.carries = @"";
+        s.borrows = @[];
+        s.digits1 = @[];
+        s.digits2 = @[];
+        s.answerDigits = @[];
+        return s;
+    }
+
+    s.valid = YES;
     NSString *n1Str = [@(problem.number1) stringValue];
     NSString *n2Str = [@(problem.number2) stringValue];
     NSString *ansStr = [@(problem.answer) stringValue];
@@ -62,23 +80,25 @@
 
 #pragma mark - Digit decomposition
 
-/// 把整數字串拆成 NSNumber 陣列，前面以 0 補齊到 paddedLen。
+/// 把（非負）整數字串拆成 NSNumber 陣列，前面以 0 補齊到 paddedLen。
 /// index 0 為最高位，與字串表示一致。
+/// 呼叫方應先確認 str 不含負號（solutionForProblem 會 reject 負數題），這裡的
+/// 防呆是：遇到非數字字元就跳過（不再悄悄變 0）。
 + (NSArray<NSNumber *> *)digitsFromString:(NSString *)str paddedTo:(NSInteger)paddedLen {
     NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:paddedLen];
-    NSInteger padCount = paddedLen - (NSInteger)str.length;
-    for (NSInteger i = 0; i < padCount; i++) {
-        [result addObject:@(0)];
-    }
+    // 先掃出只含 '0'-'9' 的有效位數字
+    NSMutableArray<NSNumber *> *digits = [NSMutableArray array];
     for (NSUInteger i = 0; i < str.length; i++) {
         unichar c = [str characterAtIndex:i];
         if (c >= '0' && c <= '9') {
-            [result addObject:@(c - '0')];
-        } else {
-            // 防呆：非數字字元（例如負號）暫以 0 視之。
-            [result addObject:@(0)];
+            [digits addObject:@(c - '0')];
         }
     }
+    NSInteger padCount = paddedLen - (NSInteger)digits.count;
+    for (NSInteger i = 0; i < padCount; i++) {
+        [result addObject:@(0)];
+    }
+    [result addObjectsFromArray:digits];
     return [result copy];
 }
 

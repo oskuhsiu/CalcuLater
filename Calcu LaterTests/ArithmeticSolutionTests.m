@@ -163,6 +163,45 @@
     XCTAssertEqualObjects(s.borrows, @[]);
 }
 
+#pragma mark - Input validation
+
+- (void)testValid_HappyPath {
+    XCTAssertTrue([ArithmeticSolution solutionForProblem:[self plus:12 and:34]].isValid);
+    XCTAssertTrue([ArithmeticSolution solutionForProblem:[self minus:50 sub:27]].isValid);
+}
+
+- (void)testInvalid_NegativeOperand {
+    ArithmeticProblem *p = [[ArithmeticProblem alloc] initWithNumber1:-3 number2:5 operator:@"+" answer:2];
+    ArithmeticSolution *s = [ArithmeticSolution solutionForProblem:p];
+    XCTAssertFalse(s.isValid);
+    XCTAssertEqual(s.maxLength, 0);
+    XCTAssertEqualObjects(s.carries, @"");
+    XCTAssertEqualObjects(s.borrows, @[]);
+    XCTAssertEqualObjects(s.digits1, @[]);
+    XCTAssertEqualObjects(s.digits2, @[]);
+    XCTAssertEqualObjects(s.answerDigits, @[]);
+}
+
+- (void)testInvalid_NegativeAnswer {
+    // 加法但 answer 是負（理論上不會發生，但 model 該擋住）
+    ArithmeticProblem *p = [[ArithmeticProblem alloc] initWithNumber1:3 number2:5 operator:@"+" answer:-2];
+    ArithmeticSolution *s = [ArithmeticSolution solutionForProblem:p];
+    XCTAssertFalse(s.isValid);
+}
+
+- (void)testInvalid_SubtractionWithNegativeResult {
+    // 3 - 5：n1 < n2，借位邏輯沒意義 → reject
+    ArithmeticSolution *s = [ArithmeticSolution solutionForProblem:[self minus:3 sub:5]];
+    XCTAssertFalse(s.isValid);
+    XCTAssertEqualObjects(s.borrows, @[]);
+}
+
+- (void)testInvalid_SubtractionEqualOperands {
+    // 7 - 7 = 0：合法、不該被擋
+    ArithmeticSolution *s = [ArithmeticSolution solutionForProblem:[self minus:7 sub:7]];
+    XCTAssertTrue(s.isValid);
+}
+
 #pragma mark - Digit decomposition
 
 - (void)testDigits_Padding {

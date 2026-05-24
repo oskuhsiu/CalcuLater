@@ -31,7 +31,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, strong, readonly) ArithmeticProblem *problem;
 
-/// 直式對齊用的位數寬度（max(num1, num2, answer) 的位數）。
+/// 這道題是否有意義（運算元非負、減法時 number1 >= number2）。
+/// 若 NO，所有衍生屬性（carries / borrows / digits）為空，maxLength = 0。
+/// 設計考量：本 app 服務 5~8 歲兒童，不會出現負數結果。
+@property (nonatomic, assign, readonly, getter=isValid) BOOL valid;
+
+/// 直式對齊用的位數寬度（max(num1, num2, answer) 的位數）。無效題為 0。
 @property (nonatomic, assign, readonly) NSInteger maxLength;
 
 /// 加法進位字串，格式與 Android 相同：
@@ -45,7 +50,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSArray<BorrowInfo *> *borrows;
 
 /// number1 / number2 / answer 的逐位拆解（index 0 為最高位，與字串表示一致）。
-/// 若位數不足 maxLength，前面以 0 補齊；負數的處理未定義。
+/// 若位數不足 maxLength，前面以 0 補齊。本物件**不接受負數**：負數題目會被 reject
+/// 成 valid=NO，因此這些陣列裡只會出現 0-9。
 @property (nonatomic, copy, readonly) NSArray<NSNumber *> *digits1;
 @property (nonatomic, copy, readonly) NSArray<NSNumber *> *digits2;
 @property (nonatomic, copy, readonly) NSArray<NSNumber *> *answerDigits;

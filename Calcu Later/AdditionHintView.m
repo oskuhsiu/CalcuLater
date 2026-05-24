@@ -31,16 +31,30 @@
 
 #pragma mark - Public API
 
-- (void)configureWithProblem:(ArithmeticProblem *)problem {
-    if (![problem.operatorSymbol isEqualToString:@"+"]) {
-        // 非加法：先清空，由 Phase 3 的 SubtractionHintView 接手。
+- (BOOL)configureWithProblem:(ArithmeticProblem *)problem {
+    BOOL applicable = [problem.operatorSymbol isEqualToString:@"+"]
+                       && problem.number1 >= 0
+                       && problem.number2 >= 0;
+    if (!applicable) {
+        // 非加法或含負數：清空 + 丟掉 solution（避免下次 layoutSubviews 重畫舊題）。
+        // 由 Phase 3 的 SubtractionHintView 或其他 view 接手。
+        self.solution = nil;
         [self clearGrid];
-        return;
+        return NO;
     }
 
-    self.solution = [ArithmeticSolution solutionForProblem:problem];
+    ArithmeticSolution *sol = [ArithmeticSolution solutionForProblem:problem];
+    if (!sol.isValid) {
+        // 多一層防線：理論上 applicable 檢查已擋下，但 solution 自己有更嚴格的 invariants
+        // （例如 answer 也必須非負），任一不符就 reject。
+        self.solution = nil;
+        [self clearGrid];
+        return NO;
+    }
+    self.solution = sol;
     [self setNeedsLayout];
     [self layoutIfNeeded];
+    return YES;
 }
 
 #pragma mark - Layout
@@ -67,6 +81,12 @@
 
     CGFloat availableW = CGRectGetWidth(self.bounds) - 32.0; // 左右各 16pt margin
     CGFloat availableH = CGRectGetHeight(self.bounds) - 32.0;
+    if (availableW <= 0 || availableH <= 0) {
+        // 視窗太小（過場動畫、Slide Over 收起來等）→ 整個 grid 收起來不畫，
+        // 避免 MIN/MAX 邊界產生比 bounds 還大的格子。
+        self.gridContainer.frame = CGRectZero;
+        return;
+    }
     CGFloat cellW = MIN(availableW / (CGFloat)gridCols, 86.0);
     CGFloat cellH = MIN(availableH / (CGFloat)gridRows, 96.0);
     cellW = MAX(cellW, 44.0);
