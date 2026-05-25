@@ -8,6 +8,8 @@
 @property (nonatomic, strong) NSArray<UIButton *> *choiceButtons;
 @property (nonatomic, strong) ArithmeticProblem *problem;
 @property (nonatomic, strong) NSArray<NSNumber *> *currentChoices;
+/// 字串模式：configureWithChoiceTitles: 設定。NSNotFound 表示走 problem.answer 比對的整數模式。
+@property (nonatomic, assign) NSInteger explicitCorrectIndex;
 @end
 
 @implementation MultipleChoiceAnswerView
@@ -16,6 +18,9 @@
     self = [super initWithFrame:frame];
     if (self) {
         self.backgroundColor = [UIColor clearColor];
+        // 整數模式的 sentinel。Zero-init (= 0) 會被誤判為「字串模式 correctIndex=0」，
+        // 導致 configure 之前任何點擊都把按鈕 0 當正解。
+        _explicitCorrectIndex = NSNotFound;
         NSMutableArray *btns = [NSMutableArray array];
         UIColor *cycle[4] = {
             ChildUI.pinkAccent, ChildUI.skyBlue, ChildUI.mintGreen, ChildUI.eggYolk
@@ -56,12 +61,40 @@
 
 - (void)configureWithProblem:(ArithmeticProblem *)problem {
     self.problem = problem;
+    self.explicitCorrectIndex = NSNotFound;  // 整數模式：用 problem.answer 比對
     self.currentChoices = [DistractorGenerator choicesForProblem:problem];
     for (NSInteger i = 0; i < 4; i++) {
         NSString *s = [NSString stringWithFormat:@"%ld", (long)self.currentChoices[i].integerValue];
         [self.choiceButtons[i] setTitle:s forState:UIControlStateNormal];
         self.choiceButtons[i].enabled = YES;
         self.choiceButtons[i].alpha = 1.0;
+    }
+}
+
+- (void)configureWithChoiceTitles:(NSArray<NSString *> *)titles correctIndex:(NSInteger)correctIndex {
+    self.problem = nil;
+    self.currentChoices = nil;
+    // 防呆：correctIndex 必須落在 [0, titles.count) 內。
+    // - NSNotFound 會讓 _choiceTapped 走進整數模式分支，因 currentChoices/problem 已被 nil 掉，
+    //   nil-messaging 讓 result=(0==0)=Correct，每一格都被當成正解 → 答題失效。
+    // - 超出範圍 (e.g. == titles.count) 會讓 idx 永不等於 correctIndex → 每一格都判錯。
+    // 兩種情境都讓 MCQ 不可用；clamp 到 0 + assert 留下訊號（debug build 噴錯，release 還能玩）。
+    if (correctIndex == (NSInteger)NSNotFound
+        || correctIndex < 0
+        || correctIndex >= (NSInteger)titles.count) {
+        NSAssert(NO, @"MCQ configureWithChoiceTitles: invalid correctIndex %ld for %lu titles",
+                 (long)correctIndex, (unsigned long)titles.count);
+        correctIndex = 0;
+    }
+    self.explicitCorrectIndex = correctIndex;
+    NSInteger n = MIN((NSInteger)titles.count, 4);
+    for (NSInteger i = 0; i < 4; i++) {
+        NSString *s = (i < n) ? titles[i] : @"";
+        [self.choiceButtons[i] setTitle:s forState:UIControlStateNormal];
+        // titles 少於 4 的剩餘按鈕直接 disable，避免空白按鈕被點到（一定判錯，孩子困惑）。
+        BOOL hasTitle = (i < n) && (s.length > 0);
+        self.choiceButtons[i].enabled = hasTitle;
+        self.choiceButtons[i].alpha = hasTitle ? 1.0 : 0.0;
     }
 }
 
@@ -83,8 +116,16 @@
 
 - (void)_choiceTapped:(UIButton *)btn {
     NSInteger idx = btn.tag;
-    NSInteger value = self.currentChoices[idx].integerValue;
-    MCQResult result = (value == self.problem.answer) ? MCQResultCorrect : MCQResultWrong;
+    MCQResult result;
+    NSInteger value;
+    if (self.explicitCorrectIndex != NSNotFound) {
+        // 字串模式（分數等）：用 index 比對。value 對 delegate 無意義，傳 idx 占位。
+        result = (idx == self.explicitCorrectIndex) ? MCQResultCorrect : MCQResultWrong;
+        value = idx;
+    } else {
+        value = self.currentChoices[idx].integerValue;
+        result = (value == self.problem.answer) ? MCQResultCorrect : MCQResultWrong;
+    }
 
     if (result == MCQResultCorrect) {
         [self _correctFeedback:btn];

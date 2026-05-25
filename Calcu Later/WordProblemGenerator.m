@@ -21,16 +21,43 @@
 
     WordProblemTemplate *t = [self pickTemplate:templates excluding:lastTemplateID];
 
-    NSInteger a = 0, b = 0, ans = 0;
+    NSInteger a = 0, b = 0, c = 0, ans = 0, intermediate = 0;
     BOOL ok = NO;
+    BOOL isTwoStep = (t.operator2 != nil);
     // 最多嘗試 50 次避免極端模板組合不出有效題目
     for (NSInteger attempt = 0; attempt < 50; attempt++) {
         a = [self randomBetween:t.minA and:t.maxA];
         b = [self randomBetween:t.minB and:t.maxB];
 
+        if (t.isFraction) {
+            // 真分數：a (分子) < b (分母)，且都 > 0。
+            if (a <= 0 || b <= 1) continue;
+            if (a >= b) continue;
+            // ans 對分數題無實質意義（MCQ 用 numerator/denominator 比對），設為 0 占位。
+            ans = 0;
+            ok = YES;
+            break;
+        }
+
+        if (isTwoStep) {
+            c = [self randomBetween:t.minC and:t.maxC];
+            intermediate = [self applyOp:t.operatorSymbol to:a and:b];
+            // 中間結果必須 > 0（避免「-3」這種對小孩無意義的中間值）
+            if (intermediate <= 0) continue;
+            ans = [self applyOp:t.operator2 to:intermediate and:c];
+            // 最終答案必須 > 0
+            if (ans <= 0) continue;
+            // 加法 safety cap（避免 a+b+c 暴衝；減法不會超出）
+            if (ans > 99999) continue;
+            ok = YES;
+            break;
+        }
+
         if ([t.operatorSymbol isEqualToString:@"+"]) {
             ans = a + b;
-            if (ans <= 999) { ok = YES; break; }
+            // 上限放寬到 99999 以涵蓋三年級 10000 以內加法（如 8500 + 1200）。
+            // 題庫真正範圍由各 template 的 minA/maxA/minB/maxB 控制；這裡只是 safety cap。
+            if (ans <= 99999) { ok = YES; break; }
         } else if ([t.operatorSymbol isEqualToString:@"−"] || [t.operatorSymbol isEqualToString:@"-"]) {
             if (t.requireAGreaterEqualB && a < b) continue;
             // 額外避免 a == b（答案 0 不合題意）
@@ -40,10 +67,19 @@
             break;
         } else if ([t.operatorSymbol isEqualToString:@"×"]) {
             ans = a * b;
-            if (ans <= 999) { ok = YES; break; }
+            // 上限放寬：涵蓋三年級三位數×一位數（如 320×9=2880）與單位換算（9×1000=9000）。
+            if (ans <= 99999) { ok = YES; break; }
         } else if ([t.operatorSymbol isEqualToString:@"÷"]) {
             if (b == 0) continue;
-            if (t.requireDivisible) {
+            if (t.requireRemainder) {
+                // 有餘數除法：必須 a%b != 0。a,b 已隨機從範圍中選出，若剛好整除就跳過重抽。
+                if (a % b == 0) continue;
+                ans = a / b;
+                // 排除商為 0（被除數比除數還小，題意不通順）。
+                if (ans < 1) continue;
+                ok = YES;
+                break;
+            } else if (t.requireDivisible) {
                 // 強制 a 為 b 的整數倍：在 [minA, maxA] 內找一個能被 b 整除的 a
                 NSInteger low = MAX(t.minA, b);
                 NSInteger high = t.maxA;
@@ -54,9 +90,12 @@
                 NSInteger q = [self randomBetween:minQ and:maxQ];
                 a = q * b;
                 ans = q;
-                // 排除 a == b（例如 9 ÷ 9 = 1）這種退化題型；
-                // 並且要求 ans ≥ 2（除以自己等於 1 太單調，缺乏教學價值）。
-                if (a == b) continue;
+                // 不再 blanket skip q=1：原本 `if (a == b) continue;` 是為了避免
+                // 「9 ÷ 9 = 1」這種無聊的「自己除自己」，但同時也把單位換算題
+                // 「60 分鐘 = 1 小時」「100 公分 = 1 公尺」這些「課綱定義級別」的
+                // 教學題給擋掉了。改為由 template 透過 minA 自然控制：
+                // 例如倍數題 `g3_div_multiple` 用 minA=12 自然就讓 q≥2；
+                // 單位換算題 minA=b 才能讓 q=1 的定義題出現。
                 if (a >= t.minA && a <= t.maxA && ans >= 1) { ok = YES; break; }
             } else {
                 // 非整除模板：必須 a 確實被 b 整除才算合法答案，否則整數截斷會
@@ -81,16 +120,50 @@
                                           number1:1 number2:1 operator:@"+" answer:2 unit:@"顆"];
     }
 
-    NSString *story = [self renderPattern:t.storyPattern a:a b:b];
+    NSString *story = [self renderPattern:t.storyPattern a:a b:b c:c];
     // 內部統一儲存運算子用 "-"（與既有 ArithmeticProblem / hint 系統相容）
-    NSString *opForModel = [t.operatorSymbol isEqualToString:@"−"] ? @"-" : t.operatorSymbol;
+    NSString *opForModel = [self normalizeOp:t.operatorSymbol];
+    NSString *op2ForModel = isTwoStep ? [self normalizeOp:t.operator2] : nil;
+    // 有餘數除法：a 不被 b 整除時 ans 為商、remainder 為餘數。
+    NSInteger remainder = 0;
+    if (t.requireRemainder && [t.operatorSymbol isEqualToString:@"÷"]) {
+        remainder = a % b;
+    }
     return [[WordProblem alloc] initWithStory:story
                                    templateID:t.templateID
                                         grade:g
                                       number1:a number2:b
                                      operator:opForModel
                                        answer:ans
-                                         unit:t.unit];
+                                         unit:t.unit
+                                missingAddend:t.missingAddend
+                            missingSubtrahend:t.missingSubtrahend
+                               missingMinuend:t.missingMinuend
+                                    remainder:remainder
+                                      number3:c
+                                    operator2:op2ForModel
+                                 intermediate:intermediate
+                             isFractionAnswer:t.isFraction
+                              answerNumerator:t.isFraction ? a : 0
+                            answerDenominator:t.isFraction ? b : 0];
+}
+
++ (NSString *)normalizeOp:(NSString *)op {
+    // 模板用 U+2212 "−"（較粗）；內部 ArithmeticProblem 用 ASCII "-"
+    if ([op isEqualToString:@"−"]) return @"-";
+    return op;
+}
+
+/// 套用 "+" / "−" 運算（目前二步驟只支援加減同優先級，乘除不需要）。
+/// 不支援的 op 回傳 NSIntegerMin 當作 sentinel；呼叫端會看到 intermediate ≤ 0 而觸發 retry。
+/// 改成回傳 sentinel 而非「靜默回傳 x」是為了避免未來有人加 T2(..., @"×", ...)
+/// 而 applyOp 把 a×b 默默退化成 a，產生數學錯誤但通過全部 sanity check 的題目。
++ (NSInteger)applyOp:(NSString *)op to:(NSInteger)x and:(NSInteger)y {
+    if ([op isEqualToString:@"+"]) return x + y;
+    if ([op isEqualToString:@"−"] || [op isEqualToString:@"-"]) return x - y;
+    NSAssert(NO, @"applyOp unsupported op: %@", op);
+    NSLog(@"[WordProblemGenerator] applyOp unsupported op: %@", op);
+    return NSIntegerMin;
 }
 
 #pragma mark - Helpers
@@ -114,10 +187,11 @@
     return low + (NSInteger)arc4random_uniform((uint32_t)range);
 }
 
-+ (NSString *)renderPattern:(NSString *)pattern a:(NSInteger)a b:(NSInteger)b {
++ (NSString *)renderPattern:(NSString *)pattern a:(NSInteger)a b:(NSInteger)b c:(NSInteger)c {
     NSString *s = pattern;
     s = [s stringByReplacingOccurrencesOfString:@"{a}" withString:[NSString stringWithFormat:@"%ld", (long)a]];
     s = [s stringByReplacingOccurrencesOfString:@"{b}" withString:[NSString stringWithFormat:@"%ld", (long)b]];
+    s = [s stringByReplacingOccurrencesOfString:@"{c}" withString:[NSString stringWithFormat:@"%ld", (long)c]];
     return s;
 }
 

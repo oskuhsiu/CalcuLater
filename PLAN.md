@@ -486,12 +486,13 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 | 9 直式乘除 | ⏸ v2 | 本版不做 |
 | 10 應用題（想一想）| ✅ DONE | 新增第三大入口；1-3 年級題型模板共 60+ 個；MCQ / 手寫雙模式；含動畫教學 |
 | 11 MCQ 主動式教學按鈕 | ✅ DONE | Drill / Lesson / 應用題 三處 MCQ 都加上「看怎麼算」按鈕，主動觸發動畫直式或文字 hint |
+| 12 應用題課綱對齊 | ✅ DONE | 對齊 108 課綱 G1-G3；模板 79→147；補未知數三變體 / 二步驟 / 有餘除法 / 分數識別 / 單位換算；12 個新 unit tests |
 
 **剩餘建議下一步**（v1 收尾用，v2 範圍另議）：
-1. **角色命名 / 故事背景**（§10.3）：和小孩討論取名後寫進文案。
-2. **Dynamic Type / 高對比 / iPad 適配實機驗證**（§10.7）：需要實機與 sim 多尺寸目視；無法純由 code 完成。
-3. **D3 三位數 MCQ 視覺驗證**（§10.5）：sim 跑一次刷題 D3，目視確認大數字下卡片不擠。
-4. **XCUITest 端到端**（§10.8）：「點 MCQ → 答對 → 換題」最小流程，避免 UI 改動造成 regression。
+1. **Dynamic Type / 高對比 / iPad 適配實機驗證**（§10.7）：需要實機與 sim 多尺寸目視；無法純由 code 完成。
+2. **D3 三位數 MCQ 視覺驗證**（§10.5）：sim 跑一次刷題 D3，目視確認大數字下卡片不擠。
+3. **XCUITest 端到端**（§10.8）：「點 MCQ → 答對 → 換題」最小流程，避免 UI 改動造成 regression。
+4. **應用題課綱對齊實機試玩**（§15）：147 模板已對齊 108 課綱，但實機跑跑看小朋友覺得難度合理嗎、文案是否口語化、分數題的 MCQ 字串顯示是否清楚。
 
 完整缺口清單見 §10。
 
@@ -543,11 +544,13 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 
 ### 10.8 測試覆蓋 ✅ MOSTLY DONE (2026-05-25)
 - ✅ 新增 `SmokeTests`：`MakeBreakTenHintView`（合十 / 破十 / 拒絕加法）、`MainMenuViewController`、`LessonsHomeViewController`、`MultiplicationTableViewController`、`LessonViewController`（加法 / 乘法），8 個測試全綠。
+- ✅ 新增 `WordProblemGeneratorTests`：12 個 sanity test 覆蓋全題庫 + 未知數三變體 + 二步驟 + 有餘除法 + 分數（詳 §15.7）。
 - ❌ UI 互動測試（XCUITest）仍缺。
 - ❌ 視覺迴歸測試（snapshot test）整體缺。
 
 ### 10.9 文件
 - ✅ PLAN.md（本檔）每階段持續同步。
+- ✅ `README.md` 寫好（2026-05-25）：三大入口、應用題課綱對齊、工程概覽、build/test 指令、設定、角色、已知缺口。
 - ❌ 沒有 demo screenshot 或試玩記錄。
 
 ### 10.10 Phase 9 ⏸ DEFERRED TO v2
@@ -685,12 +688,12 @@ BakedVoiceManager（單例）
 - 錯題遞進：第 1 次只搖頭，第 2 次自動展開動畫教學，第 3 次揭示答案。
 - 主動觸發：題目右上「看怎麼算」按鈕，加減顯示 `AnimatedHintView`，乘除顯示文字算式。
 
-### 13.4 已知 gap（v2 可補）
+### 13.4 已知 gap（更新狀態 2026-05-25）
 
-- 應用題本身的「題意理解」hint 缺：目前的動畫只示範算式（加減直式），不會具象重現「拿走 X 顆糖」這樣的圖示。
-- 模板可繼續擴充：例如二步應用題（先加再減）、比較類的進階變化、長度單位換算（公分/公尺）等。
-- 沒有按題型統計 / 累計獎勵：目前是無盡刷，沒有「完成 50 題拿星星」的進度。
-- 三年級的 distractor 對除法可能太簡單（僅 ±1 / ±10）— 雖然 DistractorGenerator 已有除法強化，但未針對應用題情境再加（如「除錯方向：用減代替除」）。
+- ⏸ **v2**：應用題本身的「題意理解」hint 缺（具象重現「拿走 X 顆糖」這類圖示）。
+- ✅ **DONE 2026-05-25（Phase 12）**：模板擴充對齊 108 課綱（二步驟、單位換算、未知數三變體、有餘除法、分數識別、10000 以內加減皆已補）。
+- ⏸ **v2**：按題型統計 / 累計獎勵（目前無盡刷）。
+- ✅ **DONE 2026-05-25（Phase 12）**：除法 distractor 對應用題情境加強。
 
 ## 14. Phase 11 — MCQ 主動式教學按鈕 ✅ DONE (2026-05-25)
 
@@ -700,3 +703,134 @@ BakedVoiceManager（單例）
 - `LessonViewController.m`（教學）：同樣加 `tutorialButton`，主動展開 / 收起該題的 hint（具象圖示 / 合十破十 / 文字）。
 - `WordProblemViewController.m`（應用題）：原生帶 `tutorialButton`。
 - 點擊行為：加減用 `AnimatedHintView` 逐位 spring 揭露；乘除用文字 hint（重複加 / 反向乘的分解）。
+
+---
+
+## 15. Phase 12 — 應用題課綱對齊 + model 擴展 ✅ DONE (2026-05-25)
+
+> 起因：使用者反饋「應用題的難度太低，嚴重偏離課綱」。Phase 10 雖開了應用題入口、做了 60+ 模板，但實際對照台灣 108 課綱發現 G2/G3 程度明顯偏低，且無未知數 / 二步驟 / 有餘除法 / 分數題。本階段一次補完。
+
+### 15.1 工作分輪
+
+| Round | 內容 | 模板數變化 |
+|---|---|---|
+| 1 | 數值範圍對齊（G1 100 以內、G2 1000 以內、G3 10000 以內）+ 量測 + 三位數×一位數 + 單位換算 | 79 → 108 |
+| 2 | A4 missing addend（`□+b=c`）+ A2 有餘數除法 | 108 → 124 |
+| 3 | missing subtrahend（`a−□=c`）+ A1 二步驟（`a±b±c`） | 124 → 138 |
+| 4 (distractor) | 二步驟 MCQ 強制含 intermediate | 138（不變） |
+| 5 | missing minuend（`□−b=c`）+ A3 分數識別 | 138 → 147 |
+
+### 15.2 Model 擴展
+
+`WordProblem` 加入 8 個欄位（皆 readonly）：
+- `missingAddend` / `missingSubtrahend` / `missingMinuend` — 三互斥旗標
+- `remainder` — 有餘除法的餘數（整除為 0）
+- `number3` / `operator2` / `intermediate` — 二步驟支援
+- `isFractionAnswer` / `answerNumerator` / `answerDenominator` — 分數答案
+
+`WordProblemTemplate` 對應加 4 個旗標 + `operator2` / `minC` / `maxC` / `isFraction`，並新增 5 個 helper：
+
+| Helper | 用途 | 內部 op |
+|---|---|---|
+| `T()` | 標準題型（既有） | 任意 |
+| `TM()` | missing addend | `−` |
+| `TS()` | missing subtrahend | `−` |
+| `TMM()` | missing minuend | `+` |
+| `TR()` | 有餘除法 | `÷` |
+| `T2()` | 二步驟 | `+`/`−` × `+`/`−` |
+| `TF()` | 分數識別 | `+` (占位) |
+
+`ArithmeticProblem` 加 `auxiliaryDistractor`（NSInteger，0 = 無）；`WordProblem.toArithmeticProblem` 為二步驟題塞入 `intermediate`，DistractorGenerator 洗牌後強制把 aux 放第一位確保不被 truncate 掉。
+
+### 15.3 MCQ 字串模式
+
+`MultipleChoiceAnswerView` 加 `configureWithChoiceTitles:correctIndex:` API：
+- 整數模式（既有 `configureWithProblem:`）：用 `problem.answer` 比對。
+- 字串模式（新）：用 `explicitCorrectIndex` 比對。`explicitCorrectIndex == NSNotFound` 表示走整數模式。
+- 給分數題用：`DistractorGenerator fractionChoicesForNumerator:denominator:outCorrectIndex:` 產生 4 個「n/d」字串 + 正解 index。
+
+### 15.4 等式渲染（`WordProblemViewController.equationTextRevealingAnswer:`）
+
+```
+分數題:         答案：? / 答案：1/4
+二步驟:         100 − 30 − 20 = ? / = 50
+missingAddend:  ? + 5 = 13       / 8 顆 + 5 = 13
+missingSubtra:  13 − ? = 5       / 13 − 8 顆 = 5
+missingMinuend: ? − 5 = 8        / 13 顆 − 5 = 8
+有餘除法:        23 ÷ 4 = ?       / = 5⋯3 顆
+標準:            28 + 47 = ?      / = 75
+```
+
+### 15.5 Generator 約束
+
+| 題型 | 額外驗證 |
+|---|---|
+| 加 (×) | `ans <= 99999` safety cap（G3 四位數 + 單位換算 ×1000） |
+| 減 | `a > b`（要求設 YES 時）、`a != b` 避免答案為 0 |
+| 除（整除） | `a % b == 0` 且 `a != b`、`ans >= 1` |
+| 除（有餘） | `a % b != 0` 且 `ans >= 1` |
+| 二步驟 | `intermediate > 0` 且 `final > 0`（避免負中間值） |
+| 分數 | `numerator > 0` 且 `numerator < denominator`（真分數） |
+
+### 15.6 Hint 處理
+
+- **二步驟**：不能套單步驟視覺化 hint（會誤導），統一走 textHint 拆兩行顯示。
+- **分數**：textHint 解釋「把整個東西平分成 b 份，其中 a 份就是 a/b」。
+- **missing 三變體**：sub/add 的 AnimatedHintView 仍能用（內部 op 就是要算的方向），minuend 的內部 op 為加法，AnimatedHint 自然示範加法 — 教加減互逆。
+
+### 15.7 測試覆蓋
+
+新增 `WordProblemGeneratorTests`，共 12 個 sanity test：
+
+```
+testAllTemplatesGenerateValidProblems    每個模板抽 30 題、不出負/零答案
+testGrade1AnswersWithin100               G1 答案 <= 100
+testGrade2AnswersWithin1000              G2 答案 <= 1000
+testGrade3AnswersWithin10000             G3 答案 <= 10000
+testMissingAddendInternalCalculation     ans = n1-n2、op = "-"
+testMissingSubtrahendInvariants          ans = n1-n2、互斥檢查
+testMissingMinuendInvariants             ans = n1+n2、op = "+"
+testRemainderDivisionInvariants          n1 = ans*n2 + remainder、0 < r < n2
+testTwoStepInvariants                    重算驗證 step1→intermediate→step2、op2 為 +/-
+testTwoStepChoicesAlwaysIncludeIntermediate  MCQ 4 選項必含 intermediate
+testFractionProblemsAreProperFractions   分子 < 分母
+testFractionChoicesAlwaysIncludeCorrect  4 選項唯一、皆真分數、含正解
+```
+
+### 15.8 課綱對齊矩陣
+
+| 課綱 (108) | 題庫支援 | 模板 prefix |
+|---|---|---|
+| N-1-2/3 基本加減 | ✅ 20 以內 | `g1_add_*` / `g1_sub_*` (20內段) |
+| N-1-4/5 二位數加減一位數 | ✅ 100 以內不退/退位 | `g1_add_*2` / `g1_sub_*2` |
+| N-1（未知數） | ✅ | `g1_miss_*` / `g1_subt_*` / `g1_minu_*` |
+| N-2-2/3 1000 以內加減 | ✅ | `g2_add_*` / `g2_sub_*` |
+| N-2-6/7 九九乘法 | ✅ | `g2_mul_*` |
+| N-2-9/10/11 量測 | ✅ 長度/時間/重量 | `g2_len_*` / `g2_time_*` / `g2_wt_*` |
+| N-2-2 二步驟 | ✅ a±b±c | `g2_two_*` |
+| N-3-2/3 10000 以內加減 | ✅ | `g3_add_*` / `g3_sub_*` |
+| N-3-4 二、三位數×一位數 | ✅ | `g3_mul_*` / `g3_mul_*3` |
+| N-3-5 除法（含餘數） | ✅ | `g3_div_*` / `g3_rem_*` |
+| N-3-9 分數初步 | ✅ 識別真分數 | `g3_frac_*` |
+| N-3-12/13 時間/長度/容量/重量單位 | ✅ 換算題 | `g3_mul_*_*` / `g3_div_min_hour` 等 |
+| N-3-2 三、四位數二步驟 | ✅ | `g3_two_*` |
+
+### 15.9 未做（v2）
+
+- **同分母分數加減** (`1/4 + 2/4 = 3/4`)：需要兩個分數欄位、新 MCQ 干擾邏輯。
+- **應用題二步驟的 hint 視覺化**：目前 textHint 兩行，可進化成「先算 a 顆糖 → 再算剩下 b 顆」具象動畫。
+- **手寫模式對分數友好度**：canvas 寫分數 UX 不理想，目前小孩在分數題建議用 MCQ。
+- **題型統計 / 累計獎勵**（同 §13.4）。
+
+### 15.10 改動檔案列表
+
+| 檔案 | 改動 |
+|---|---|
+| `WordProblem.h/m` | +8 model 欄位、新 designated init + 舊 init 委派 |
+| `WordProblemTemplate.h/m` | +4 模板旗標 + operator2/minC/maxC/isFraction；6 個 helper |
+| `WordProblemGenerator.m` | 二步驟 / 有餘除 / 分數 分支；`applyOp:` / `normalizeOp:`；safety cap 提到 99999 |
+| `WordProblemViewController.m` | 等式渲染 7 種題型；二步驟 / 分數 textHint；MCQ 字串模式分支 |
+| `ArithmeticProblem.h` | `auxiliaryDistractor` |
+| `DistractorGenerator.h/m` | 二步驟 forced aux；`fractionChoicesForNumerator:denominator:outCorrectIndex:` |
+| `MultipleChoiceAnswerView.h/m` | `configureWithChoiceTitles:correctIndex:` 字串模式 |
+| `Calcu LaterTests/WordProblemGeneratorTests.m` | 新增 12 個測試 |

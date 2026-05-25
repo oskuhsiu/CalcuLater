@@ -23,6 +23,25 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign, readonly) BOOL requireAGreaterEqualB;
 /// 除法用：是否要求 a 為 b 的整數倍（避免有餘數）。
 @property (nonatomic, assign, readonly) BOOL requireDivisible;
+/// 「未知數在前」(missing addend)：模板的 operator 必為 "−"，但故事是加法情境。
+/// Generator 仍以 number1−number2=answer 計算；ViewController 把等式渲染為「? + b = a」。
+@property (nonatomic, assign, readonly) BOOL missingAddend;
+/// 「未知數在中」(missing subtrahend)：模板的 operator 必為 "−"，等式渲染為「a − ? = b」。
+@property (nonatomic, assign, readonly) BOOL missingSubtrahend;
+/// 「被減數未知」(missing minuend)：模板的 operator 必為 "+"（內部加法），等式渲染為「? − number1 = number2」。
+@property (nonatomic, assign, readonly) BOOL missingMinuend;
+/// 除法用：是否要求 a 不為 b 的整數倍（產生餘數）。與 requireDivisible 互斥。
+@property (nonatomic, assign, readonly) BOOL requireRemainder;
+
+/// 二步驟用：第二個運算子（nil = 單步驟）。目前只支援 + / −（同優先級）。
+@property (nonatomic, copy, readonly, nullable) NSString *operator2;
+/// 二步驟用：c 值範圍（pattern 內以 {c} 表示）。
+@property (nonatomic, assign, readonly) NSInteger minC;
+@property (nonatomic, assign, readonly) NSInteger maxC;
+
+/// 分數題：YES 時 minA/maxA 為分子範圍、minB/maxB 為分母範圍。
+/// generator 會強制 a < b（真分數）；故事 pattern 內可用 {a} 代分子、{b} 代分母。
+@property (nonatomic, assign, readonly) BOOL isFraction;
 
 - (instancetype)initWithID:(NSString *)templateID
                      grade:(NSInteger)grade
@@ -34,7 +53,15 @@ NS_ASSUME_NONNULL_BEGIN
                       minB:(NSInteger)minB
                       maxB:(NSInteger)maxB
         requireAGreaterEqB:(BOOL)requireAGE
-          requireDivisible:(BOOL)requireDiv;
+          requireDivisible:(BOOL)requireDiv
+             missingAddend:(BOOL)missingAddend
+         missingSubtrahend:(BOOL)missingSubtrahend
+            missingMinuend:(BOOL)missingMinuend
+          requireRemainder:(BOOL)requireRemainder
+                 operator2:(nullable NSString *)operator2
+                      minC:(NSInteger)minC
+                      maxC:(NSInteger)maxC
+                isFraction:(BOOL)isFraction;
 
 @end
 

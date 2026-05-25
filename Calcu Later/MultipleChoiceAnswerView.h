@@ -22,6 +22,10 @@ typedef NS_ENUM(NSInteger, MCQResult) {
 /// 用一道題配置 4 個選項。內部呼叫 DistractorGenerator。
 - (void)configureWithProblem:(ArithmeticProblem *)problem;
 
+/// 直接給定 4 個字串選項與正解索引（給分數題等不適合用整數 distractor 的情境用）。
+/// 通常 titles.count == 4；若 < 4，剩餘按鈕仍會被啟用但無 title，留意呼叫端要補滿。
+- (void)configureWithChoiceTitles:(NSArray<NSString *> *)titles correctIndex:(NSInteger)correctIndex;
+
 /// 重新啟用所有按鈕（新題時呼叫）。
 - (void)reset;
 

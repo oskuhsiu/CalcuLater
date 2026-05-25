@@ -3,6 +3,7 @@
 #import "WordProblemGenerator.h"
 #import "ArithmeticProblem.h"
 #import "MultipleChoiceAnswerView.h"
+#import "DistractorGenerator.h"
 #import "AdditionHintView.h"
 #import "SubtractionHintView.h"
 #import "AnimatedHintView.h"
@@ -20,6 +21,9 @@
 @property (nonatomic, assign) NSInteger wrongStreakThisProblem;
 @property (nonatomic, assign) NSInteger correctStreak;
 @property (nonatomic, assign) CFAbsoluteTime lastWrongTapAt;  // 反垃圾連點
+/// MCQ 已配置的 WordProblem（idempotency token）。避免 loadNextProblem 與
+/// applyAnswerModeUI 兩個入口同題重複 configure；同時偵測「mode 切到 MCQ 但 MCQ 還停在前一題」。
+@property (nonatomic, weak) WordProblem *mcqConfiguredProblem;
 
 // Header
 @property (nonatomic, strong) UIButton *closeButton;
@@ -317,9 +321,33 @@
     // 所以在寫作模式直接隱藏避免按了沒反應的死動作。
     self.tutorialButton.hidden = !mcqMode;
     [self updateMascotVisibility];
-    // 不在這裡呼叫 configureWithProblem — loadNextProblem 切到下一題時自然會做。
-    // 重複呼叫會在 0.85s / 2.6s 鎖按鈕期間（viewWillAppear 被 iOS 系統中斷喚起）
-    // 重新 enable 4 個選項，造成同題重複觸發 delegate / distractor 重洗。
+    // 切到 MCQ 且當前題目存在時，必須重新配置選項：
+    // 否則「MCQ → 切去寫字 → 寫字模式按下一題 → 切回 MCQ」的路徑下
+    // mcq 按鈕仍停留在前一題的 titles，與 storyLabel / equationLabel 不一致。
+    // 用「已配置過的 WordProblem 物件指標」當作 idempotency token，避免：
+    //   (a) 同題重複 configure 在 reveal 鎖按鈕期把 disabled 還原成 enabled
+    //   (b) 切換答題模式時 MCQ 卡在上一題
+    if (mcqMode && self.currentProblem
+        && self.mcqConfiguredProblem != self.currentProblem) {
+        [self configureMCQForCurrentProblem];
+    }
+}
+
+/// 把當前題目套用到 MCQ（依分數題 / 標準題分支）。把已配置的 WordProblem 物件存起來
+/// 作為 idempotency token，避免重複配置（loadNextProblem 與 applyAnswerModeUI 兩個入口）。
+- (void)configureMCQForCurrentProblem {
+    if (!self.currentProblem) return;
+    if (self.currentProblem.isFractionAnswer) {
+        NSInteger correctIdx = 0;
+        NSArray<NSString *> *titles = [DistractorGenerator
+            fractionChoicesForNumerator:self.currentProblem.answerNumerator
+                            denominator:self.currentProblem.answerDenominator
+                        outCorrectIndex:&correctIdx];
+        [self.mcq configureWithChoiceTitles:titles correctIndex:correctIdx];
+    } else {
+        [self.mcq configureWithProblem:[self.currentProblem toArithmeticProblem]];
+    }
+    self.mcqConfiguredProblem = self.currentProblem;
 }
 
 #pragma mark - Flow
@@ -338,7 +366,7 @@
     self.equationLabel.text = [self equationTextRevealingAnswer:NO];
 
     if (SettingsManager.sharedInstance.answerMode == AnswerModeMultipleChoice) {
-        [self.mcq configureWithProblem:[self.currentProblem toArithmeticProblem]];
+        [self configureMCQForCurrentProblem];
     }
     [self updateMascotVisibility];
 
@@ -404,9 +432,16 @@
         [self showHintAnimated:YES];
         return;
     }
-    // 第 3 次：揭示答案 + 下一題（包含單位）
+    // 第 3 次以上：揭示答案 + 下一題（包含單位）
+    // == 3 才觸發 reveal-and-advance；後續 wrong tap 直接忽略，避免重複 schedule
+    // dispatch_after 造成多個 loadNextProblem 競態（會「跳過題目」）。
+    if (self.wrongStreakThisProblem > 3) return;
     [self showHintAnimated:YES];
     self.equationLabel.text = [self equationTextRevealingAnswer:YES];
+    [self.mcq disableAllChoices];  // 與 ViewController / LessonViewController 對齊：
+                                   // reveal 期間鎖按鈕，避免使用者再點到剩下的選項時，
+                                   // MCQResultCorrect 路徑又 schedule 一個 0.85s loadNextProblem
+                                   // 與這裡的 2.6s 同時 fire，產生「兩個下一題」race。
     __weak typeof(self) weakSelf2 = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.6 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -434,6 +469,38 @@
 - (void)showHintAnimated:(BOOL)animated {
     if (!self.currentProblem) return;
     [self hideAllHintViews];
+
+    // 二步驟題不能套單步驟的視覺化 hint（會只顯示第一步算法、誤導），
+    // 統一改走 textHint 並把兩步驟拆給孩子看。
+    if (self.currentProblem.operator2) {
+        [self showTextHintForTwoStep:self.currentProblem];
+        return;
+    }
+
+    // 分數題：沒有算式可以動畫化；用 textHint 解釋「平分 b 份取 a 份」的概念。
+    if (self.currentProblem.isFractionAnswer) {
+        WordProblem *p = self.currentProblem;
+        self.textHintLabel.text = [NSString stringWithFormat:
+                                   @"把整個東西平分成 %ld 份\n其中 %ld 份就是 %ld/%ld",
+                                   (long)p.answerDenominator,
+                                   (long)p.answerNumerator,
+                                   (long)p.answerNumerator,
+                                   (long)p.answerDenominator];
+        self.textHintView.hidden = NO;
+        [self updateMascotVisibility];
+        return;
+    }
+
+    // 未知數三變體：AnimatedHintView 會動畫出「內部算式」(例如 missingAddend 的 a−b)
+    // 並把答案顯示出來——對 tutorial 主動點擊而言等於直接揭示答案。
+    // 改走 textHint 給「策略提示」而不是直接算出答案。
+    if (self.currentProblem.missingAddend
+        || self.currentProblem.missingSubtrahend
+        || self.currentProblem.missingMinuend) {
+        [self showTextHintForMissing:self.currentProblem];
+        return;
+    }
+
     ArithmeticProblem *p = [self.currentProblem toArithmeticProblem];
     NSString *op = p.operatorSymbol;
     BOOL isAdd = [op isEqualToString:@"+"];
@@ -453,6 +520,46 @@
     } else {
         [self showTextHintForProblem:p];
     }
+    [self updateMascotVisibility];
+}
+
+/// 未知數三變體 textHint：給策略提示，不直接算出答案（避免主動點 tutorial 等於揭示答案）。
+- (void)showTextHintForMissing:(WordProblem *)wp {
+    NSString *body;
+    if (wp.missingAddend) {
+        // ? + n2 = n1：策略是「從總和拿走已知加數」
+        body = [NSString stringWithFormat:
+                @"想一想：要把幾加上 %ld 才會變成 %ld？\n（試試 %ld − %ld 是多少）",
+                (long)wp.number2, (long)wp.number1,
+                (long)wp.number1, (long)wp.number2];
+    } else if (wp.missingSubtrahend) {
+        // n1 − ? = n2：策略是「從總量拿走剩下，就是被拿走的部分」
+        body = [NSString stringWithFormat:
+                @"想一想：從 %ld 拿走幾個會剩 %ld？\n（試試 %ld − %ld 是多少）",
+                (long)wp.number1, (long)wp.number2,
+                (long)wp.number1, (long)wp.number2];
+    } else {
+        // missingMinuend: ? − n1 = n2：策略是「把剩下的和拿走的加回去」
+        body = [NSString stringWithFormat:
+                @"想一想：拿掉 %ld 後剩 %ld，原本要有幾個？\n（試試 %ld + %ld 是多少）",
+                (long)wp.number1, (long)wp.number2,
+                (long)wp.number1, (long)wp.number2];
+    }
+    self.textHintLabel.text = body;
+    self.textHintView.hidden = NO;
+    [self updateMascotVisibility];
+}
+
+/// 二步驟 textHint：把兩步驟拆成兩行顯示，幫孩子建立「先算第一步、再算第二步」的拆解習慣。
+- (void)showTextHintForTwoStep:(WordProblem *)wp {
+    NSString *op1 = [self displayOperator:wp.operatorSymbol];
+    NSString *op2 = [self displayOperator:wp.operator2];
+    NSString *body = [NSString stringWithFormat:
+                      @"第一步：%ld %@ %ld = %ld\n第二步：%ld %@ %ld = %ld",
+                      (long)wp.number1, op1, (long)wp.number2, (long)wp.intermediate,
+                      (long)wp.intermediate, op2, (long)wp.number3, (long)wp.answer];
+    self.textHintLabel.text = body;
+    self.textHintView.hidden = NO;
     [self updateMascotVisibility];
 }
 
@@ -507,19 +614,90 @@
 
 /// 把目前題目轉成「a OP b = ans 單位」字串。
 /// revealing=NO 時不顯示答案（用 "?"），revealing=YES 顯示完整答案 + 單位。
+///
+/// 特殊渲染：
+///   - missingAddend：渲染為「? + b = a」（內部 op 是 "-"，但等式呈現為加法）
+///   - missingSubtrahend：渲染為「a − ? = b」
+///   - 有餘數除法：揭示時渲染為「a ÷ b = q⋯r 單位」
+///   - 二步驟：渲染為「a op1 b op2 c = ?」
 - (NSString *)equationTextRevealingAnswer:(BOOL)reveal {
     if (!self.currentProblem) return @"";
-    NSString *op = [self displayOperator:self.currentProblem.operatorSymbol];
+    WordProblem *p = self.currentProblem;
+    NSString *unit = p.unit ?: @"";
+
+    if (p.isFractionAnswer) {
+        // 分數識別題沒有運算式；equation 面板就顯示答案。
+        if (!reveal) return @"答案：?";
+        return [NSString stringWithFormat:@"答案：%ld/%ld",
+                (long)p.answerNumerator, (long)p.answerDenominator];
+    }
+
+    if (p.operator2) {
+        // 二步驟：a op1 b op2 c = ?
+        NSString *op1 = [self displayOperator:p.operatorSymbol];
+        NSString *op2 = [self displayOperator:p.operator2];
+        if (!reveal) {
+            return [NSString stringWithFormat:@"%ld %@ %ld %@ %ld = ?",
+                    (long)p.number1, op1, (long)p.number2, op2, (long)p.number3];
+        }
+        return [NSString stringWithFormat:@"%ld %@ %ld %@ %ld = %ld %@",
+                (long)p.number1, op1, (long)p.number2, op2, (long)p.number3,
+                (long)p.answer, unit];
+    }
+
+    if (p.missingAddend) {
+        // 等式以加法呈現：「? + number2 = number1」，即使內部 op 為 "-"
+        // 顯示 unit 在最後（與標準格式一致），避免「8 顆 + 5 = 13」這種混淆語意。
+        if (!reveal) {
+            return [NSString stringWithFormat:@"? + %ld = %ld",
+                    (long)p.number2, (long)p.number1];
+        }
+        return [NSString stringWithFormat:@"%ld + %ld = %ld %@",
+                (long)p.answer, (long)p.number2, (long)p.number1, unit];
+    }
+
+    if (p.missingSubtrahend) {
+        // 「number1 − ? = number2」，內部 op 為 "-"，answer = number1 - number2
+        NSString *op = [self displayOperator:p.operatorSymbol];
+        if (!reveal) {
+            return [NSString stringWithFormat:@"%ld %@ ? = %ld",
+                    (long)p.number1, op, (long)p.number2];
+        }
+        return [NSString stringWithFormat:@"%ld %@ %ld = %ld %@",
+                (long)p.number1, op, (long)p.answer, (long)p.number2, unit];
+    }
+
+    if (p.missingMinuend) {
+        // 等式以減法呈現：「? − number1 = number2」，內部 op 為 "+"，answer = number1 + number2
+        if (!reveal) {
+            return [NSString stringWithFormat:@"? − %ld = %ld",
+                    (long)p.number1, (long)p.number2];
+        }
+        return [NSString stringWithFormat:@"%ld − %ld = %ld %@",
+                (long)p.answer, (long)p.number1, (long)p.number2, unit];
+    }
+
+    NSString *op = [self displayOperator:p.operatorSymbol];
     if (!reveal) {
         return [NSString stringWithFormat:@"%ld %@ %ld = ?",
-                (long)self.currentProblem.number1, op,
-                (long)self.currentProblem.number2];
+                (long)p.number1, op, (long)p.number2];
     }
-    NSString *unit = self.currentProblem.unit ?: @"";
+    if (p.remainder > 0) {
+        // 有餘數除法：a ÷ b = q [unit]⋯r
+        // unit 屬於商（每隊/每包/每盤），餘數的單位與商不同（剩下的人/糖），
+        // 因此把 unit 緊貼在商後面、不要落在 r 旁邊以免語意混淆。
+        // 空 unit 時退化成 "a ÷ b = q⋯r"。
+        if (unit.length > 0) {
+            return [NSString stringWithFormat:@"%ld %@ %ld = %ld %@⋯%ld",
+                    (long)p.number1, op, (long)p.number2,
+                    (long)p.answer, unit, (long)p.remainder];
+        }
+        return [NSString stringWithFormat:@"%ld %@ %ld = %ld⋯%ld",
+                (long)p.number1, op, (long)p.number2,
+                (long)p.answer, (long)p.remainder];
+    }
     return [NSString stringWithFormat:@"%ld %@ %ld = %ld %@",
-            (long)self.currentProblem.number1, op,
-            (long)self.currentProblem.number2,
-            (long)self.currentProblem.answer, unit];
+            (long)p.number1, op, (long)p.number2, (long)p.answer, unit];
 }
 
 #pragma mark - Writing mode controls

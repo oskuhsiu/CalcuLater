@@ -22,6 +22,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// 回傳 4 個選項陣列（含正解，隨機洗牌後）。
 + (NSArray<NSNumber *> *)choicesForProblem:(ArithmeticProblem *)problem;
 
+/// 分數識別題的 4 個選項（含正解 n/d，隨機洗牌）。每個元素為 "n/d" 字串。
+/// 干擾項涵蓋孩子常見錯誤：分子±1、分母±1、分子分母對調等；過濾掉非真分數與重複。
+/// 同時回傳正解在 4 個選項中的 index 透過 outCorrectIndex（必為 0~3）。
++ (NSArray<NSString *> *)fractionChoicesForNumerator:(NSInteger)num
+                                         denominator:(NSInteger)denom
+                                     outCorrectIndex:(NSInteger *)outCorrectIndex;
+
 @end
 
 NS_ASSUME_NONNULL_END
