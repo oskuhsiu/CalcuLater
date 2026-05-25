@@ -3,7 +3,7 @@
 #import "ArithmeticSolution.h"
 
 @interface AdditionHintView ()
-@property (nonatomic, strong) UIView *gridContainer;
+@property (nonatomic, strong, readwrite) UIView *gridContainer;
 @property (nonatomic, strong) NSMutableArray<UIView *> *managedSubviews;
 @property (nonatomic, strong) ArithmeticSolution *solution;
 @end

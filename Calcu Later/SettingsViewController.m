@@ -1,4 +1,5 @@
 #import "SettingsViewController.h"
+#import "DecorativeBackgroundView.h"
 
 @interface SettingsViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
@@ -13,7 +14,7 @@
     [super viewDidLoad];
     
     self.title = @"設定";
-    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    [DecorativeBackgroundView installInViewController:self theme:BackgroundThemeSettings];
     self.settingsManager = [SettingsManager sharedInstance];
     
     [self setupNavigationBar];
@@ -34,16 +35,19 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.backgroundColor = [UIColor clearColor];  // 讓背景透出
     [self.view addSubview:self.tableView];
 }
 
 - (void)setupSettingsSections {
-    self.sectionTitles = @[@"題目設定", @"運算類型", @"提示設定"];
-    
+    self.sectionTitles = @[@"答題模式", @"刷題難度", @"運算類型", @"提示設定", @"其它"];
+
     self.settingsSections = @[
-        @[@"第一個數字位數", @"第二個數字位數", @"允許負數結果"],
+        @[@"作答方式"],
+        @[@"題目範圍"],
         @[@"加法", @"減法", @"乘法", @"除法"],
-        @[@"顯示答案", @"標準提示", @"分層提示", @"動畫提示"]
+        @[@"顯示答案", @"標準提示", @"分層提示", @"動畫提示"],
+        @[@"音效", @"吉祥物"]
     ];
 }
 
@@ -69,24 +73,57 @@
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     static NSString *cellIdentifier = @"SettingsCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellIdentifier];
-    
+
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:cellIdentifier];
     }
-    
+
+    // 讓 cell 半透明融入薰衣草背景，避免 dark mode 對比刺眼、light mode 「白塊雜燴」感。
+    cell.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.7];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+
     NSString *settingTitle = self.settingsSections[indexPath.section][indexPath.row];
     cell.textLabel.text = settingTitle;
     
-    // Configure cell based on section and row
-    if (indexPath.section == 0) { // Problem settings
-        [self configureProblemSettingCell:cell atIndexPath:indexPath];
-    } else if (indexPath.section == 1) { // Operation settings
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.detailTextLabel.text = nil;
+
+    if (indexPath.section == 0) {
+        // 答題模式
+        NSString *txt = (self.settingsManager.answerMode == AnswerModeMultipleChoice) ? @"選擇題" : @"手寫";
+        cell.detailTextLabel.text = txt;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == 1) {
+        // Drill Tier
+        NSArray *names = @[@"", @"D1（20 以內）", @"D2（100 以內）", @"D3（三位數+）", @"D4（混合）"];
+        NSInteger t = self.settingsManager.drillTier;
+        if (t < 1 || t > 4) t = 2;
+        cell.detailTextLabel.text = names[t];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == 2) {
         [self configureOperationSettingCell:cell atIndexPath:indexPath];
-    } else if (indexPath.section == 2) { // Hint settings
+    } else if (indexPath.section == 3) {
         [self configureHintSettingCell:cell atIndexPath:indexPath];
+    } else if (indexPath.section == 4) {
+        UISwitch *t = [[UISwitch alloc] init];
+        if (indexPath.row == 0) {
+            t.on = self.settingsManager.soundEffectsEnabled;
+            t.tag = 300;
+        } else {
+            t.on = self.settingsManager.mascotEnabled;
+            t.tag = 301;
+        }
+        [t addTarget:self action:@selector(otherToggled:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = t;
     }
-    
+
     return cell;
+}
+
+- (void)otherToggled:(UISwitch *)s {
+    if (s.tag == 300) self.settingsManager.soundEffectsEnabled = s.isOn;
+    else if (s.tag == 301) self.settingsManager.mascotEnabled = s.isOn;
 }
 
 - (void)configureProblemSettingCell:(UITableViewCell *)cell atIndexPath:(NSIndexPath *)indexPath {
@@ -160,10 +197,53 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    
-    if (indexPath.section == 0 && (indexPath.row == 0 || indexPath.row == 1)) {
-        [self showDigitPicker:indexPath.row == 0];
+
+    if (indexPath.section == 0) {
+        [self showAnswerModePicker];
+    } else if (indexPath.section == 1) {
+        [self showTierPicker];
     }
+}
+
+- (void)showAnswerModePicker {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"作答方式" message:nil
+                                                          preferredStyle:UIAlertControllerStyleActionSheet];
+    [a addAction:[UIAlertAction actionWithTitle:@"選擇題" style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction *_) {
+        self.settingsManager.answerMode = AnswerModeMultipleChoice;
+        [self.tableView reloadData];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"手寫" style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction *_) {
+        self.settingsManager.answerMode = AnswerModeWriting;
+        [self.tableView reloadData];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self _present:a];
+}
+
+- (void)showTierPicker {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"題目範圍" message:nil
+                                                          preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *names = @[@"D1（20 以內）", @"D2（100 以內）", @"D3（三位數+）", @"D4（混合）"];
+    for (NSInteger i = 1; i <= 4; i++) {
+        NSInteger captured = i;
+        [a addAction:[UIAlertAction actionWithTitle:names[i - 1] style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *_) {
+            self.settingsManager.drillTier = captured;
+            [self.tableView reloadData];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self _present:a];
+}
+
+- (void)_present:(UIAlertController *)a {
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        a.popoverPresentationController.sourceView = self.view;
+        a.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+    }
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)showDigitPicker:(BOOL)isFirstNumber {
