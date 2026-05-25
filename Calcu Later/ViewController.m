@@ -13,7 +13,6 @@
 #import "ProblemGenerator.h"
 #import "SettingsManager.h"
 #import "ChildUIKit.h"
-#import "SettingsViewController.h"
 #import "SoundManager.h"
 #import "MascotView.h"
 #import "DecorativeBackgroundView.h"
@@ -22,7 +21,6 @@
 
 // Header
 @property (nonatomic, strong) UIButton *closeButton;
-@property (nonatomic, strong) UIButton *settingsButton;
 @property (nonatomic, strong) MascotView *mascot;
 @property (nonatomic, strong) UILabel *streakLabel;
 
@@ -33,6 +31,7 @@
 // Buttons
 @property (nonatomic, strong) ChildButton *nextProblemButton;
 @property (nonatomic, strong) ChildButton *hintButton;
+@property (nonatomic, strong) ChildButton *mcqTutorialButton;  // MCQ 模式專用「看怎麼算」
 
 // Answer surfaces
 @property (nonatomic, strong) MultipleChoiceAnswerView *mcq;
@@ -83,14 +82,6 @@
     self.closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.closeButton];
-
-    // 設定
-    self.settingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.settingsButton setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
-    self.settingsButton.tintColor = ChildUI.brownText;
-    self.settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.settingsButton addTarget:self action:@selector(settingsTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.settingsButton];
 
     self.mascot = [[MascotView alloc] initWithVariant:MascotVariantPortrait];
     self.mascot.translatesAutoresizingMaskIntoConstraints = NO;
@@ -185,6 +176,13 @@
     [self.hintButton addTarget:self action:@selector(hintTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.hintButton];
 
+    // 「看怎麼算」按鈕：MCQ 模式下顯示在題目右側，主動觸發動畫教學。
+    self.mcqTutorialButton = [ChildButton buttonWithTitle:@"看怎麼算" backgroundColor:ChildUI.lavender];
+    self.mcqTutorialButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.mcqTutorialButton.titleLabel.font = [ChildUI roundedFontOfSize:18.0 weight:UIFontWeightSemibold];
+    [self.mcqTutorialButton addTarget:self action:@selector(mcqTutorialTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.mcqTutorialButton];
+
     self.undoButton = [ChildButton buttonWithTitle:@"復原" backgroundColor:ChildUI.lavender];
     self.undoButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.undoButton addTarget:self action:@selector(undoTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -202,13 +200,11 @@
         [self.closeButton.widthAnchor constraintEqualToConstant:36],
         [self.closeButton.heightAnchor constraintEqualToConstant:36],
 
-        [self.settingsButton.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12],
-        [self.settingsButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
-        [self.settingsButton.widthAnchor constraintEqualToConstant:36],
-        [self.settingsButton.heightAnchor constraintEqualToConstant:36],
-
         [self.streakLabel.centerYAnchor constraintEqualToAnchor:self.closeButton.centerYAnchor],
         [self.streakLabel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+        // 防止連對數字長到撞上「看怎麼算」按鈕（mcqTutorialButton trailing -16, w=120）。
+        [self.streakLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.mcqTutorialButton.leadingAnchor constant:-8],
+        [self.streakLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.closeButton.trailingAnchor constant:8],
 
         [self.problemLabel.topAnchor constraintEqualToAnchor:self.closeButton.bottomAnchor constant:16],
         [self.problemLabel.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
@@ -281,6 +277,12 @@
         [self.hintButton.bottomAnchor constraintEqualToAnchor:self.clearButton.topAnchor constant:-12],
         [self.hintButton.heightAnchor constraintEqualToConstant:48],
         [self.hintButton.widthAnchor constraintEqualToConstant:120],
+
+        // 「看怎麼算」按鈕（MCQ 模式）：放在 close 按鈕同一列，靠右、streak 右側
+        [self.mcqTutorialButton.centerYAnchor constraintEqualToAnchor:self.closeButton.centerYAnchor],
+        [self.mcqTutorialButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+        [self.mcqTutorialButton.heightAnchor constraintEqualToConstant:40],
+        [self.mcqTutorialButton.widthAnchor constraintEqualToConstant:120],
     ]];
 
     // Mascot 兩組 layout：MCQ 模式 → 居中於 hintHost；手寫模式 → 塞在按鈕中間欄
@@ -311,6 +313,7 @@
     self.clearButton.hidden = mcqMode;
     self.nextProblemButton.hidden = mcqMode;
     self.hintButton.hidden = mcqMode;
+    self.mcqTutorialButton.hidden = !mcqMode;
     // 答案 label 永遠隱藏，避免手寫模式洩漏答案；要看答案請按提示。
     self.answerLabel.hidden = YES;
 
@@ -382,9 +385,12 @@
         [[SoundManager sharedInstance] play:fx];
         // 鎖住按鈕直到下一題出現，避免 0.85s 內連點重複觸發 delegate。
         [self.mcq disableAllChoices];
+        __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.85 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self generateNewProblem];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.view.window == nil) return;
+            [strongSelf generateNewProblem];
         });
         return;
     }
@@ -410,9 +416,12 @@
     [self showStaticHint];
     // 揭示答案後鎖按鈕，避免 2.4s 內連點再次進 delegate 把已揭示的題目跳掉。
     [self.mcq disableAllChoices];
+    __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [self generateNewProblem];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.view.window == nil) return;
+        [strongSelf generateNewProblem];
     });
 }
 
@@ -438,6 +447,27 @@
 
 - (void)newProblemTapped { [self generateNewProblem]; }
 - (void)hintTapped { [self cycleHint]; }
+
+/// MCQ 模式「看怎麼算」：主動觸發動畫教學，再次點擊收起，方便重看。
+- (void)mcqTutorialTapped {
+    if (!self.currentProblem) return;
+    BOOL anyHintShowing = !self.additionHintView.hidden
+                       || !self.subtractionHintView.hidden
+                       || !self.animatedHintView.hidden
+                       || !self.textHintView.hidden;
+    if (anyHintShowing) {
+        [self hideAllHintViews];
+        self.currentHintType = 0;  // 收起 hint 時把 hint cycle 狀態歸零，與 cycleHint 對齊
+        return;
+    }
+    // 加減用動畫版（逐位 spring 揭露），乘除用文字 hint
+    BOOL isAdd = [self.currentProblem.operatorSymbol isEqualToString:@"+"];
+    BOOL isSub = [self.currentProblem.operatorSymbol isEqualToString:@"-"];
+    [self showHintForProblem:self.currentProblem useAnimated:(isAdd || isSub)];
+    // 與 cycleHint 共用狀態：動畫版視為 type=2，靜態為 type=1，
+    // 之後使用者切到寫作模式按提示按鈕時繼續循環不會卡住。
+    self.currentHintType = (isAdd || isSub) ? 2 : 1;
+}
 
 - (void)showStaticHint {
     // 選擇題模式錯 2 次時自動呼叫
@@ -526,13 +556,6 @@
 
 - (void)closeTapped {
     [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)settingsTapped {
-    SettingsViewController *vc = [[SettingsViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {

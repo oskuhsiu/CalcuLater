@@ -21,6 +21,7 @@
 @property (nonatomic, strong) UIView *currentHintView;
 @property (nonatomic, strong) UIView *resultOverlay;
 @property (nonatomic, strong) UIButton *closeButton;
+@property (nonatomic, strong) ChildButton *tutorialButton;
 @property (nonatomic, strong) LessonIntroView *introView;
 @property (nonatomic, strong) ArithmeticProblem *currentProblem;
 @property (nonatomic, assign) NSInteger questionIndex;
@@ -81,6 +82,7 @@
     self.problemLabel.hidden = YES;
     self.progressLabel.hidden = YES;
     self.mcq.hidden = YES;
+    self.tutorialButton.hidden = YES;
 
     [self.view layoutIfNeeded];
     [self.introView play];
@@ -95,6 +97,7 @@
         self.problemLabel.hidden = NO;
         self.progressLabel.hidden = NO;
         self.mcq.hidden = NO;
+        self.tutorialButton.hidden = NO;
         [self loadNextQuestion];
     }];
 }
@@ -109,11 +112,20 @@
     [self.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.closeButton];
 
+    // 「看怎麼算」按鈕：主動觸發 hint，孩子答錯前就能參考教學
+    self.tutorialButton = [ChildButton buttonWithTitle:@"看怎麼算" backgroundColor:ChildUI.lavender];
+    self.tutorialButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.tutorialButton.titleLabel.font = [ChildUI roundedFontOfSize:18.0 weight:UIFontWeightSemibold];
+    [self.tutorialButton addTarget:self action:@selector(tutorialTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.tutorialButton];
+
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.text = self.lesson.title;
     self.titleLabel.font = [ChildUI roundedFontOfSize:24.0 weight:UIFontWeightBold];
     self.titleLabel.textColor = ChildUI.brownText;
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
+    self.titleLabel.adjustsFontSizeToFitWidth = YES;
+    self.titleLabel.minimumScaleFactor = 0.7;
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.titleLabel];
 
@@ -147,8 +159,16 @@
         [self.closeButton.widthAnchor constraintEqualToConstant:36],
         [self.closeButton.heightAnchor constraintEqualToConstant:36],
 
+        [self.tutorialButton.centerYAnchor constraintEqualToAnchor:self.closeButton.centerYAnchor],
+        [self.tutorialButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+        [self.tutorialButton.heightAnchor constraintEqualToConstant:40],
+        [self.tutorialButton.widthAnchor constraintEqualToConstant:120],
+
         [self.titleLabel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:14],
         [self.titleLabel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+        // 防止課程標題撞上「看怎麼算」按鈕 / 關閉按鈕，遇到長標題會 adjustsFontSizeToFitWidth。
+        [self.titleLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.closeButton.trailingAnchor constant:8],
+        [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.tutorialButton.leadingAnchor constant:-8],
 
         [self.progressLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:6],
         [self.progressLabel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
@@ -203,9 +223,12 @@
         [[SoundManager sharedInstance] play:SoundEffectCorrect];
         // 鎖住按鈕直到下一題載入，否則 0.85s 內被連點會讓 questionIndex 多加、跳題。
         [self.mcq disableAllChoices];
+        __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.85 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self loadNextQuestion];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.view.window == nil) return;
+            [strongSelf loadNextQuestion];
         });
         return;
     }
@@ -230,9 +253,12 @@
     [self showHintForCurrentProblem];
     self.questionIndex++;
     [self.mcq disableAllChoices];
+    __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [self loadNextQuestion];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.view.window == nil) return;
+        [strongSelf loadNextQuestion];
     });
 }
 
@@ -313,24 +339,111 @@
     bg.layer.cornerRadius = 24.0;
     bg.layer.masksToBounds = YES;
 
-    UILabel *l = [[UILabel alloc] init];
-    l.font = [ChildUI roundedMonoFontOfSize:34.0 weight:UIFontWeightSemibold];
-    l.textColor = ChildUI.brownText;
-    l.textAlignment = NSTextAlignmentCenter;
-    l.numberOfLines = 0;
-    NSString *dotsA = [@"" stringByPaddingToLength:(NSUInteger)(p.number1) withString:@"●" startingAtIndex:0];
-    NSString *dotsB = [@"" stringByPaddingToLength:(NSUInteger)(p.number2) withString:@"●" startingAtIndex:0];
-    l.text = [NSString stringWithFormat:@"%@\n%@ %@\n= %ld",
-              dotsA, p.operatorSymbol, dotsB, (long)p.answer];
-    l.translatesAutoresizingMaskIntoConstraints = NO;
-    [bg addSubview:l];
+    BOOL isSubtraction = [p.operatorSymbol isEqualToString:@"-"];
+
+    // 圖示池：兒童友善的具象 SF Symbol，左右兩運算元用不同種類 + 配色。
+    NSArray<NSString *> *iconPool = @[
+        @"apple.logo", @"leaf.fill", @"star.fill", @"heart.fill",
+        @"fish.fill", @"bird.fill", @"tortoise.fill", @"ladybug.fill"
+    ];
+    // 用 problem 內容作種子，讓同一題的圖示穩定不會跳。
+    NSUInteger seed = (NSUInteger)(p.number1 * 31 + p.number2 * 7 + (isSubtraction ? 13 : 0));
+    NSString *iconA = iconPool[seed % iconPool.count];
+    NSString *iconB = iconPool[(seed / iconPool.count + 1) % iconPool.count];
+    UIColor *colorA = [ChildUI candyColorAtIndex:(NSInteger)(seed % 6)];
+    UIColor *colorB = [ChildUI candyColorAtIndex:(NSInteger)((seed + 2) % 6)];
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 10.0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [bg addSubview:stack];
+
+    if (isSubtraction) {
+        // 第一列：N1 個圖示，最後 N2 個畫上斜線 + 半透明，表示「拿走」。
+        UIStackView *row1 = [self _iconRowCount:p.number1 iconName:iconA color:colorA
+                                  strikeoutLast:p.number2];
+        [stack addArrangedSubview:row1];
+
+        UILabel *opLabel = [[UILabel alloc] init];
+        opLabel.text = [NSString stringWithFormat:@"拿走 %ld 個", (long)p.number2];
+        opLabel.font = [ChildUI roundedFontOfSize:20.0 weight:UIFontWeightMedium];
+        opLabel.textColor = [ChildUI.brownText colorWithAlphaComponent:0.7];
+        [stack addArrangedSubview:opLabel];
+    } else {
+        UIStackView *row1 = [self _iconRowCount:p.number1 iconName:iconA color:colorA
+                                  strikeoutLast:0];
+        [stack addArrangedSubview:row1];
+
+        UIStackView *row2 = [[UIStackView alloc] init];
+        row2.axis = UILayoutConstraintAxisHorizontal;
+        row2.alignment = UIStackViewAlignmentCenter;
+        row2.spacing = 8.0;
+        UILabel *plus = [[UILabel alloc] init];
+        plus.text = @"+";
+        plus.font = [ChildUI roundedFontOfSize:30.0 weight:UIFontWeightBold];
+        plus.textColor = ChildUI.brownText;
+        [row2 addArrangedSubview:plus];
+        UIStackView *icons2 = [self _iconRowCount:p.number2 iconName:iconB color:colorB
+                                    strikeoutLast:0];
+        [row2 addArrangedSubview:icons2];
+        [stack addArrangedSubview:row2];
+    }
+
+    UILabel *ans = [[UILabel alloc] init];
+    ans.text = [NSString stringWithFormat:@"= %ld", (long)p.answer];
+    ans.font = [ChildUI roundedMonoFontOfSize:34.0 weight:UIFontWeightBold];
+    ans.textColor = ChildUI.brownText;
+    [stack addArrangedSubview:ans];
+
     [NSLayoutConstraint activateConstraints:@[
-        [l.centerXAnchor constraintEqualToAnchor:bg.centerXAnchor],
-        [l.centerYAnchor constraintEqualToAnchor:bg.centerYAnchor],
-        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:bg.leadingAnchor constant:16],
-        [l.trailingAnchor constraintLessThanOrEqualToAnchor:bg.trailingAnchor constant:-16],
+        [stack.centerXAnchor constraintEqualToAnchor:bg.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:bg.centerYAnchor],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:bg.leadingAnchor constant:16],
+        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:bg.trailingAnchor constant:-16],
+        [stack.topAnchor constraintGreaterThanOrEqualToAnchor:bg.topAnchor constant:12],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:bg.bottomAnchor constant:-12],
     ]];
     return bg;
+}
+
+- (UIStackView *)_iconRowCount:(NSInteger)count iconName:(NSString *)name
+                          color:(UIColor *)color strikeoutLast:(NSInteger)strikeCount {
+    UIStackView *row = [[UIStackView alloc] init];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 4.0;
+
+    // 數量多時自動縮小，避免一列塞不下（L1 max 5、L2/L3 max 10）。
+    CGFloat iconSize = (count <= 5) ? 32.0 : (count <= 8 ? 26.0 : 22.0);
+    UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:iconSize
+                                                                                      weight:UIImageSymbolWeightSemibold];
+
+    for (NSInteger i = 0; i < count; i++) {
+        BOOL crossed = (strikeCount > 0) && (i >= count - strikeCount);
+        UIImage *img = [UIImage systemImageNamed:name withConfiguration:cfg];
+        UIImageView *iv = [[UIImageView alloc] initWithImage:img];
+        iv.tintColor = crossed ? [color colorWithAlphaComponent:0.35] : color;
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        if (crossed) {
+            // 紅色斜線標示「拿走」。
+            CAShapeLayer *line = [CAShapeLayer layer];
+            line.strokeColor = [UIColor colorWithRed:0.85 green:0.20 blue:0.30 alpha:0.85].CGColor;
+            line.lineWidth = 3.0;
+            line.lineCap = kCALineCapRound;
+            UIBezierPath *path = [UIBezierPath bezierPath];
+            CGFloat s = iconSize + 4;
+            [path moveToPoint:CGPointMake(2, s - 2)];
+            [path addLineToPoint:CGPointMake(s - 2, 2)];
+            line.path = path.CGPath;
+            iv.layer.masksToBounds = NO;
+            [iv.layer addSublayer:line];
+            iv.frame = CGRectMake(0, 0, s, s);
+        }
+        [row addArrangedSubview:iv];
+    }
+    return row;
 }
 
 - (void)clearHint {
@@ -354,6 +467,7 @@
     self.problemLabel.hidden = YES;
     self.mcq.hidden = YES;
     self.hintContainer.hidden = YES;
+    self.tutorialButton.hidden = YES;
 
     self.resultOverlay = [[UIView alloc] init];
     self.resultOverlay.backgroundColor = ChildUI.creamBackground;
@@ -425,6 +539,16 @@
 
 - (void)closeTapped {
     [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+}
+
+/// 「看怎麼算」：主動觸發目前題目的 hint；再按一次收起。
+- (void)tutorialTapped {
+    if (!self.currentProblem) return;
+    if (!self.hintContainer.hidden) {
+        [self clearHint];
+        return;
+    }
+    [self showHintForCurrentProblem];
 }
 
 @end

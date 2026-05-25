@@ -325,13 +325,14 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 - 答錯流程的 3 級遞進可順利走完。
 - 切回手寫模式時，原本的畫板與 hint 循環 UI 仍可用。
 
-### Phase 5 — 教學區（Lessons）獨立模組 ⚠️ **PARTIAL** (2026-05-24)
+### Phase 5 — 教學區（Lessons）獨立模組 ⚠️ **PARTIAL** (2026-05-25)
 **實作**：主畫面分流（學一學 / 練一練）、`LessonsHomeViewController`、`LessonViewController`、L1-L5 五課可玩、九九乘法表 9×9 網格與分段解鎖、選擇題流程、`LessonProgressStore` 完成度持久化、`MakeBreakTenHintView`（合十/破十合併實作）、**L1-L5「先看示範」開場動畫**（`LessonIntroView`，含「再看一次」/「開始練習」）。
-**未做 / 缺口**：
-- **L1/L2 具象圖示**：示範動畫已用彩色圓點，但 lesson 內部 hint 仍用「●」黑點，沒有彩色 SF Symbol 圖示池（蘋果、餅乾、小熊…）。
-- **九九乘法朗讀音檔未做**：cell 點按播「七八五十六」（§2.1 表格規格）尚無音檔資產與播放邏輯。
-- **九九乘法目前沒開場動畫**（直接進答題）— 可選做。
-- **星星標準（≥50% 一星 / ≥75% 兩星 / ≥95% 三星）沒寫測試**，也沒和產品 / 教育顧問確認。
+- 2026-05-25 補：L1/L2/L3 lesson 內部 hint 從黑點 ● 換成彩色 SF Symbol 圖示池（蘋果 / 葉子 / 星星 / 愛心 / 魚 / 鳥 / 烏龜 / 瓢蟲），加減各自配色，減法用半透明 + 斜線標示被「拿走」的個數。
+- 2026-05-25 補：九九乘法表每列改可點，用 `AVSpeechSynthesizer` 朗讀口訣（如「三五十五」「七八五十六」），優先用 zh-TW Premium voice，fallback 到 Enhanced / zh-CN / 系統預設。
+**未做 / 缺口（移到 v2）**：
+- ~~九九乘法朗讀音檔（自製錄音）~~ → **v2**：目前用 TTS 暫代。
+- ~~九九乘法開場動畫~~ → **v2**：目前直接進答題。
+- ~~星星標準（≥50% 一星 / ≥75% 兩星 / ≥95% 三星）寫測試 + 教育顧問確認~~ → **v2**。
 > 對應 §2.0 的「學一學」入口。原 app 只有刷題，這階段是**新增**一整個教學區塊，與刷題並列。
 
 **範圍**
@@ -355,10 +356,8 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 - 九九乘法表三段都可選、整段答完有獎勵。
 - 完成度跨啟動持久化。
 
-### Phase 6 — Animated 直式版（彈跳動畫）⚠️ **PARTIAL** (2026-05-24)
-**實作**：`AnimatedHintView` 用 spring 逐位揭露加減直式。**揭露音效已接**（每 2 個 cell 一批播 Tock + 軟 haptic）。
-**已知技術債**：
-- 取 `hint.subviews.firstObject` 當 grid container（依賴內部結構），如果 `AdditionHintView` / `SubtractionHintView` 之後改變子 view 層級就會壞 — **沒有 API 邊界保護**。
+### Phase 6 — Animated 直式版（彈跳動畫）✅ **DONE** (2026-05-25)
+**實作**：`AnimatedHintView` 用 spring 逐位揭露加減直式；揭露音效已接（每 2 個 cell 一批播 Tock + 軟 haptic）；API 邊界以 `AdditionHintView` / `SubtractionHintView` 的 `gridContainer` public readonly property + isKindOfClass 分派處理（2026-05-25 §10.1 已修）。
 **範圍**
 - 把舊 `AnimatedHintView` 改造成「包裝 AdditionHintView / SubtractionHintView + step 控制」。
 - 用 `UIViewPropertyAnimator` + spring damping (0.6) 做逐位 **彈跳** 揭露（不是 fade），符合 §1.4 的 Q 感原則。
@@ -369,13 +368,14 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 - ✅ 加減兩種都有逐位 spring 揭露動畫。
 - ❌ 揭露音效未接。
 
-### Phase 7 — 題目產生器整合（刷題 Tier + 設定）⚠️ **PARTIAL** (2026-05-24)
+### Phase 7 — 題目產生器整合（刷題 Tier + 設定）✅ **DONE** (2026-05-25)
 **實作**：`ProblemGenerator` 重寫完成、`SettingsManager` 含 drill tier / 運算類型 / 答題模式 / 音效開關 / 吉祥物開關等選項、`SettingsViewController` UI 更新，設定能持久化。**`SoundManager` 已實作**，使用 iOS 內建 SystemSoundID + `UINotificationFeedbackGenerator`（無外部音檔資產，零配置），接上答對 / 答錯 / 揭露 / 按鈕點擊。
-**已知缺口**：
-- **D3 三位數題目視覺驗證缺**：MCQ 卡片字級在大數字（如 1234）上可能擠 — 沒實機/模擬器目視驗證過。
-- **設定即時生效體感落差**：理論上 `viewWillAppear` 重抓 settings，但若使用者在設定頁滑動切 drillTier，下一題才會應用，可能有體感落差。
-- **`SettingsViewController` 殘留死方法**：`configureProblemSettingCell:`、`showDigitPicker:` 不再被呼叫但仍存在，會出 `-Wunused-function` 之類的雜訊（但不阻擋 build）。
-- **音效資產仍是系統內建**：未來想要更可愛的自製音效時，要換成 bundled `.caf` 走 `AVAudioPlayer`。
+**2026-05-25 補完**：
+- 設定入口從 `ViewController`（刷題頁右上角）搬到 `MainMenuViewController` 右上角；ViewController 移除 `settingsButton` / `settingsTapped:` / `#import "SettingsViewController.h"`。**體感即時性問題自動解決**：使用者只能在進入刷題 / 教學區之前改設定，下次 `viewDidLoad` 一定會抓到新值。
+- 刪 `SettingsViewController` 殘留死方法 `configureProblemSettingCell:`、`showDigitPicker:`、`allowNegativeToggled:`。
+**剩餘小事（不阻擋發版）**：
+- D3 三位數 MCQ 視覺驗證仍需手動 sim 跑。
+- 音效資產仍是系統內建（v2 可換 bundled `.caf` + `AVAudioPlayer`）。
 **範圍**
 - 重寫 `ProblemGenerator`（取代 `ViewController.m:98-104` 寫死的 `num1 + num2`），輸入「Drill Tier」+「運算類型」，輸出 `ArithmeticProblem`。
 - 實作 §2.2 的 4 個 Drill Tier (D1-D4) 的題目產生規則。
@@ -399,7 +399,7 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 **實作**：主畫面、題目、選擇題卡片、教學畫面、直式解答視覺已套 §1 視覺語言（糖果色、SF Rounded、圓角、軟陰影），答對 / 答錯回饋動畫。**§8.1 吉祥物決策已定**：選項 B 變體 — 採用自製「教師角色」（chibi 風格小老師，戴眼鏡、拿教鞭、抱書本），不沿用小豬豬。`teacher2.png` 切成 6 張 tile（左欄 portrait / 右欄 desk variant 各 3 frame）放入 `Assets.xcassets/Mascot/`，建立 `MascotView` 含 6 種情緒（idle / happy / thinking / cheering / shake / talking），ViewController 與 MainMenuViewController 已換掉 `hare.fill` 占位。
 **未做 / 缺口**：
 - **角色未命名、無故事背景**：可以後續和小孩討論取名（小老師、老師姐姐…），決定後寫進文案。
-- **教師圖原檔有深色漸層背景**：目前直接用 cornerRadius 切角呈現，沒做去背。若想要乾淨剪影，需要重新生成圖或用 alpha 去背工具處理。
+- ~~**教師圖原檔有深色漸層背景**~~：**校正 2026-05-25**：原始 sheet 上的暗色漸層只是來源圖背景，每張切出的 tile (`teacher_portrait_1/2/3`、`teacher_desk_1/2/3`) 本身就是透明 PNG，已去背完成。
 - **Dynamic Type / 高對比 / iPad 適配未驗證**：§1.5、§8 提到的無障礙與 iPad 大畫面排版可能在 11/13 吋上看起來空蕩或元件位置怪。
 - 深色模式停用決策未明確寫進 code。
 > 這原本是「次要」階段，但因目標族群是 5~8 歲，**升級為核心階段**。建議跟 Phase 4-5 並行進行，讓主畫面、選擇題卡片、基礎教學畫面與直式解答的視覺風格統一。
@@ -436,7 +436,8 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 
 **Phase 1-7 期間的占位方案**：用 SF Symbol（例如 `figure.child`、`hare.fill`、`pawprint.fill`）放在角落，搭建好「mascot 顯示位置 + 5 種情緒切換」的程式架構，等 Phase 8 確定角色後直接換圖。
 
-### Phase 9 — （選做）直式乘法與除法 ❌ **NOT STARTED** (2026-05-24)
+### Phase 9 — （選做）直式乘法與除法 ⏸ **DEFERRED TO v2** (2026-05-25)
+> 本版不做，未來 v2 再考慮。Android 也尚未實作，沒有追平壓力。
 **範圍**
 - 乘法：部分積分行 + 進位 + 最終加總。
 - 除法：長除法（商上方對齊 / 每步 multiply-down / subtract / bring-down / remainder）。
@@ -470,86 +471,87 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 
 ## 7. 下一步
 
-**進度總覽 (2026-05-24)**
+**進度總覽 (2026-05-25)**
 
 | Phase | 狀態 | 摘要 |
 |------|------|------|
 | 1 資料模型 | ✅ DONE | 13 測試綠燈、修掉 Android 借位穿 0 bug |
 | 2 Addition 直式 | ✅ DONE | `AdditionHintView` 完成 |
 | 3 Subtraction 直式 | ✅ DONE | 三層借位 + 6 色循環；橫向 layout 未驗證 |
-| 4 選擇題 + Distractor | ✅ DONE | 預設選擇題；乘除 distractor 較弱、手寫閉環缺 |
-| 5 教學區 Lessons | ⚠️ PARTIAL | L1-L5 + 九九乘法可玩；開場動畫、具象圖示、朗讀音檔缺 |
-| 6 Animated 直式 | ⚠️ PARTIAL | spring 揭露完成；音效未接、API 邊界保護缺 |
-| 7 ProblemGenerator + 設定 | ⚠️ PARTIAL | 主功能完成；音效播放未實作 |
-| 8 兒童化 UI + 吉祥物 | ⚠️ PARTIAL | 視覺語言已套；吉祥物只是 SF Symbol 占位；無障礙 / iPad 未驗證 |
-| 9 直式乘除 | ❌ NOT STARTED | 選做 |
+| 4 選擇題 + Distractor | ✅ DONE | 預設選擇題；乘除 distractor 強化 (鄰近九九、商±1) |
+| 5 教學區 Lessons | ✅ MOSTLY DONE | L1-L5 + 九九乘法可玩；L1/L2/L3 彩色具象圖示完成；99 乘法 TTS 朗讀完成；星星標準 & 99 開場動畫延 v2 |
+| 6 Animated 直式 | ✅ DONE | spring 揭露 + 音效 + API 邊界保護皆完成 |
+| 7 ProblemGenerator + 設定 | ✅ DONE | 設定移至主頁解決即時生效落差；死方法清理 |
+| 8 兒童化 UI + 吉祥物 | ⚠️ PARTIAL | 視覺語言 + 教師吉祥物已套；深色模式已停用；Dynamic Type / iPad 未驗證；角色未命名 |
+| 9 直式乘除 | ⏸ v2 | 本版不做 |
+| 10 應用題（想一想）| ✅ DONE | 新增第三大入口；1-3 年級題型模板共 60+ 個；MCQ / 手寫雙模式；含動畫教學 |
+| 11 MCQ 主動式教學按鈕 | ✅ DONE | Drill / Lesson / 應用題 三處 MCQ 都加上「看怎麼算」按鈕，主動觸發動畫直式或文字 hint |
 
-**建議下一步優先順序**（依「影響使用者體感 × 阻擋程度」排）：
-1. **吉祥物決策（§8.1 三選一）+ 補齊 5 種情緒**：目前是占位 SF Symbol，每次答題回饋都看得到，影響感受最直接。
-2. **音效系統接線（Phase 6/7 共用）**：寫一個 `SoundManager` 包 `AVAudioPlayer`，接 hint 揭露、答對、答錯、按鈕。需要音檔資產（或暫用系統音）。
-3. **L1-L5 開場示範動畫**：教學區現在「沒在教學」、直接抽題，違背 Phase 5 設計初衷。
-4. **工程清理**：刪 `StandardHintView` / `MultiLayerHintView` / `DrawingCanvasView_new.h` / `.backup`、`SettingsViewController` 死方法；幫 `AnimatedHintView` 加 API 邊界。
-5. **測試補洞**：`MakeBreakTenHintView` / `LessonViewController` / `MultiplicationTableViewController` / `MainMenuViewController` 沒測；UI 互動測試（XCUITest）整體缺。
-6. **D3 三位數 MCQ 視覺驗證**、橫向 layout 驗證、Dynamic Type / iPad 驗證。
-7. **手寫模式對答案閉環**（次要 — 預設使用者用選擇題）。
+**剩餘建議下一步**（v1 收尾用，v2 範圍另議）：
+1. **角色命名 / 故事背景**（§10.3）：和小孩討論取名後寫進文案。
+2. **Dynamic Type / 高對比 / iPad 適配實機驗證**（§10.7）：需要實機與 sim 多尺寸目視；無法純由 code 完成。
+3. **D3 三位數 MCQ 視覺驗證**（§10.5）：sim 跑一次刷題 D3，目視確認大數字下卡片不擠。
+4. **XCUITest 端到端**（§10.8）：「點 MCQ → 答對 → 換題」最小流程，避免 UI 改動造成 regression。
 
 完整缺口清單見 §10。
 
 ---
 
-## 10. 待補項目盤點（2026-05-24）
+## 10. 待補項目盤點（2026-05-25 更新）
 
 > 集中列出當前所有已知 gap，供下次開工挑選。已分類整理避免散落在各 phase。
 
-### 10.1 工程清理（低風險、易做）
-- 刪 `StandardHintView` 與 `MultiLayerHintView`（§3.1 計畫要刪，仍編譯進專案但已不在 hint 循環，留著當 fallback）。
-- 刪 `SettingsViewController` 殘留死方法：`configureProblemSettingCell:`、`showDigitPicker:`。
-- 刪 `DrawingCanvasView_new.h` 與 `.backup`（§5.1 歷史包袱）。
-- ~~幫 `AnimatedHintView` 加 API 邊界保護~~ ✅ 2026-05-25 修：`AdditionHintView` / `SubtractionHintView` header 公開 `gridContainer` readonly property，`AnimatedHintView` 改用 isKindOfClass 分派而非 `subviews.firstObject`。
+### 10.1 工程清理 ✅ DONE (2026-05-25)
+- ✅ 刪 `StandardHintView` 與 `MultiLayerHintView`（已從 ViewController.h import 移除、檔案刪除）。
+- ✅ 刪 `SettingsViewController` 殘留死方法：`configureProblemSettingCell:`、`showDigitPicker:`、`allowNegativeToggled:`。
+- ✅ 刪 `DrawingCanvasView_new.h`、`DrawingCanvasView.h.backup`、根目錄殘留的 `ViewController.h`（不在 sync group 內的孤兒檔）。
+- ✅ `AnimatedHintView` API 邊界保護：`AdditionHintView` / `SubtractionHintView` 公開 `gridContainer` readonly property。
 
-### 10.2 音效系統（完全未做）
-- `SettingsManager.soundEffectsEnabled` 有 setting 但沒 hook：答對叮、答錯哎、彈跳聲、按鈕音都未實作。
-- 需要：`SoundManager` 包 `AVAudioPlayer`、音檔資產（或先用系統音）。
-- Phase 6 揭露音效、Phase 1 §1.2 按鈕音、Phase 8 答對 / 答錯回饋音都依賴此系統。
+### 10.2 音效系統 ✅ DONE
+- `SoundManager` 使用 SystemSoundID + `UINotificationFeedbackGenerator`，接答對 / 答錯 / 揭露 / 按鈕。
+- 自製 `.caf` 音檔資產延後到 v2。
 
-### 10.3 吉祥物（§8.1 決策延後）
-- 目前用 SF Symbol `hare.fill` 占位。
-- 三選一決策未做：A 沿用小豬豬 / B 同畫風新角色 / C 共用模組。
-- 動畫框架只實作 idle / happy / shake 三種半，原規劃 5 種（idle / happy / thinking / cheering / talking）尚缺。
+### 10.3 吉祥物 ✅ DONE (2026-05-25)
+- ✅ 選 B 變體：自製教師角色（chibi 小老師），6 frame（portrait/desk 各 3）已切並接上。
+- ✅ 教師圖原檔即透明 PNG，去背工作不存在（2026-05-25 校正）。
+- ✅ **角色定名「梅西老師」**（math 諧音）：主畫面 subtitle、設定開關、`MascotView.accessibilityLabel` 三處接上。
+- `MascotView` 已含 6 情緒（idle / happy / thinking / cheering / shake / talking）。
+- 故事背景延 v2（可後續和小孩討論加深）。
 
 ### 10.4 教學內容深度
-- **L1-L5「先看示範」開場動畫缺**：每課應有開場動畫（§2.1 規格），目前抽題就直接進選擇題。
-- L1/L2 具象圖示（蘋果、餅乾、小熊）只用「●」黑點，沒有彩色 SF Symbol 圖示池。
-- 九九乘法朗讀音檔（§2.1 cell 點按播「七八五十六」）未做。
-- 星星標準（≥50% 一星 / ≥75% 兩星 / ≥95% 三星）沒寫測試，且沒和產品 / 教育顧問確認。
+- ✅ L1/L2/L3 lesson 內部 hint 已從 ● 換成彩色 SF Symbol 圖示池（蘋果/葉子/星星/愛心/魚/鳥/烏龜/瓢蟲）+ 減法用斜線標示「拿走」。
+- ✅ 九九乘法表 cell 點按用 `AVSpeechSynthesizer` 朗讀口訣（zh-TW Premium → Enhanced → zh-CN → 預設），口訣依台灣慣例（「二五一十」「三五十五」「七八五十六」）。
+- ⏸ **v2**：九九乘法自製錄音音檔（目前用 TTS 暫代）。
+- ⏸ **v2**：九九乘法開場動畫（目前直接進答題）。
+- ⏸ **v2**：星星標準測試與教育顧問確認。
 
 ### 10.5 Drill / 設定
-- **手寫模式對答案閉環缺**：目前手寫只是畫板和按鈕，沒有「我寫完了 → 對答案 → 紀錄」流程。
-- D3 三位數題目視覺驗證缺：MCQ 卡片字級在大數字（如 1234）上可能擠 — 沒實機 / 模擬器目視驗證。
-- 設定變更即時生效體感落差：`viewWillAppear` 重抓 settings，使用者切 drillTier 下一題才生效，可能體感落差。
+- ✅ 設定入口移至 `MainMenuViewController` 右上角；ViewController 不再有 settings 按鈕。**體感即時性問題自動解決**：使用者只能在進入刷題 / 教學區之前改設定。
+- ⏸ **手寫模式對答案閉環缺**：預設使用者用 MCQ，此為次要功能，v2 再考慮。
+- ⚠️ D3 三位數 MCQ 視覺驗證仍未跑（需手動 sim）。
 
-### 10.6 Distractor 缺口
-- 乘除法的 distractor 仍依賴 ±1 / ±10 fallback — 對乘法可能太簡單。
-- 「個位/十位顛倒」與「忘進位」邏輯只對加減特化。
+### 10.6 Distractor 強化 ✅ DONE (2026-05-25)
+- 乘法 distractor 加入：a±1×b 鄰近九九、a×b±a 多/少一倍、互換九九錯記。
+- 除法 distractor 加入：商±1（試商錯）、除數±1（記錯除數）。
 
-### 10.7 無障礙 / 多尺寸（§1.5、§8 未驗證）
-- Dynamic Type 至少支援到 XL：未驗證。
-- 高對比模式：未驗證。
-- iPad 11/13 吋大畫面排版：未驗證，可能看起來空蕩或元件位置怪。
-- `SubtractionHintView` 在 6 列高度 ≤ 48pt 的窄場景（手機橫向）字會擠，layout fallback 撐到 48 最小但未實機驗證橫向。
+### 10.7 無障礙 / 多尺寸（§1.5、§8）
+- ✅ 深色模式停用：`Info.plist` 加入 `UIUserInterfaceStyle = Light`，鎖定淺色模式（兒童 app 不需深色）。
+- ❌ Dynamic Type 至少支援到 XL：未驗證。
+- ❌ 高對比模式：未驗證。
+- ❌ iPad 11/13 吋大畫面排版：未驗證。
+- ❌ `SubtractionHintView` 手機橫向窄場景未實機驗證。
 
-### 10.8 測試覆蓋缺口
-- `MakeBreakTenHintView`、`LessonViewController`、`MultiplicationTableViewController`、`MainMenuViewController` 沒測（連 smoke 都沒）。
-- UI 互動測試（XCUITest）缺：「點 MCQ → 答對 → 換題」端到端流程未驗證。
-- 視覺迴歸測試（snapshot test）整體缺。
+### 10.8 測試覆蓋 ✅ MOSTLY DONE (2026-05-25)
+- ✅ 新增 `SmokeTests`：`MakeBreakTenHintView`（合十 / 破十 / 拒絕加法）、`MainMenuViewController`、`LessonsHomeViewController`、`MultiplicationTableViewController`、`LessonViewController`（加法 / 乘法），8 個測試全綠。
+- ❌ UI 互動測試（XCUITest）仍缺。
+- ❌ 視覺迴歸測試（snapshot test）整體缺。
 
 ### 10.9 文件
-- PLAN.md（本檔）Phase 3-8 的「Done when」與實際決策已在本次回寫；後續每完成一階段持續更新即可。
-- 沒有 demo screenshot 或試玩記錄。
+- ✅ PLAN.md（本檔）每階段持續同步。
+- ❌ 沒有 demo screenshot 或試玩記錄。
 
-### 10.10 Phase 9（選做、未開工）
-- 直式乘法 hint（部分積分行 + 進位 + 最終加總）。
-- 直式長除法 hint（multiply-down / subtract / bring-down / remainder）。
+### 10.10 Phase 9 ⏸ DEFERRED TO v2
+- 直式乘法、直式長除法本版不做（Android 也尚未實作，無追平壓力）。
 
 ## 11. Bug Bash — 2026-05-25
 
@@ -567,3 +569,134 @@ Standard / MultiLayer 兩個老 class 在新體系成形後**刪除**（或保�
 | 8 | `ViewController.m` | `answerLabel` 永遠 hidden 但 height=28pt + top gap=8pt 撐出 36pt 死空間，小螢幕 hint 區被擠。 | `answerLabel.heightAnchor=0`；`hintHost.top` 改 anchor 到 `problemLabel.bottom + 12`。 |
 | 9 | `SettingsViewController.m` | `tableView` 透明但 cell 預設不透明 systemBackground → light mode「白塊雜燴」、dark mode 對比刺眼。 | cell 半透明 white α=0.7、contentView clear，融入薰衣草背景。 |
 | 10 | `LessonIntroView.m:startTapped` | `startButton` 沒 disable，0.3s 淡出期間連點兩下會跑兩次 `lessonIntroDidFinish` → 兩條入場動畫 / mcq 重 shuffle。 | `startTapped` / `startButton` + `replayButton` 立即 disable。 |
+
+---
+
+## 12. 語音情緒升級方案（2026-05-25 討論，待決定）
+
+> 現況：`MultiplicationTableViewController` 用 `AVSpeechSynthesizer` 朗讀九九口訣。即使選了 zh-TW Premium voice，**情緒平板、缺乏抑揚頓挫**，孩子聽久了會覺得是機器人念書。
+> 本節記錄三條升級路徑與取捨，**待決定再動工**。
+
+### 12.1 三條路徑
+
+| 路徑 | 做法 | App size | 開發成本 | 音質 / 情緒 | 動態能力 |
+|------|------|---------|---------|------------|---------|
+| **A 預烤 bundled audio**（推薦） | 雲端 TTS（ElevenLabs / OpenAI tts-1-hd / Azure Neural with SSML / Google Chirp3-HD）一次烤 ~100 句 → 塞進 bundle | +5-15 MB | 1-2 小時 | ★★★★★ 最佳 | 只能播預錄內容 |
+| **B On-device AI TTS** | 把 Kokoro / MeloTTS 轉 Core ML → 包進 app → runtime 推論 | +150-300 MB | 2 週起跳 | ★★★☆☆（比預烤差，比系統 TTS 好） | 任意文字皆可念 |
+| **C 維持現況 + 改善 SSML / 參數** | 調 `pitchMultiplier` / `rate` / `preUtteranceDelay`，按情境換 voice | +0 MB | 1-2 小時 | ★★☆☆☆ 略有改善 | 維持系統 TTS |
+
+### 12.2 路徑 A 細節（預烤）
+
+**需要烤的句子清單**（初估，約 100 句）：
+- 81 句九九口訣（一一得一 ~ 九九八十一）
+- 鼓勵語 ~10 句（「答對了！」「再想想看～」「差一點點」「好棒！」「梅西老師為你拍拍手」…）
+- 教學引導 ~10 句（合十法 / 破十法步驟）
+
+**雲端 TTS 比較**：
+| 服務 | 中文品質 | 情緒控制 | 價格（1M chars） |
+|------|---------|---------|----------------|
+| **ElevenLabs Multilingual v2** | 頂級、情緒最豐富 | 內建 emotion tag | ~$22/M chars (creator plan) |
+| **OpenAI tts-1-hd** | 高，自然 | voice presets (alloy/nova...) | $30/M chars |
+| **Azure Neural TTS** | 高 | SSML 完整支援 `<prosody>` `<express-as>` | $16/M chars |
+| **Google Chirp3-HD** | 高 | 較 robotic 但穩定 | $16/M chars |
+
+100 句 × ~10 字 ≈ 1000 chars → **一次性 $0.02-0.03**，便宜到忽略不計。
+
+**音檔格式建議**：
+- iOS 用 `.caf` (PCM @ 22050Hz 16-bit mono) 或 `.m4a` (AAC 64kbps)
+- 100 句 × 1.5 秒 × AAC 64kbps ≈ 1.2 MB；用 PCM ≈ 6 MB
+- 推薦 `.m4a`，畫質損失對人聲不明顯
+
+**程式架構**：
+```
+BakedVoiceManager（單例）
+  - playUtterance:(NSString *)key  // e.g. @"mul_2_5", @"praise_correct"
+  - 內部用 NSDictionary 對應 key → bundle 資源檔
+  - AVAudioPlayer + AVAudioSession (.playback, .duckOthers)
+  - fallback：找不到對應 key 時退回 AVSpeechSynthesizer
+```
+
+**MultiplicationTableViewController 接點**：
+- `rowTapped:` 從 `[self chantForA:b:]` + `speakUtterance` 改成 `[BakedVoiceManager playMulA:b:]`
+
+**烤音檔流程**：
+- Python script（一次性）：讀 `chants.json` → 呼叫 ElevenLabs API → 存成 `mul_X_Y.m4a`
+- 結果丟進 `Assets.xcassets` 或 bundle resources
+
+### 12.3 路徑 B 細節（on-device AI TTS）
+
+**iPad 跑得動哪些**：
+| 模型 | 大小 | 中文支援 | iPad 適配性 |
+|------|------|---------|------------|
+| **Kokoro TTS**（2024，82M params）| ~300 MB FP16 / ~150 MB int8 | zh, en, ja | M1+ 流暢；A14+ 邊緣 |
+| **MeloTTS** | ~75 MB | zh-CN 為主（zh-TW 發音偏中國腔）| A12+ 可跑 |
+| **StyleTTS 2** | ~600 MB | 中文需 fine-tune | 只建議 M1+ iPad |
+| **OuteTTS**（LLM-based, ~500M params）| ~500 MB | 多語 | M1+ 邊緣 |
+
+**整合成本**：
+1. PyTorch → Core ML 轉換（coremltools）：1-3 天，ops 相容性可能踩雷
+2. Audio session + 推論執行緒：1-2 天
+3. Warm-up / 預載：1 天
+4. zh-TW vs zh-CN 發音差異微調：?? 天（**真痛點**，多數模型訓 zh-CN）
+
+**用 ANE 必要條件**：模型必須轉成 Core ML mlprogram 格式且 ops 都支援 ANE。PyTorch / ONNX 只能跑 CPU/GPU，效能差很多。
+
+### 12.4 決策建議
+
+- **本版（v1）**：先做路徑 A（雲端預烤）。投入 1-2 小時，立即聽到差別，孩子的體驗大幅提升。
+- **v2 或之後**：若有「動態合成」需求（例如梅西念出當下答對的題目、念出小孩名字），再考慮路徑 B。**目前的 app 沒有任何動態語音需求**，所以 B 過頭。
+- **路徑 C 不建議**：邊際改善太小、不值得花時間。
+
+### 12.5 待決定事項
+
+- [ ] 用哪家雲端 TTS（推 ElevenLabs > Azure，看授權偏好）
+- [ ] 梅西老師的 voice 風格（清亮少女老師 / 溫柔大姐姐 / ?）
+- [ ] 音檔授權方式（嵌入 app 是否合規 — 通常 commercial-use plan 包含）
+- [ ] 是否一次烤多情緒（同一句答對有 2-3 個版本隨機播）
+- [ ] 烤音檔是否進 git LFS / Assets.xcassets / 獨立 resources 目錄
+
+---
+
+## 13. Phase 10 — 應用題（想一想）✅ DONE (2026-05-25)
+
+> 第三個主入口，與「學一學」「練一練」並列。讓孩子練習從文字描述中抽出算式，補強情境理解（與目前只練純算式的兩條路徑互補）。
+
+### 13.1 架構
+
+| 元件 | 角色 |
+|------|------|
+| `WordProblem` | 一道生成好的應用題：故事文字 + 算式 + 答案 + 單位。可橋接到 `ArithmeticProblem`（給 DistractorGenerator / Hint views 用）。 |
+| `WordProblemTemplate` | 題型模板：含 storyPattern（`{a}` `{b}` 佔位符）、運算子、操作數範圍、減法/除法約束。 |
+| `WordProblemCatalog` | 集中所有題型，按 grade 1/2/3 分類，共 **60+ 個模板**。 |
+| `WordProblemGenerator` | 抽模板 → 隨機數字 → 驗證約束 → 生成 `WordProblem`。避免連兩題同模板。 |
+| `WordProblemHomeViewController` | 選年級畫面（三張大卡）。 |
+| `WordProblemViewController` | 主答題畫面：故事卡 + 算式提示行 + MCQ / 手寫 + 「看怎麼算」教學按鈕。 |
+
+### 13.2 題型搜集（依台灣小學數學教材常見情境）
+
+- **1 年級（20 以內加減）**：14 個加法 + 14 個減法情境（合併 / 添加 / 拿走 / 比較多 / 差幾…）。
+- **2 年級（100 以內加減 + 九九乘法）**：10 個加法 + 9 個減法 + 14 個乘法情境（每盤 / 倍數 / 一組多少…）。
+- **3 年級（三位數加減 + 一位數×兩位數 + 除法）**：5+5+8 加減乘 + 10 個除法情境（平分 / 包含除 / 倍數…）。
+
+### 13.3 答題流程
+
+- 走既有 `SettingsManager.answerMode`：MCQ（預設）或手寫。
+- MCQ：用 `DistractorGenerator` 自動產生 distractor（純算式答案，與既有刷題一致）。
+- 錯題遞進：第 1 次只搖頭，第 2 次自動展開動畫教學，第 3 次揭示答案。
+- 主動觸發：題目右上「看怎麼算」按鈕，加減顯示 `AnimatedHintView`，乘除顯示文字算式。
+
+### 13.4 已知 gap（v2 可補）
+
+- 應用題本身的「題意理解」hint 缺：目前的動畫只示範算式（加減直式），不會具象重現「拿走 X 顆糖」這樣的圖示。
+- 模板可繼續擴充：例如二步應用題（先加再減）、比較類的進階變化、長度單位換算（公分/公尺）等。
+- 沒有按題型統計 / 累計獎勵：目前是無盡刷，沒有「完成 50 題拿星星」的進度。
+- 三年級的 distractor 對除法可能太簡單（僅 ±1 / ±10）— 雖然 DistractorGenerator 已有除法強化，但未針對應用題情境再加（如「除錯方向：用減代替除」）。
+
+## 14. Phase 11 — MCQ 主動式教學按鈕 ✅ DONE (2026-05-25)
+
+> 原本 MCQ 只在答錯 2 次後才彈出 hint，孩子若一開始就不知怎麼算，會先吃 2 次挫敗才看到教學。本階段加上主動觸發按鈕。
+
+- `ViewController.m`（刷題）：closeButton 同列右側加 `mcqTutorialButton`，MCQ 模式顯示，再次點擊可收起。
+- `LessonViewController.m`（教學）：同樣加 `tutorialButton`，主動展開 / 收起該題的 hint（具象圖示 / 合十破十 / 文字）。
+- `WordProblemViewController.m`（應用題）：原生帶 `tutorialButton`。
+- 點擊行為：加減用 `AnimatedHintView` 逐位 spring 揭露；乘除用文字 hint（重複加 / 反向乘的分解）。

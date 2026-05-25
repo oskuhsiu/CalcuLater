@@ -19,48 +19,58 @@
     return self;
 }
 
+- (id)_objOrDefault:(NSString *)key {
+    return [[NSUserDefaults standardUserDefaults] objectForKey:key];
+}
+
 - (void)loadSettings {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    
-    // Load problem generation settings with defaults
-    self.digits1 = [defaults objectForKey:@"digits1"] ? [defaults integerForKey:@"digits1"] : 2;
-    self.digits2 = [defaults objectForKey:@"digits2"] ? [defaults integerForKey:@"digits2"] : 2;
-    self.allowNegativeResults = [defaults objectForKey:@"allowNegativeResults"] ? [defaults boolForKey:@"allowNegativeResults"] : NO;
-    
-    // Load operation settings with defaults
-    self.operationAddition = [defaults objectForKey:@"operationAddition"] ? [defaults boolForKey:@"operationAddition"] : YES;
-    self.operationSubtraction = [defaults objectForKey:@"operationSubtraction"] ? [defaults boolForKey:@"operationSubtraction"] : YES;
-    self.operationMultiplication = [defaults objectForKey:@"operationMultiplication"] ? [defaults boolForKey:@"operationMultiplication"] : NO;
-    self.operationDivision = [defaults objectForKey:@"operationDivision"] ? [defaults boolForKey:@"operationDivision"] : NO;
-    
-    // Load hint settings with defaults
-    self.hintShowAnswer = [defaults objectForKey:@"hintShowAnswer"] ? [defaults boolForKey:@"hintShowAnswer"] : YES;
-    self.hintStandard = [defaults objectForKey:@"hintStandard"] ? [defaults boolForKey:@"hintStandard"] : YES;
-    self.hintMultiLayer = [defaults objectForKey:@"hintMultiLayer"] ? [defaults boolForKey:@"hintMultiLayer"] : YES;
-    self.hintAnimated = [defaults objectForKey:@"hintAnimated"] ? [defaults boolForKey:@"hintAnimated"] : YES;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+
+    self.digits1 = [self _objOrDefault:@"digits1"] ? [d integerForKey:@"digits1"] : 2;
+    self.digits2 = [self _objOrDefault:@"digits2"] ? [d integerForKey:@"digits2"] : 2;
+    self.allowNegativeResults = [self _objOrDefault:@"allowNegativeResults"] ? [d boolForKey:@"allowNegativeResults"] : NO;
+
+    self.drillTier = [self _objOrDefault:@"drillTier"] ? [d integerForKey:@"drillTier"] : 2;
+
+    self.operationAddition = [self _objOrDefault:@"operationAddition"] ? [d boolForKey:@"operationAddition"] : YES;
+    self.operationSubtraction = [self _objOrDefault:@"operationSubtraction"] ? [d boolForKey:@"operationSubtraction"] : YES;
+    self.operationMultiplication = [self _objOrDefault:@"operationMultiplication"] ? [d boolForKey:@"operationMultiplication"] : NO;
+    self.operationDivision = [self _objOrDefault:@"operationDivision"] ? [d boolForKey:@"operationDivision"] : NO;
+
+    self.hintShowAnswer = [self _objOrDefault:@"hintShowAnswer"] ? [d boolForKey:@"hintShowAnswer"] : YES;
+    self.hintStandard = [self _objOrDefault:@"hintStandard"] ? [d boolForKey:@"hintStandard"] : YES;
+    self.hintMultiLayer = [self _objOrDefault:@"hintMultiLayer"] ? [d boolForKey:@"hintMultiLayer"] : YES;
+    self.hintAnimated = [self _objOrDefault:@"hintAnimated"] ? [d boolForKey:@"hintAnimated"] : YES;
+
+    self.answerMode = [self _objOrDefault:@"answerMode"] ? (AnswerMode)[d integerForKey:@"answerMode"] : AnswerModeMultipleChoice;
+    self.soundEffectsEnabled = [self _objOrDefault:@"soundEffectsEnabled"] ? [d boolForKey:@"soundEffectsEnabled"] : YES;
+    self.mascotEnabled = [self _objOrDefault:@"mascotEnabled"] ? [d boolForKey:@"mascotEnabled"] : YES;
 }
 
 - (void)saveSettings {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    
-    // Save problem generation settings
-    [defaults setInteger:self.digits1 forKey:@"digits1"];
-    [defaults setInteger:self.digits2 forKey:@"digits2"];
-    [defaults setBool:self.allowNegativeResults forKey:@"allowNegativeResults"];
-    
-    // Save operation settings
-    [defaults setBool:self.operationAddition forKey:@"operationAddition"];
-    [defaults setBool:self.operationSubtraction forKey:@"operationSubtraction"];
-    [defaults setBool:self.operationMultiplication forKey:@"operationMultiplication"];
-    [defaults setBool:self.operationDivision forKey:@"operationDivision"];
-    
-    // Save hint settings
-    [defaults setBool:self.hintShowAnswer forKey:@"hintShowAnswer"];
-    [defaults setBool:self.hintStandard forKey:@"hintStandard"];
-    [defaults setBool:self.hintMultiLayer forKey:@"hintMultiLayer"];
-    [defaults setBool:self.hintAnimated forKey:@"hintAnimated"];
-    
-    [defaults synchronize];
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+
+    [d setInteger:self.digits1 forKey:@"digits1"];
+    [d setInteger:self.digits2 forKey:@"digits2"];
+    [d setBool:self.allowNegativeResults forKey:@"allowNegativeResults"];
+
+    [d setInteger:self.drillTier forKey:@"drillTier"];
+
+    [d setBool:self.operationAddition forKey:@"operationAddition"];
+    [d setBool:self.operationSubtraction forKey:@"operationSubtraction"];
+    [d setBool:self.operationMultiplication forKey:@"operationMultiplication"];
+    [d setBool:self.operationDivision forKey:@"operationDivision"];
+
+    [d setBool:self.hintShowAnswer forKey:@"hintShowAnswer"];
+    [d setBool:self.hintStandard forKey:@"hintStandard"];
+    [d setBool:self.hintMultiLayer forKey:@"hintMultiLayer"];
+    [d setBool:self.hintAnimated forKey:@"hintAnimated"];
+
+    [d setInteger:(NSInteger)self.answerMode forKey:@"answerMode"];
+    [d setBool:self.soundEffectsEnabled forKey:@"soundEffectsEnabled"];
+    [d setBool:self.mascotEnabled forKey:@"mascotEnabled"];
+
+    [d synchronize];
 }
 
 @end

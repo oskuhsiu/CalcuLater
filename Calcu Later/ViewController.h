@@ -9,17 +9,7 @@
 #import "DrawingCanvasView.h"
 #import "ArithmeticProblem.h"
 #import "SettingsManager.h"
-#import "StandardHintView.h"
-#import "MultiLayerHintView.h"
 #import "AnimatedHintView.h"
-
-typedef NS_ENUM(NSInteger, HintState) {
-	 HintStateNone,
-	 HintStateShowAnswer,
-	 HintStateStandard,
-	 HintStateMultiLayer,
-	 HintStateAnimatedMultiLayer
-};
 
 @interface ViewController : UIViewController
 

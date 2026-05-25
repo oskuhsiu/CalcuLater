@@ -47,7 +47,7 @@
         @[@"題目範圍"],
         @[@"加法", @"減法", @"乘法", @"除法"],
         @[@"顯示答案", @"標準提示", @"分層提示", @"動畫提示"],
-        @[@"音效", @"吉祥物"]
+        @[@"音效", @"梅西老師"]
     ];
 }
 
@@ -124,21 +124,6 @@
 - (void)otherToggled:(UISwitch *)s {
     if (s.tag == 300) self.settingsManager.soundEffectsEnabled = s.isOn;
     else if (s.tag == 301) self.settingsManager.mascotEnabled = s.isOn;
-}
-
-- (void)configureProblemSettingCell:(UITableViewCell *)cell atIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.row == 0) { // First number digits
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld", (long)self.settingsManager.digits1];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    } else if (indexPath.row == 1) { // Second number digits
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld", (long)self.settingsManager.digits2];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    } else if (indexPath.row == 2) { // Allow negative results
-        UISwitch *toggle = [[UISwitch alloc] init];
-        toggle.on = self.settingsManager.allowNegativeResults;
-        [toggle addTarget:self action:@selector(allowNegativeToggled:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = toggle;
-    }
 }
 
 - (void)configureOperationSettingCell:(UITableViewCell *)cell atIndexPath:(NSIndexPath *)indexPath {
@@ -246,43 +231,7 @@
     [self presentViewController:a animated:YES completion:nil];
 }
 
-- (void)showDigitPicker:(BOOL)isFirstNumber {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:isFirstNumber ? @"第一個數字位數" : @"第二個數字位數"
-                                                                   message:@"選擇位數"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    
-    for (NSInteger i = 1; i <= 5; i++) {
-        NSString *title = [NSString stringWithFormat:@"%ld 位數", (long)i];
-        UIAlertAction *action = [UIAlertAction actionWithTitle:title
-                                                         style:UIAlertActionStyleDefault
-                                                       handler:^(UIAlertAction * _Nonnull action) {
-            if (isFirstNumber) {
-                self.settingsManager.digits1 = i;
-            } else {
-                self.settingsManager.digits2 = i;
-            }
-            [self.tableView reloadData];
-        }];
-        [alert addAction:action];
-    }
-    
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil];
-    [alert addAction:cancelAction];
-    
-    // For iPad support
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-        alert.popoverPresentationController.sourceView = self.view;
-        alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
-    }
-    
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
 #pragma mark - Toggle Actions
-
-- (void)allowNegativeToggled:(UISwitch *)sender {
-    self.settingsManager.allowNegativeResults = sender.isOn;
-}
 
 - (void)operationToggled:(UISwitch *)sender {
     switch (sender.tag) {
