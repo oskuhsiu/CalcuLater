@@ -3,6 +3,7 @@
 #import "LessonViewController.h"
 #import "LessonProgressStore.h"
 #import "MultiplicationTableViewController.h"
+#import "OperationTableViewController.h"
 #import "ChildUIKit.h"
 #import "DecorativeBackgroundView.h"
 
@@ -58,7 +59,8 @@
 - (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)cv { return 2; }
 
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
-    return section == 0 ? (NSInteger)self.addSubLessons.count : 1;
+    // section 1 是「查表」區：加法表、減法表、九九乘法表。
+    return section == 0 ? (NSInteger)self.addSubLessons.count : 3;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
@@ -97,10 +99,25 @@
         for (NSInteger i = 0; i < 3; i++) [str appendString:i < s ? @"★" : @"☆"];
         stars.text = str;
     } else {
-        icon.image = [UIImage systemImageNamed:@"square.grid.3x3.fill"];
-        icon.tintColor = ChildUI.lavender;
-        title.text = @"九九乘法表";
+        // 查表區：0=加法表、1=減法表、2=九九乘法表
         stars.text = @"";
+        switch (ip.item) {
+            case 0:
+                icon.image = [UIImage systemImageNamed:@"plus.square.fill"];
+                icon.tintColor = ChildUI.mintGreen;
+                title.text = @"加法表";
+                break;
+            case 1:
+                icon.image = [UIImage systemImageNamed:@"minus.square.fill"];
+                icon.tintColor = ChildUI.skyBlue;
+                title.text = @"減法表";
+                break;
+            default:
+                icon.image = [UIImage systemImageNamed:@"square.grid.3x3.fill"];
+                icon.tintColor = ChildUI.lavender;
+                title.text = @"九九乘法表";
+                break;
+        }
     }
 
     [NSLayoutConstraint activateConstraints:@[
@@ -136,7 +153,17 @@
         Lesson *l = self.addSubLessons[ip.item];
         vc = [[LessonViewController alloc] initWithLesson:l];
     } else {
-        vc = [[MultiplicationTableViewController alloc] init];
+        switch (ip.item) {
+            case 0:
+                vc = [[OperationTableViewController alloc] initWithKind:OperationTableKindAddition];
+                break;
+            case 1:
+                vc = [[OperationTableViewController alloc] initWithKind:OperationTableKindSubtraction];
+                break;
+            default:
+                vc = [[MultiplicationTableViewController alloc] init];
+                break;
+        }
     }
     vc.modalPresentationStyle = UIModalPresentationFullScreen;
     [self presentViewController:vc animated:YES completion:nil];

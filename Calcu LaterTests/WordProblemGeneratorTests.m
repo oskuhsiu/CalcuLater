@@ -26,7 +26,10 @@
 
     NSCountedSet<NSString *> *seen = [NSCountedSet set];
     for (WordProblemTemplate *t in all) {
-        for (NSInteger i = 0; i < 30; i++) {
+        // 抽樣次數刻意拉高：一年級新增的「兩個都是個位數就高機率重抽」軟過濾，
+        // 會讓少數「保證個位＋個位」模板（如 g1_add_candy）被選為最終題的機率變很低。
+        // 30 次/模板在這種偏斜分佈下，覆蓋斷言會有約 2% 偶發失敗；80 次可把它壓到可忽略。
+        for (NSInteger i = 0; i < 80; i++) {
             WordProblem *p = [WordProblemGenerator generateForGrade:t.grade];
             XCTAssertNotNil(p);
             XCTAssertGreaterThan(p.answer, -1, @"答案不可為負: %@", p.templateID);
@@ -140,7 +143,8 @@
 
 - (void)testTwoStepInvariants {
     NSInteger checked = 0;
-    for (NSInteger grade = 2; grade <= 3; grade++) {
+    // grade 1 起：一年級新增「連續式」（連加 / 連減 / 加減混合）二步驟題，一併驗證其不變式。
+    for (NSInteger grade = 1; grade <= 3; grade++) {
         for (NSInteger i = 0; i < 400; i++) {
             WordProblem *p = [WordProblemGenerator generateForGrade:grade];
             if (!p.operator2) continue;
@@ -237,7 +241,7 @@
 - (void)testTwoStepChoicesAlwaysIncludeIntermediate {
     // intermediate（第一步結果）是孩子最典型的「忘了第二步」錯誤；MCQ 必須包含它。
     NSInteger checked = 0;
-    for (NSInteger grade = 2; grade <= 3; grade++) {
+    for (NSInteger grade = 1; grade <= 3; grade++) {
         for (NSInteger i = 0; i < 400; i++) {
             WordProblem *wp = [WordProblemGenerator generateForGrade:grade];
             if (!wp.operator2) continue;

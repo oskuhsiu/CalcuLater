@@ -10,11 +10,12 @@
 #import "DrawingCanvasView.h"
 #import "ChildUIKit.h"
 #import "SoundManager.h"
+#import "SpeechManager.h"
 #import "SettingsManager.h"
 #import "DecorativeBackgroundView.h"
 #import "MascotView.h"
 
-@interface WordProblemViewController () <MultipleChoiceAnswerViewDelegate>
+@interface WordProblemViewController () <MultipleChoiceAnswerViewDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, assign) NSInteger grade;
 @property (nonatomic, strong) WordProblem *currentProblem;
 @property (nonatomic, copy, nullable) NSString *lastTemplateID;
@@ -34,7 +35,13 @@
 // Story + equation
 @property (nonatomic, strong) UIView *storyCard;
 @property (nonatomic, strong) UILabel *storyLabel;
+@property (nonatomic, strong) UIButton *speakButton;       // 重讀題目
 @property (nonatomic, strong) UILabel *equationLabel;
+@property (nonatomic, strong) ChildButton *revealEquationButton;  // 「看算式」揭示鈕
+/// 橫式算式是否已揭示（點過「看算式」或被強制揭示答案）。一開始隱藏。
+@property (nonatomic, assign) BOOL equationRevealed;
+/// 算式是否要連答案一起顯示（答錯 3 次 / 寫作模式「看答案」時為 YES）。
+@property (nonatomic, assign) BOOL answerRevealed;
 
 // Answer
 @property (nonatomic, strong) MultipleChoiceAnswerView *mcq;
@@ -124,12 +131,35 @@
     self.storyLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.storyCard addSubview:self.storyLabel];
 
+    // 重讀題目（朗讀）：故事卡右上角喇叭鈕。新題會自動朗讀一次，此鈕用來重聽。
+    self.speakButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.speakButton setImage:[UIImage systemImageNamed:@"speaker.wave.2.fill"] forState:UIControlStateNormal];
+    self.speakButton.tintColor = ChildUI.pinkAccent;
+    self.speakButton.accessibilityLabel = @"再讀一次題目";
+    self.speakButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.speakButton addTarget:self action:@selector(speakStory) forControlEvents:UIControlEventTouchUpInside];
+    [self.storyCard addSubview:self.speakButton];
+
+    // 整張故事卡也可點來重讀（給孩子更大的點擊目標）。
+    // delegate 讓點在卡內按鈕（喇叭鈕 / 看算式鈕）上的觸控交給按鈕本身，不觸發整卡重讀。
+    UITapGestureRecognizer *cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(speakStory)];
+    cardTap.delegate = self;
+    [self.storyCard addGestureRecognizer:cardTap];
+
     self.equationLabel = [[UILabel alloc] init];
     self.equationLabel.font = [ChildUI roundedMonoFontOfSize:30.0 weight:UIFontWeightBold];
     self.equationLabel.textColor = [ChildUI.brownText colorWithAlphaComponent:0.85];
     self.equationLabel.textAlignment = NSTextAlignmentCenter;
     self.equationLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.equationLabel.hidden = YES;  // 一開始隱藏；保留版面高度，由「看算式」鈕揭示
     [self.storyCard addSubview:self.equationLabel];
+
+    // 「看算式」揭示鈕：疊在 equationLabel 位置上，讓孩子明顯知道算式藏在哪。
+    self.revealEquationButton = [ChildButton buttonWithTitle:@"🧮 看算式" backgroundColor:ChildUI.lavender];
+    self.revealEquationButton.titleLabel.font = [ChildUI roundedFontOfSize:18.0 weight:UIFontWeightSemibold];
+    self.revealEquationButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.revealEquationButton addTarget:self action:@selector(revealEquationTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.storyCard addSubview:self.revealEquationButton];
 
     // Hint host（疊在 mcq / 故事卡之上的中段區）
     self.hintHost = [[UIView alloc] init];
@@ -233,14 +263,26 @@
         [self.storyCard.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
         [self.storyCard.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
 
+        [self.speakButton.topAnchor constraintEqualToAnchor:self.storyCard.topAnchor constant:12],
+        [self.speakButton.trailingAnchor constraintEqualToAnchor:self.storyCard.trailingAnchor constant:-14],
+        [self.speakButton.widthAnchor constraintEqualToConstant:44],
+        [self.speakButton.heightAnchor constraintEqualToConstant:44],
+
         [self.storyLabel.topAnchor constraintEqualToAnchor:self.storyCard.topAnchor constant:18],
         [self.storyLabel.leadingAnchor constraintEqualToAnchor:self.storyCard.leadingAnchor constant:18],
-        [self.storyLabel.trailingAnchor constraintEqualToAnchor:self.storyCard.trailingAnchor constant:-18],
+        // trailing 讓開右上角喇叭鈕，避免題目文字壓到鈕
+        [self.storyLabel.trailingAnchor constraintEqualToAnchor:self.speakButton.leadingAnchor constant:-6],
 
         [self.equationLabel.topAnchor constraintEqualToAnchor:self.storyLabel.bottomAnchor constant:10],
         [self.equationLabel.leadingAnchor constraintEqualToAnchor:self.storyCard.leadingAnchor constant:18],
         [self.equationLabel.trailingAnchor constraintEqualToAnchor:self.storyCard.trailingAnchor constant:-18],
         [self.equationLabel.bottomAnchor constraintEqualToAnchor:self.storyCard.bottomAnchor constant:-16],
+
+        // 「看算式」鈕疊在 equationLabel 中央（equationLabel 隱藏時仍保留高度撐住卡片）
+        [self.revealEquationButton.centerXAnchor constraintEqualToAnchor:self.equationLabel.centerXAnchor],
+        [self.revealEquationButton.centerYAnchor constraintEqualToAnchor:self.equationLabel.centerYAnchor],
+        [self.revealEquationButton.heightAnchor constraintEqualToConstant:44],
+        [self.revealEquationButton.widthAnchor constraintGreaterThanOrEqualToConstant:160],
 
         // Hint host 介於故事卡與 MCQ 之間
         [self.hintHost.topAnchor constraintEqualToAnchor:self.storyCard.bottomAnchor constant:12],
@@ -353,6 +395,7 @@
 #pragma mark - Flow
 
 - (void)loadNextProblem {
+    [[SpeechManager sharedInstance] stop];  // 停掉前一題未讀完的朗讀
     [self hideAllHintViews];
     [self.canvasView clearCanvas];
     self.wrongStreakThisProblem = 0;
@@ -363,7 +406,11 @@
     self.lastTemplateID = self.currentProblem.templateID;
 
     self.storyLabel.text = self.currentProblem.storyText;
-    self.equationLabel.text = [self equationTextRevealingAnswer:NO];
+
+    // 橫式算式回到「隱藏」狀態，由「看算式」鈕揭示。
+    self.equationRevealed = NO;
+    self.answerRevealed = NO;
+    [self refreshEquationViews];
 
     if (SettingsManager.sharedInstance.answerMode == AnswerModeMultipleChoice) {
         [self configureMCQForCurrentProblem];
@@ -378,6 +425,11 @@
         self.storyCard.transform = CGAffineTransformIdentity;
         self.storyCard.alpha = 1.0;
     } completion:nil];
+
+    // 自動朗讀新題目；尊重「音效開關」（重讀鈕則為使用者明確操作，不受此限）。
+    if (SettingsManager.sharedInstance.soundEffectsEnabled) {
+        [self speakStory];
+    }
 }
 
 - (NSString *)displayOperator:(NSString *)op {
@@ -389,6 +441,56 @@
     self.streakLabel.text = self.correctStreak > 0
         ? [NSString stringWithFormat:@"連對 ×%ld 🔥", (long)self.correctStreak]
         : @"";
+}
+
+#pragma mark - Story speech (朗讀)
+
+/// 朗讀目前題目。重讀鈕與整張卡片點擊都走這裡。
+///
+/// 註：曾做過「逐字高亮」（willSpeakRangeOfSpeechString:），但在 app 偏好的
+/// Enhanced/Premium 中文嗓音下，邊界回呼時機無法緊貼實際播放位置（語音分段預合成 +
+/// 緩衝播放），高亮會明顯落後朗讀，故移除。只保留單純朗讀。
+- (void)speakStory {
+    NSString *story = self.currentProblem.storyText;
+    if (story.length == 0) return;
+    [[SpeechManager sharedInstance] speak:story];
+}
+
+/// 點在卡內的按鈕（UIControl）上時，不要觸發整卡重讀，讓按鈕自己處理。
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    return ![touch.view isKindOfClass:[UIControl class]];
+}
+
+#pragma mark - Equation reveal (橫式算式揭示)
+
+/// 依 equationRevealed / answerRevealed 狀態同步「算式文字」與「看算式鈕」的顯隱。
+- (void)refreshEquationViews {
+    self.equationLabel.text = [self equationTextRevealingAnswer:self.answerRevealed];
+    self.equationLabel.hidden = !self.equationRevealed;
+    self.revealEquationButton.hidden = self.equationRevealed;
+}
+
+/// 點「看算式」：揭示橫式算式（仍以 "?" 隱藏答案），帶一個彈跳回饋。
+- (void)revealEquationTapped {
+    if (!self.currentProblem || self.equationRevealed) return;
+    self.equationRevealed = YES;
+    [self refreshEquationViews];
+
+    self.equationLabel.transform = CGAffineTransformMakeScale(0.85, 0.85);
+    self.equationLabel.alpha = 0.0;
+    [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.55 initialSpringVelocity:0.5
+                        options:0 animations:^{
+        self.equationLabel.transform = CGAffineTransformIdentity;
+        self.equationLabel.alpha = 1.0;
+    } completion:nil];
+}
+
+/// 強制揭示答案（答錯 3 次 / 寫作模式「看答案」）：連同算式一起顯示，並關閉揭示鈕。
+- (void)revealAnswerInEquation {
+    self.answerRevealed = YES;
+    self.equationRevealed = YES;
+    [self refreshEquationViews];
 }
 
 #pragma mark - MCQ delegate
@@ -437,7 +539,7 @@
     // dispatch_after 造成多個 loadNextProblem 競態（會「跳過題目」）。
     if (self.wrongStreakThisProblem > 3) return;
     [self showHintAnimated:YES];
-    self.equationLabel.text = [self equationTextRevealingAnswer:YES];
+    [self revealAnswerInEquation];
     [self.mcq disableAllChoices];  // 與 ViewController / LessonViewController 對齊：
                                    // reveal 期間鎖按鈕，避免使用者再點到剩下的選項時，
                                    // MCQResultCorrect 路徑又 schedule 一個 0.85s loadNextProblem
@@ -709,7 +811,7 @@
 /// 不觸發 hintHost 內的 hint view，避免被 canvas 蓋住的死動作。
 - (void)revealTapped {
     if (!self.currentProblem) return;
-    self.equationLabel.text = [self equationTextRevealingAnswer:YES];
+    [self revealAnswerInEquation];
 }
 
 #pragma mark - Nav
@@ -721,6 +823,11 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self applyAnswerModeUI];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [[SpeechManager sharedInstance] stop];  // 離開畫面就停止朗讀，避免關掉後還在講話
 }
 
 @end

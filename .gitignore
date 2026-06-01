@@ -27,3 +27,7 @@ Pods/
 
 # Android reference project — separate repo, vendored as read-only reference
 CalcuLaterAndroid/
+
+# Claude Code local files
+.claude/
+CLAUDE.md

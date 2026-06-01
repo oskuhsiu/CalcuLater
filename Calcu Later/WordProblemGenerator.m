@@ -12,13 +12,41 @@
                 excludingTemplate:(NSString *)lastTemplateID {
     NSInteger g = MAX(1, MIN(3, grade));
     NSArray<WordProblemTemplate *> *templates = [WordProblemCatalog templatesForGrade:g];
-    if (templates.count == 0) {
-        return [[WordProblem alloc] initWithStory:@"小明有 1 顆糖果，又拿到 1 顆，共有幾顆糖果？"
-                                       templateID:@"fallback"
-                                            grade:g
-                                          number1:1 number2:1 operator:@"+" answer:2 unit:@"顆"];
-    }
+    if (templates.count == 0) return [self safeFallbackForGrade:g];
 
+    // 一年級：降低「兩個運算元都是個位數」的出現機率。最多重抽 maxRounds 輪，
+    // 每輪若得到 both-single-digit 就以高機率丟棄重抽；保留低殘餘機率，
+    // 讓基礎「個位＋個位」題可以有、但機率低（同時略為提高一年級難度）。
+    NSInteger maxRounds = (g == 1) ? 6 : 1;
+    WordProblem *problem = nil;
+    for (NSInteger round = 0; round < maxRounds; round++) {
+        WordProblem *cand = [self generateOnceFromTemplates:templates grade:g excluding:lastTemplateID];
+        if (!cand) continue;
+        problem = cand;  // 留作後援（即使最後一輪仍是個位＋個位也有題可出）
+        if (g != 1) break;
+        if (![self bothSingleDigit:cand]) break;   // 至少一個兩位數 → 採用
+        if (arc4random_uniform(100) >= 85) break;  // 15% 殘餘機率保留個位＋個位
+    }
+    return problem ?: [self safeFallbackForGrade:g];
+}
+
++ (WordProblem *)safeFallbackForGrade:(NSInteger)g {
+    return [[WordProblem alloc] initWithStory:@"小明有 1 顆糖果，又拿到 1 顆，共有幾顆糖果？"
+                                   templateID:@"fallback"
+                                        grade:g
+                                      number1:1 number2:1 operator:@"+" answer:2 unit:@"顆"];
+}
+
+/// 「兩個運算元都是個位數」判定（僅單步驟加減題；二步驟 / 分數視為已足夠難，回 NO）。
++ (BOOL)bothSingleDigit:(WordProblem *)p {
+    if (p.operator2 != nil || p.isFractionAnswer) return NO;
+    return labs((long)p.number1) < 10 && labs((long)p.number2) < 10;
+}
+
+/// 依選定模板生成一題（pick template + 最多 50 次嘗試湊出有效數值）。湊不出回 nil。
++ (WordProblem *)generateOnceFromTemplates:(NSArray<WordProblemTemplate *> *)templates
+                                     grade:(NSInteger)g
+                                 excluding:(NSString *)lastTemplateID {
     WordProblemTemplate *t = [self pickTemplate:templates excluding:lastTemplateID];
 
     NSInteger a = 0, b = 0, c = 0, ans = 0, intermediate = 0;
@@ -111,13 +139,9 @@
     }
 
     if (!ok) {
-        // 模板約束無解（不該發生，但放個 safety net 避免送出 a/b/ans 不一致的題）。
-        NSLog(@"[WordProblemGenerator] template %@ exhausted retries, using safe fallback",
-              t.templateID);
-        return [[WordProblem alloc] initWithStory:@"小明有 1 顆糖果，又拿到 1 顆，共有幾顆糖果？"
-                                       templateID:@"fallback"
-                                            grade:g
-                                          number1:1 number2:1 operator:@"+" answer:2 unit:@"顆"];
+        // 模板約束無解（不該發生，但放個 safety net）。回 nil 交由上層重抽 / 後援。
+        NSLog(@"[WordProblemGenerator] template %@ exhausted retries", t.templateID);
+        return nil;
     }
 
     NSString *story = [self renderPattern:t.storyPattern a:a b:b c:c];

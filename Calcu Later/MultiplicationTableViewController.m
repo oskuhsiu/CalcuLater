@@ -4,12 +4,10 @@
 #import "LessonViewController.h"
 #import "LessonProgressStore.h"
 #import "DecorativeBackgroundView.h"
-#import <AVFoundation/AVFoundation.h>
+#import "SpeechManager.h"
 
 @interface MultiplicationTableViewController ()
 @property (nonatomic, strong) UIScrollView *scroll;
-@property (nonatomic, strong) AVSpeechSynthesizer *synthesizer;
-@property (nonatomic, strong) AVSpeechSynthesisVoice *zhVoice;
 @end
 
 @implementation MultiplicationTableViewController
@@ -54,32 +52,6 @@
     ]];
 
     [self buildTable];
-    [self setupSpeech];
-}
-
-- (void)setupSpeech {
-    self.synthesizer = [[AVSpeechSynthesizer alloc] init];
-    self.zhVoice = [self bestZhVoice];
-}
-
-// 偏好順序：zh-TW Premium → zh-TW Enhanced → zh-CN Premium → zh-CN Enhanced → 系統預設 zh-TW/zh-CN。
-- (AVSpeechSynthesisVoice *)bestZhVoice {
-    NSArray<AVSpeechSynthesisVoice *> *voices = [AVSpeechSynthesisVoice speechVoices];
-    NSArray *prefs = @[
-        @[@"zh-TW", @(AVSpeechSynthesisVoiceQualityPremium)],
-        @[@"zh-TW", @(AVSpeechSynthesisVoiceQualityEnhanced)],
-        @[@"zh-CN", @(AVSpeechSynthesisVoiceQualityPremium)],
-        @[@"zh-CN", @(AVSpeechSynthesisVoiceQualityEnhanced)],
-    ];
-    for (NSArray *pref in prefs) {
-        NSString *langPrefix = pref[0];
-        AVSpeechSynthesisVoiceQuality q = (AVSpeechSynthesisVoiceQuality)[pref[1] integerValue];
-        for (AVSpeechSynthesisVoice *v in voices) {
-            if ([v.language hasPrefix:langPrefix] && v.quality == q) return v;
-        }
-    }
-    return [AVSpeechSynthesisVoice voiceWithLanguage:@"zh-TW"]
-        ?: [AVSpeechSynthesisVoice voiceWithLanguage:@"zh-CN"];
 }
 
 - (void)buildTable {
@@ -197,13 +169,7 @@
     NSInteger b = btn.tag % 100;
     if (a < 1 || a > 9 || b < 1 || b > 9) return;
     NSString *chant = [self chantForA:a b:b];
-    AVSpeechUtterance *u = [AVSpeechUtterance speechUtteranceWithString:chant];
-    u.voice = self.zhVoice;
-    u.rate = AVSpeechUtteranceDefaultSpeechRate * 0.92;  // 稍慢、適合兒童
-    u.pitchMultiplier = 1.05;
-    u.preUtteranceDelay = 0.05;
-    [self.synthesizer stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-    [self.synthesizer speakUtterance:u];
+    [[SpeechManager sharedInstance] speak:chant];
 
     // 點按視覺回饋
     UIView *snap = btn;

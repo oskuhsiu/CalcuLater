@@ -35,6 +35,10 @@
     scrollView.showsVerticalScrollIndicator = NO;
     [self.view addSubview:scrollView];
 
+    // settingsButton 比 scrollView 早加入 → 會被覆蓋整個安全區域的 scrollView 蓋住而吃不到點擊。
+    // 拉到最前層，確保右上角設定鍵可被點到。
+    [self.view bringSubviewToFront:self.settingsButton];
+
     UIView *contentView = [[UIView alloc] init];
     contentView.translatesAutoresizingMaskIntoConstraints = NO;
     [scrollView addSubview:contentView];
