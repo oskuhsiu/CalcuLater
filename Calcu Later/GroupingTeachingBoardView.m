@@ -336,7 +336,12 @@ typedef NS_ENUM(NSInteger, GBTDisplayPhase) {
         NSString *longestTitle = [NSString stringWithFormat:@"準備第 9 %@", self.sequence.context.groupName];
         layout.groupTitleHeight = [self heightForText:longestTitle font:caption width:cardInner];
         for (NSInteger i = 0; i < groupCount; i++) {
-            layout.groupTitleHeight = MAX(layout.groupTitleHeight, [self maximumHeightForTexts:@[[self groupTitleAtIndex:i phase:GBTDisplayPhaseBefore], [self groupTitleAtIndex:i phase:GBTDisplayPhaseSettled]] font:caption width:cardInner]);
+            // A C macro does not treat Objective-C brackets as parentheses.
+            // Keep the two-title literal outside MAX so its comma is not an argument.
+            NSArray<NSString *> *titles = @[[self groupTitleAtIndex:i phase:GBTDisplayPhaseBefore],
+                                            [self groupTitleAtIndex:i phase:GBTDisplayPhaseSettled]];
+            CGFloat titleHeight = [self maximumHeightForTexts:titles font:caption width:cardInner];
+            layout.groupTitleHeight = MAX(layout.groupTitleHeight, titleHeight);
         }
         layout.groupUnitSize = [self unitSizeForWidth:cardInner columns:5];
         layout.groupCounterY = GBTInset + layout.groupTitleHeight + 10;
