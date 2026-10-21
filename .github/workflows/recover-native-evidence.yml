@@ -1,0 +1,80 @@
+name: Recover pinned native evidence
+
+# A separately reviewed, recovery-only push. No dispatch, schedule or native job.
+on:
+  push:
+    branches: ["polish/**"]
+    paths:
+      - ".github/workflows/recover-native-evidence.yml"
+      - "scripts/evidence/**"
+
+permissions:
+  contents: read
+  actions: read
+
+# Never share the iOS workflow's concurrency group or cancel an active run.
+concurrency:
+  group: recover-native-evidence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: >-
+      github.event.repository.private == false &&
+      github.repository == 'oskuhsiu/CalcuLater' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Read exact public recovery commit without credentials
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/oskuhsiu/CalcuLater.git
+          git -c credential.helper= -c http.extraheader= fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Validate portable evidence handling
+        run: python3 -m unittest discover -s scripts/evidence -p 'test_*.py' -v
+      - name: Recover and verify the pinned original archive
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/evidence/recover_native_evidence.py recover --output build/native-evidence-recovery
+      - name: Retain original ZIP chunk 000
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-native-12374080329-${{ github.run_id }}-part-000
+          path: build/native-evidence-recovery/packages/part-000/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original ZIP chunk 001
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-native-12374080329-${{ github.run_id }}-part-001
+          path: build/native-evidence-recovery/packages/part-001/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original ZIP chunk 002
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-native-12374080329-${{ github.run_id }}-part-002
+          path: build/native-evidence-recovery/packages/part-002/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain checksums and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-native-12374080329-${{ github.run_id }}-manifest
+          path: build/native-evidence-recovery/packages/manifest/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
