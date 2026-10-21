@@ -1,0 +1,46 @@
+name: Inspect pinned native results
+
+# Evidence-only push: no simulator, build, test rerun, deploy or source changes.
+on:
+  push:
+    branches: ["polish/48h-2026-10-21"]
+    paths:
+      - ".github/workflows/inspect-native-results.yml"
+      - "scripts/inspection/**"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: inspect-native-results-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.event.repository.private == false &&
+      github.repository == 'oskuhsiu/CalcuLater' &&
+      github.run_attempt == 1
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate original bounded reader
+        run: python3 -m unittest discover -s scripts/evidence -p 'test_*.py' -v
+      - name: Inspect existing digest-verified native result
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/inspection/inspect_native_results.py
+      - name: Retain structured results and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspected-native-result-12386950633-${{ github.run_id }}
+          path: build/result-inspection/
+          retention-days: 7
+          if-no-files-found: error
