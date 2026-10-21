@@ -1,0 +1,78 @@
+{
+  "devices": [
+    {
+      "architecture": "arm64",
+      "deviceId": "9600A568-0FCE-410C-8C41-A2AE91A46836",
+      "deviceName": "CalcuLater-quality-39684382675-1-standard",
+      "modelName": "iPhone 16",
+      "osBuildNumber": "22F77",
+      "osVersion": "18.5",
+      "platform": "iOS Simulator"
+    }
+  ],
+  "testNodes": [
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "duration": "0.0086s",
+                  "durationInSeconds": 0.008617997169494629,
+                  "name": "testCurrentQuestionExplanationUsesTheFullSurfaceWithoutAnAnswerFooter",
+                  "nodeIdentifier": "LessonIntroViewTests/testCurrentQuestionExplanationUsesTheFullSurfaceWithoutAnAnswerFooter",
+                  "nodeIdentifierURL": "test://com.apple.xcode/Calcu%20Later/Calcu%20LaterTests/LessonIntroViewTests/testCurrentQuestionExplanationUsesTheFullSurfaceWithoutAnAnswerFooter",
+                  "nodeType": "Test Case",
+                  "result": "Passed"
+                }
+              ],
+              "name": "LessonIntroViewTests",
+              "nodeIdentifierURL": "test://com.apple.xcode/Calcu%20Later/Calcu%20LaterTests/LessonIntroViewTests",
+              "nodeType": "Test Suite",
+              "result": "Passed"
+            }
+          ],
+          "name": "Calcu LaterTests",
+          "nodeIdentifierURL": "test://com.apple.xcode/Calcu%20Later/Calcu%20LaterTests",
+          "nodeType": "Unit test bundle",
+          "result": "Passed"
+        },
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "duration": "17s",
+                  "durationInSeconds": 17.426056027412415,
+                  "name": "testBareDivisionCanCompareTwoExplicitMeanings",
+                  "nodeIdentifier": "Calcu_LaterUITests/testBareDivisionCanCompareTwoExplicitMeanings",
+                  "nodeIdentifierURL": "test://com.apple.xcode/Calcu%20Later/Calcu%20LaterUITests/Calcu_LaterUITests/testBareDivisionCanCompareTwoExplicitMeanings",
+                  "nodeType": "Test Case",
+                  "result": "Passed"
+                }
+              ],
+              "name": "Calcu_LaterUITests",
+              "nodeIdentifierURL": "test://com.apple.xcode/Calcu%20Later/Calcu%20LaterUITests/Calcu_LaterUITests",
+              "nodeType": "Test Suite",
+              "result": "Passed"
+            }
+          ],
+          "name": "Calcu LaterUITests",
+          "nodeIdentifierURL": "test://com.apple.xcode/Calcu%20Later/Calcu%20LaterUITests",
+          "nodeType": "UI test bundle",
+          "result": "Passed"
+        }
+      ],
+      "name": "Calcu Later",
+      "nodeType": "Test Plan",
+      "result": "Passed"
+    }
+  ],
+  "testPlanConfigurations": [
+    {
+      "configurationId": "1",
+      "configurationName": "Test Scheme Action"
+    }
+  ]
+}

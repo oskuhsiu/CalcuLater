@@ -113,6 +113,24 @@
 }
 @end
 
+/// Each leg belongs to one original counter. The schedule has no overlapping
+/// transfer intervals, so a child can track and count every moved unit.
+@interface CLIntroTransferLeg : NSObject
+@property (nonatomic) NSInteger dotIndex;
+@property (nonatomic) CGPoint fromCenter;
+@property (nonatomic) CGPoint toCenter;
+@property (nonatomic) NSTimeInterval startTime;
+@property (nonatomic) NSTimeInterval duration;
+@end
+@implementation CLIntroTransferLeg
+@end
+
+static const CGFloat CLIntroCompactSourceY = 184;
+static const CGFloat CLIntroAnnotationHeight = 30;
+static const CGFloat CLIntroCompactAnnotationGap = 2;
+static const NSTimeInterval CLIntroTransferMoveDuration = 0.70;
+static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
+
 @interface LessonIntroView ()
 @property (nonatomic) LessonKind lessonKind;
 @property (nonatomic) NSInteger a;
@@ -139,6 +157,10 @@
 @property (nonatomic, strong) UILabel *secondCountLabel;
 @property (nonatomic, strong) NSMutableArray<CLIntroDotView *> *dots;
 @property (nonatomic, strong, nullable) UIViewPropertyAnimator *stepAnimator;
+@property (nonatomic) LessonIntroPlaybackState playbackState;
+@property (nonatomic) NSUInteger playbackGeneration;
+@property (nonatomic) NSInteger playbackStepIndex;
+@property (nonatomic) NSUInteger activeAnimationGeneration;
 @property (nonatomic) BOOL finished;
 @property (nonatomic) BOOL hasPresentedInitialScene;
 @property (nonatomic) NSInteger step;
@@ -359,8 +381,13 @@
     CGFloat buttonHeight = MAX(60, ceil(lineHeight) + 24);
     self.buttonStack.axis = stackVertically ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
     self.buttonStackHeight.constant = stackVertically ? buttonHeight * 2 + 12 : buttonHeight;
-    self.stageHeight.constant = [self isTenStrategy]
-        ? ([self usesSideBySideTenFramesAtWidth:self.bounds.size.width - 32] ? 138 : 292) : 244;
+    BOOL sideBySide = [self usesSideBySideTenFramesAtWidth:self.bounds.size.width - 32];
+    BOOL compactMakeTen = self.lessonKind == LessonKindMakeTen && !sideBySide;
+    // The source annotation sits below its frame, leaving the inter-frame gap
+    // exclusively for counters. Include its real bottom plus four points.
+    CGFloat compactHeight = compactMakeTen
+        ? CLIntroCompactSourceY + 100 + CLIntroCompactAnnotationGap + CLIntroAnnotationHeight + 4 : 292;
+    self.stageHeight.constant = [self isTenStrategy] ? (sideBySide ? 138 : compactHeight) : 244;
     [super layoutSubviews];
     if (!CGSizeEqualToSize(self.lastBoundsSize, self.bounds.size)) {
         self.lastBoundsSize = self.bounds.size;
@@ -391,8 +418,13 @@
     return YES;
 }
 - (void)cancelStepAnimation {
-    if (self.stepAnimator.state == UIViewAnimatingStateActive) [self.stepAnimator stopAnimation:YES];
+    // Invalidate before stopping: even an already-queued callback from an old
+    // animator must not certify this or a later selected step as completed.
+    self.activeAnimationGeneration = 0;
+    if (self.playbackState == LessonIntroPlaybackStateRunning) self.playbackState = LessonIntroPlaybackStateCancelled;
+    UIViewPropertyAnimator *animator = self.stepAnimator;
     self.stepAnimator = nil;
+    if (animator.state == UIViewAnimatingStateActive) [animator stopAnimation:YES];
     [self.stage.layer removeAllAnimations];
     for (UIView *view in self.stage.subviews) [view.layer removeAllAnimations];
 }
@@ -411,7 +443,48 @@
     [self updateStageAccessibility];
 }
 - (void)applicationWillResignActive:(NSNotification *)notification { [self stopPlayback]; }
-- (void)motionPreferenceChanged:(NSNotification *)notification { [self stopPlayback]; }
+- (BOOL)prefersReducedMotion { return UIAccessibilityIsReduceMotionEnabled(); }
+- (void)motionPreferenceChanged:(NSNotification *)notification {
+    BOOL wasRunning = self.playbackState == LessonIntroPlaybackStateRunning;
+    [self stopPlayback];
+    if (wasRunning && [self prefersReducedMotion]) {
+        self.playbackState = LessonIntroPlaybackStateReducedMotion;
+        [self updateStageAccessibility];
+    }
+}
+
+- (void)completeStepAnimation:(UIViewPropertyAnimator *)animator generation:(NSUInteger)generation
+    step:(NSInteger)step position:(UIViewAnimatingPosition)position {
+    if (!animator || animator != self.stepAnimator || generation != self.activeAnimationGeneration
+        || generation != self.playbackGeneration || step != self.playbackStepIndex || step != self.step
+        || self.playbackState != LessonIntroPlaybackStateRunning) return;
+    self.activeAnimationGeneration = 0;
+    self.stepAnimator = nil;
+    self.playbackState = position == UIViewAnimatingPositionEnd
+        ? LessonIntroPlaybackStateCompleted : LessonIntroPlaybackStateCancelled;
+    if (position != UIViewAnimatingPositionEnd) {
+        // Finishing at start/current is not natural completion. Preserve the
+        // same cancel-and-settle contract without revealing a future step.
+        [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
+    }
+    [self updateStageAccessibility];
+}
+
+- (void)startStepAnimator:(UIViewPropertyAnimator *)animator {
+    // This view exclusively owns its animator. Production cancellation uses
+    // stopAnimation:YES, never finishAnimationAtPosition:End, so a matching
+    // .end callback is evidence of a natural finish rather than forced settle.
+    self.stepAnimator = animator;
+    self.activeAnimationGeneration = self.playbackGeneration;
+    NSUInteger generation = self.playbackGeneration;
+    NSInteger step = self.playbackStepIndex;
+    __weak typeof(self) weakSelf = self;
+    __weak UIViewPropertyAnimator *weakAnimator = animator;
+    [animator addCompletion:^(UIViewAnimatingPosition position) {
+        [weakSelf completeStepAnimation:weakAnimator generation:generation step:step position:position];
+    }];
+    [animator startAnimation];
+}
 
 #pragma mark - Child-controlled steps
 
@@ -549,6 +622,14 @@
     // Keep orientation and positions in the same, actually laid-out coordinate
     // space. The parent can already have its next width during nested layout.
     BOOL sideBySide = [self usesSideBySideTenFramesAtWidth:width];
+    BOOL compactMakeTen = self.lessonKind == LessonKindMakeTen && !sideBySide;
+    if (compactMakeTen) {
+        // Reserve a left-side transfer lane instead of shrinking the counters.
+        // At the 288-point supported width, 208-point frames have 41.6-point
+        // cells, leaving each 32-point counter distinct even in a full row.
+        frameWidth = MIN(280, width - 48);
+        x = 44 + (width - 48 - frameWidth) / 2;
+    }
     if (sideBySide) {
         frameWidth = MIN(280, (width - 32) / 2);
         x = (width - frameWidth * 2 - 24) / 2;
@@ -558,11 +639,12 @@
     self.firstFrame.frame = strategy ? CGRectMake(x, 34, frameWidth, 100)
         : CGRectMake(x, singleFrame ? 82 : 46, frameWidth, self.firstFrame.capacity == 10 ? 84 : 44);
     self.secondFrame.frame = strategy ? CGRectMake(sideBySide ? x + frameWidth + 24 : x,
-        sideBySide ? 34 : 188, frameWidth, 100) : CGRectMake(x, 168, frameWidth, 44);
+        sideBySide ? 34 : compactMakeTen ? CLIntroCompactSourceY : 188, frameWidth, 100) : CGRectMake(x, 168, frameWidth, 44);
     self.firstCountLabel.frame = CGRectMake(sideBySide ? x : 0, singleFrame ? 52 : 0,
         sideBySide ? frameWidth : width, 30);
     self.secondCountLabel.frame = CGRectMake(sideBySide ? CGRectGetMinX(self.secondFrame.frame) : 0,
-        sideBySide ? 0 : strategy ? 154 : 132, sideBySide ? frameWidth : width, 30);
+        sideBySide ? 0 : compactMakeTen ? CGRectGetMaxY(self.secondFrame.frame) + CLIntroCompactAnnotationGap : strategy ? 154 : 132,
+        sideBySide ? frameWidth : width, CLIntroAnnotationHeight);
     self.firstFrame.alpha = step >= 0 ? 1 : 0;
     self.firstCountLabel.alpha = step >= 0 ? 1 : 0;
     self.secondFrame.alpha = step < 0 || singleFrame || (step == 0 && self.lessonKind != LessonKindBreakTen) ? 0 : 1;
@@ -585,7 +667,7 @@
             dot.selectedForTen = step >= 2 && transferred;
             dot.fillColor = dot.selectedForTen ? ChildUI.eggYolk : ChildUI.skyBlue;
             if (step >= 3 && transferred) { target = self.firstFrame; slot = self.a + offset; }
-            else { target = self.secondFrame; slot = step >= 3 ? offset - (10 - self.a) : offset; }
+            else { target = self.secondFrame; slot = offset; } // Untouched units never compact or move.
             dot.alpha = step >= 1 ? 1 : 0;
         } else if (self.lessonKind == LessonKindBreakTen) {
             if (index >= 10) { target = self.secondFrame; slot = index - 10; dot.fillColor = ChildUI.mintGreen; }
@@ -599,6 +681,88 @@
     }
 }
 
+/// Source order vacates a row from left to right. In the wide layout a counter
+/// exits through those vacated slots, turns in the gutter, and enters its target
+/// row from the empty right end. In the stacked layout it exits left, turns in
+/// the clear inter-frame gap, and enters its target column from below. Top-row
+/// target slots are filled before their bottom-row slots. No occupied slot lies
+/// on either route, including when just one counter moves and eight stay put.
+- (NSArray<CLIntroTransferLeg *> *)makeTenTransferLegs {
+    NSMutableArray<CLIntroTransferLeg *> *legs = [NSMutableArray array];
+    for (NSInteger offset = 0; offset < 10 - self.a; offset++) {
+        CGPoint source = [self.secondFrame centerForIndex:offset];
+        source.x += self.secondFrame.frame.origin.x; source.y += self.secondFrame.frame.origin.y;
+        CGPoint target = [self.firstFrame centerForIndex:self.a + offset];
+        target.x += self.firstFrame.frame.origin.x; target.y += self.firstFrame.frame.origin.y;
+        NSMutableArray<NSValue *> *points = [NSMutableArray arrayWithObject:[NSValue valueWithCGPoint:source]];
+        if ([self usesSideBySideTenFramesAtWidth:self.stage.bounds.size.width]) {
+            CGFloat laneX = (CGRectGetMaxX(self.firstFrame.frame) + CGRectGetMinX(self.secondFrame.frame)) / 2;
+            [points addObject:[NSValue valueWithCGPoint:CGPointMake(laneX, source.y)]];
+            [points addObject:[NSValue valueWithCGPoint:CGPointMake(laneX, target.y)]];
+        } else {
+            CGFloat laneX = CGRectGetMinX(self.firstFrame.frame) - 24;
+            CGFloat laneY = (CGRectGetMaxY(self.firstFrame.frame) + CGRectGetMinY(self.secondFrame.frame)) / 2;
+            [points addObject:[NSValue valueWithCGPoint:CGPointMake(laneX, source.y)]];
+            [points addObject:[NSValue valueWithCGPoint:CGPointMake(laneX, laneY)]];
+            [points addObject:[NSValue valueWithCGPoint:CGPointMake(target.x, laneY)]];
+        }
+        [points addObject:[NSValue valueWithCGPoint:target]];
+        CGFloat length = 0;
+        for (NSUInteger index = 1; index < points.count; index++) {
+            CGPoint from = points[index - 1].CGPointValue, to = points[index].CGPointValue;
+            length += hypot(to.x - from.x, to.y - from.y);
+        }
+        NSTimeInterval start = CLIntroTransferPauseDuration + offset * (CLIntroTransferMoveDuration + CLIntroTransferPauseDuration);
+        for (NSUInteger index = 1; index < points.count; index++) {
+            CGPoint from = points[index - 1].CGPointValue, to = points[index].CGPointValue;
+            CGFloat distance = hypot(to.x - from.x, to.y - from.y);
+            if (distance <= 0) continue;
+            CLIntroTransferLeg *leg = [[CLIntroTransferLeg alloc] init];
+            leg.dotIndex = self.a + offset;
+            leg.fromCenter = from; leg.toCenter = to;
+            leg.startTime = start;
+            leg.duration = CLIntroTransferMoveDuration * distance / length;
+            start += leg.duration;
+            [legs addObject:leg];
+        }
+    }
+    return legs;
+}
+
+- (NSTimeInterval)makeTenTransferDuration {
+    return CLIntroTransferPauseDuration + (10 - self.a) * (CLIntroTransferMoveDuration + CLIntroTransferPauseDuration);
+}
+
+- (CGRect)makeTenTransferBounds:(NSArray<CLIntroTransferLeg *> *)legs {
+    CGRect bounds = CGRectNull;
+    for (CLIntroTransferLeg *leg in legs) {
+        CGSize size = self.dots[leg.dotIndex].bounds.size;
+        for (NSValue *value in @[[NSValue valueWithCGPoint:leg.fromCenter], [NSValue valueWithCGPoint:leg.toCenter]]) {
+            CGPoint center = value.CGPointValue;
+            bounds = CGRectUnion(bounds, CGRectMake(center.x - size.width / 2, center.y - size.height / 2, size.width, size.height));
+        }
+    }
+    return bounds;
+}
+
+- (void)animateMakeTenTransfer:(NSArray<CLIntroTransferLeg *> *)legs {
+    NSTimeInterval duration = [self makeTenTransferDuration];
+    __weak typeof(self) weakSelf = self;
+    // Linear keyframes never spring past a turn or a destination. The arrival
+    // pause makes each unit countable; no completion schedules another step.
+    UIViewPropertyAnimator *animator = [[UIViewPropertyAnimator alloc] initWithDuration:duration curve:UIViewAnimationCurveLinear animations:^{
+        [UIView animateKeyframesWithDuration:duration delay:0 options:UIViewKeyframeAnimationOptionCalculationModeLinear animations:^{
+            for (CLIntroTransferLeg *leg in legs) {
+                [UIView addKeyframeWithRelativeStartTime:leg.startTime / duration relativeDuration:leg.duration / duration animations:^{
+                    if (leg == legs.lastObject) [weakSelf applyDotStateForStep:3];
+                    else weakSelf.dots[leg.dotIndex].center = leg.toCenter;
+                }];
+            }
+        } completion:nil];
+    }];
+    [self startStepAnimator:animator];
+}
+
 - (void)updateStageAccessibility {
     NSInteger first = 0, second = 0, crossed = 0;
     for (CLIntroDotView *dot in self.dots) {
@@ -608,8 +772,30 @@
         if (dot.crossedOut) crossed++;
     }
     self.stage.accessibilityLabel = @"一格一個的點點圖";
-    self.stage.accessibilityValue = [NSString stringWithFormat:@"第一框 %ld 個，第二框 %ld 個；劃掉 %ld 個。%@",
-        (long)first, (long)second, (long)crossed, self.currentNarration];
+    // Model centers already contain the endpoint while UIKit is animating.
+    // Do not describe those quantities as an observed animation completion.
+    NSString *quantityPrefix = self.playbackState == LessonIntroPlaybackStateRunning ? @"這一步完成後：" : @"";
+    self.stage.accessibilityValue = [NSString stringWithFormat:@"%@第一框 %ld 個，第二框 %ld 個；劃掉 %ld 個。%@",
+        quantityPrefix, (long)first, (long)second, (long)crossed, self.currentNarration];
+    NSString *state;
+    switch (self.playbackState) {
+        case LessonIntroPlaybackStateRunning: state = @"動態播放中"; break;
+        case LessonIntroPlaybackStateCompleted: state = @"動態播放完成"; break;
+        case LessonIntroPlaybackStateCancelled: state = @"動態已停止，顯示目前這一步"; break;
+        case LessonIntroPlaybackStateReducedMotion: state = @"減少動態，直接顯示這一步"; break;
+        default: state = @"靜止圖示，尚未播放"; break;
+    }
+    if (self.playbackStepIndex == self.step) {
+        self.progressLabel.accessibilityValue = [NSString stringWithFormat:@"第 %lu 次播放，第 %ld 小步，%@",
+            (unsigned long)self.playbackGeneration, (long)self.playbackStepIndex + 1, state];
+    } else {
+        // Back changes the selected static snapshot without playing it. Keep
+        // the last playback's identity but never call the new step completed.
+        NSString *pastState = self.playbackState == LessonIntroPlaybackStateCompleted ? @"動態播放完成"
+            : self.playbackState == LessonIntroPlaybackStateCancelled ? @"動態已停止" : @"已直接顯示圖示";
+        self.progressLabel.accessibilityValue = [NSString stringWithFormat:@"第 %lu 次播放是先前第 %ld 小步（%@）；目前第 %ld 小步是靜止圖示",
+            (unsigned long)self.playbackGeneration, (long)self.playbackStepIndex + 1, pastState, (long)self.step + 1];
+    }
 }
 
 - (void)renderStepAnimated:(BOOL)animated {
@@ -661,7 +847,14 @@
         [self layoutIfNeeded];
         [self.scrollView layoutIfNeeded];
     }
-    if (![self prepareStageDots]) return;
+    if (animated) {
+        self.playbackGeneration++;
+        self.playbackStepIndex = self.step;
+        // A requested playback that cannot render is cancelled, not idle or
+        // completed. Even pre-layout requests have a unique identity.
+        self.playbackState = LessonIntroPlaybackStateCancelled;
+    }
+    if (![self prepareStageDots]) { [self updateStageAccessibility]; return; }
     CGRect scene = CGRectNull, frames = CGRectNull, counters = CGRectNull;
     if (frameNewStep) {
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
@@ -674,17 +867,30 @@
         // from an already settled model frame would otherwise produce no motion.
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step - 1]; }];
     }
+    NSArray<CLIntroTransferLeg *> *transferLegs = self.lessonKind == LessonKindMakeTen && self.step == 3
+        ? [self makeTenTransferLegs] : nil;
     if (frameNewStep) {
+        // Include the entire routed path, not only its source and destination.
+        CGRect path = transferLegs ? [self makeTenTransferBounds:transferLegs] : CGRectNull;
+        scene = CGRectUnion(scene, path); frames = CGRectUnion(frames, path); counters = CGRectUnion(counters, path);
         [self frameNewStepScene:CGRectUnion(scene, [self visibleDiagramBoundsWithFrames:YES annotations:YES])
             frames:CGRectUnion(frames, [self visibleDiagramBoundsWithFrames:YES annotations:NO])
             counters:CGRectUnion(counters, [self visibleDiagramBoundsWithFrames:NO annotations:NO])];
     }
-    if (animated && [self isEffectivelyVisible] && !UIAccessibilityIsReduceMotionEnabled()) {
-        __weak typeof(self) weakSelf = self;
-        self.stepAnimator = [[UIViewPropertyAnimator alloc] initWithDuration:0.85 dampingRatio:0.9 animations:^{
-            [weakSelf applyDotStateForStep:weakSelf.step];
-        }];
-        [self.stepAnimator startAnimation];
+    if (animated) {
+        self.playbackState = [self prefersReducedMotion] ? LessonIntroPlaybackStateReducedMotion
+            : [self isEffectivelyVisible] ? LessonIntroPlaybackStateRunning : LessonIntroPlaybackStateCancelled;
+    }
+    if (animated && self.playbackState == LessonIntroPlaybackStateRunning) {
+        if (transferLegs.count) [self animateMakeTenTransfer:transferLegs];
+        else {
+            __weak typeof(self) weakSelf = self;
+            NSInteger selectedStep = self.step;
+            UIViewPropertyAnimator *animator = [[UIViewPropertyAnimator alloc] initWithDuration:0.85 dampingRatio:0.9 animations:^{
+                [weakSelf applyDotStateForStep:selectedStep];
+            }];
+            [self startStepAnimator:animator];
+        }
     } else {
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
     }

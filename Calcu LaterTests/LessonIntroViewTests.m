@@ -1,5 +1,6 @@
 #import <XCTest/XCTest.h>
 #import <UIKit/UIKit.h>
+#import <math.h>
 #import "LessonIntroView.h"
 #import "Lesson.h"
 #import "ArithmeticProblem.h"
@@ -9,6 +10,22 @@
 - (void)renderStepAnimated:(BOOL)animated;
 - (void)applyDotStateForStep:(NSInteger)step;
 - (void)frameNewStepScene:(CGRect)scene frames:(CGRect)frames counters:(CGRect)counters;
+- (NSArray *)makeTenTransferLegs;
+- (NSTimeInterval)makeTenTransferDuration;
+- (CGRect)makeTenTransferBounds:(NSArray *)legs;
+- (BOOL)prefersReducedMotion;
+- (void)completeStepAnimation:(UIViewPropertyAnimator *)animator generation:(NSUInteger)generation
+    step:(NSInteger)step position:(UIViewAnimatingPosition)position;
+@end
+
+/// Exercises the reduced-motion branch without changing a device preference or
+/// disabling animations globally. It can only opt in, never override a user's
+/// enabled Reduce Motion setting.
+@interface CLReducedMotionIntroView : LessonIntroView
+@property (nonatomic) BOOL forceReducedMotion;
+@end
+@implementation CLReducedMotionIntroView
+- (BOOL)prefersReducedMotion { return self.forceReducedMotion || [super prefersReducedMotion]; }
 @end
 
 @interface CLIntroFinishObserver : NSObject <LessonIntroViewDelegate>
@@ -285,6 +302,430 @@
             }
         }
     }
+}
+
+/// Evaluate the exact production keyframe schedule, including each hold and
+/// each leg, rather than interpolating only the two settled snapshots.
+- (NSArray<NSValue *> *)centersForLegs:(NSArray *)legs atTime:(NSTimeInterval)time source:(NSArray<NSValue *> *)source {
+    NSMutableArray<NSValue *> *centers = [source mutableCopy];
+    for (id leg in legs) {
+        NSTimeInterval start = [[leg valueForKey:@"startTime"] doubleValue];
+        if (time < start) continue;
+        NSTimeInterval duration = [[leg valueForKey:@"duration"] doubleValue];
+        CGPoint from = [[leg valueForKey:@"fromCenter"] CGPointValue];
+        CGPoint to = [[leg valueForKey:@"toCenter"] CGPointValue];
+        CGFloat fraction = MIN(1, (time - start) / duration);
+        centers[[[leg valueForKey:@"dotIndex"] unsignedIntegerValue]] = [NSValue valueWithCGPoint:fraction >= 1 ? to :
+            CGPointMake(from.x + (to.x - from.x) * fraction, from.y + (to.y - from.y) * fraction)];
+    }
+    return centers;
+}
+
+- (void)assertTransferCenters:(NSArray<NSValue *> *)centers fitIntro:(LessonIntroView *)intro {
+    UIView *stage = [intro valueForKey:@"stage"];
+    for (NSUInteger index = 0; index < centers.count; index++) {
+        CGPoint point = centers[index].CGPointValue;
+        CGRect counter = CGRectMake(point.x - 16, point.y - 16, 32, 32);
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(stage.bounds, -0.01, -0.01), counter));
+        for (UILabel *label in @[[intro valueForKey:@"firstCountLabel"], [intro valueForKey:@"secondCountLabel"]]) {
+            XCTAssertFalse(CGRectIntersectsRect(counter, label.frame));
+        }
+        for (NSUInteger other = index + 1; other < centers.count; other++) {
+            CGPoint otherPoint = centers[other].CGPointValue;
+            XCTAssertFalse(CGRectIntersectsRect(counter, CGRectMake(otherPoint.x - 16, otherPoint.y - 16, 32, 32)));
+        }
+    }
+}
+
+- (void)testAllMakeTenTransferLegsKeepEveryUnitCountableAndUntouchedUnitsFixed {
+    for (NSNumber *width in @[@288, @320, @359, @543, @544, @736]) {
+        NSInteger cases = 0;
+        for (NSInteger a = 2; a <= 9; a++) {
+            for (NSInteger b = 11 - a; b <= 9; b++) {
+                @autoreleasepool {
+                    cases++;
+                    LessonIntroView *intro = [self showProblemA:a b:b make:YES width:width.doubleValue];
+                    [self settleIntro:intro atStep:2];
+                    NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+                    NSArray<NSValue *> *source = [identities valueForKey:@"center"];
+                    NSArray *legs = [intro makeTenTransferLegs];
+                    XCTAssertGreaterThan(legs.count, 0u);
+                    NSTimeInterval previousEnd = 0;
+                    NSInteger previousIndex = a - 1;
+                    CGPoint previousPoint = CGPointZero;
+                    NSMutableSet *moved = [NSMutableSet set];
+                    for (id leg in legs) {
+                        NSInteger index = [[leg valueForKey:@"dotIndex"] integerValue];
+                        NSTimeInterval start = [[leg valueForKey:@"startTime"] doubleValue];
+                        NSTimeInterval duration = [[leg valueForKey:@"duration"] doubleValue];
+                        CGPoint from = [[leg valueForKey:@"fromCenter"] CGPointValue];
+                        CGPoint to = [[leg valueForKey:@"toCenter"] CGPointValue];
+                        XCTAssertGreaterThan(duration, 0);
+                        XCTAssertGreaterThanOrEqual(start + 0.000001, previousEnd);
+                        XCTAssertTrue(index == previousIndex || index == previousIndex + 1);
+                        XCTAssertGreaterThanOrEqual(index, a);
+                        XCTAssertLessThan(index, 10);
+                        if (index == previousIndex) XCTAssertTrue(CGPointEqualToPoint(from, previousPoint));
+                        else {
+                            XCTAssertGreaterThanOrEqual(start - previousEnd + 0.000001, 0.12);
+                            XCTAssertTrue(CGPointEqualToPoint(from, source[index].CGPointValue));
+                        }
+                        // Every turn, midpoint, and intervening eighth is probed.
+                        // At most this one counter can be between its endpoints.
+                        for (NSUInteger sample = 0; sample <= 8; sample++) {
+                            NSArray<NSValue *> *centers = [self centersForLegs:legs atTime:start + duration * sample / 8.0 source:source];
+                            [self assertTransferCenters:centers fitIntro:intro];
+                            for (NSInteger untouched = 0; untouched < a + b; untouched++) {
+                                if (untouched < a || untouched >= 10) XCTAssertEqualObjects(centers[untouched], source[untouched]);
+                            }
+                        }
+                        [moved addObject:@(index)];
+                        previousEnd = start + duration; previousIndex = index; previousPoint = to;
+                    }
+                    XCTAssertEqual(moved.count, (NSUInteger)(10 - a));
+                    NSTimeInterval duration = [intro makeTenTransferDuration];
+                    XCTAssertGreaterThanOrEqual(duration - previousEnd + 0.000001, 0.12);
+                    XCTAssertLessThanOrEqual(duration, 6.68 + 0.000001);
+                    NSArray<NSValue *> *target = [self centersForLegs:legs atTime:duration source:source];
+                    for (NSInteger step = 3; step <= 4; step++) {
+                        [self settleIntro:intro atStep:step];
+                        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+                        XCTAssertEqualObjects([identities valueForKey:@"center"], target);
+                        for (NSInteger index = 0; index < a + b; index++) {
+                            XCTAssertEqualWithAccuracy(identities[index].alpha, 1, 0.001);
+                            XCTAssertEqualWithAccuracy(identities[index].bounds.size.width, 32, 0.001);
+                            if (index < a || index >= 10) XCTAssertEqualObjects([NSValue valueWithCGPoint:identities[index].center], source[index]);
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(cases, 36);
+    }
+}
+
+- (void)testTransferFramingContainsTheActualCorridorBeforeAnimationStarts {
+    for (NSNumber *width in @[@288, @544, @736]) {
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+            lesson:[self lessonAtIndex:3]];
+        [self hostIntro:intro width:width.doubleValue height:500];
+        [self settleIntro:intro atStep:2];
+        [intro goToNextStep];
+        [self assertLastTransitionIsFramedBeforeItsTargetIsApplied:intro];
+        CGRect path = [intro makeTenTransferBounds:[intro makeTenTransferLegs]];
+        XCTAssertTrue(CGRectContainsRect(intro.viewportSnapshots.lastObject.CGRectValue, path));
+        XCTAssertFalse(intro.animatorExistedAtFraming);
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
+}
+
+- (void)testNativePausedTransferPresentationMatchesEachLegMidpointWithoutLosingAUnit {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"The moving-presentation probe needs Reduce Motion off; endpoint coverage is separate.");
+    for (NSNumber *width in @[@288, @544, @736]) {
+        for (NSNumber *aValue in @[@2, @9]) {
+            NSInteger a = aValue.integerValue;
+            LessonIntroView *intro = [self showProblemA:a b:9 make:YES width:width.doubleValue];
+            // Keep this synthetic compact/wide fixture fixed when a real window
+            // commits its screen size during the presentation-layer probes.
+            intro.autoresizingMask = UIViewAutoresizingNone;
+            [self settleIntro:intro atStep:2];
+            NSArray<UIView *> *dots = [[intro valueForKey:@"dots"] copy];
+            NSArray<NSValue *> *source = [dots valueForKey:@"center"];
+            NSArray *legs = [intro makeTenTransferLegs];
+            [intro goToNextStep];
+            UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
+            XCTAssertNotNil(animator);
+            [animator pauseAnimation];
+            animator.scrubsLinearly = YES;
+            for (id leg in legs) {
+                NSTimeInterval time = [[leg valueForKey:@"startTime"] doubleValue] + [[leg valueForKey:@"duration"] doubleValue] / 2;
+                animator.fractionComplete = time / [intro makeTenTransferDuration];
+                NSArray<NSValue *> *expected = [self centersForLegs:legs atTime:time source:source];
+                // A paused presentation still needs a render commit. Wait for
+                // the requested pose rather than assuming one fixed frame delay
+                // is enough on a busy Simulator; this cannot advance the step.
+                NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
+                BOOL matched = NO;
+                do {
+                    [CATransaction flush];
+                    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+                    matched = YES;
+                    for (NSUInteger index = 0; index < dots.count; index++) {
+                        CALayer *presentation = dots[index].layer.presentationLayer;
+                        CGPoint point = expected[index].CGPointValue;
+                        if (!presentation || fabs(presentation.position.x - point.x) > 1
+                            || fabs(presentation.position.y - point.y) > 1) { matched = NO; break; }
+                    }
+                } while (!matched && deadline.timeIntervalSinceNow > 0 && [intro valueForKey:@"stepAnimator"] == animator);
+                XCTAssertTrue(matched, @"The paused native timeline did not reach the requested leg midpoint.");
+                XCTAssertEqualObjects([intro valueForKey:@"stepAnimator"], animator);
+                NSMutableArray<NSValue *> *actual = [NSMutableArray array];
+                for (NSUInteger index = 0; index < dots.count; index++) {
+                    CALayer *presentation = dots[index].layer.presentationLayer;
+                    XCTAssertNotNil(presentation);
+                    XCTAssertEqualWithAccuracy(presentation.opacity, 1, 0.001);
+                    XCTAssertEqualWithAccuracy(presentation.position.x, expected[index].CGPointValue.x, 1);
+                    XCTAssertEqualWithAccuracy(presentation.position.y, expected[index].CGPointValue.y, 1);
+                    [actual addObject:[NSValue valueWithCGPoint:presentation.position]];
+                }
+                [self assertTransferCenters:actual fitIntro:intro];
+                XCTAssertEqual(intro.currentStepIndex, 3);
+                [self assertEquationHidden:intro a:a b:9 make:YES];
+            }
+            [intro stopPlayback];
+            XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+            XCTAssertEqualObjects([intro valueForKey:@"dots"], dots);
+            XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+            XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], a - 1);
+        }
+    }
+}
+
+- (void)testResizeDuringAStagedTransferSettlesTheSelectedStepInTheNewGeometry {
+    LessonIntroView *intro = [self showProblemA:2 b:9 make:YES width:736];
+    [self settleIntro:intro atStep:3];
+    for (NSValue *size in @[[NSValue valueWithCGSize:CGSizeMake(736, 420)], [NSValue valueWithCGSize:CGSizeMake(288, 420)]]) {
+        [intro replayCurrentStep];
+        intro.frame = (CGRect){CGPointZero, size.CGSizeValue};
+        [intro setNeedsLayout]; [intro layoutIfNeeded];
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqual(intro.currentStepIndex, 3);
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+        [self assertVisibleDotsFitWithoutOverlapping:intro];
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
+}
+
+- (void)testNativeTransferCompletionBelongsToItsGenerationNotSynchronousTargetCounts {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"Natural motion completion is distinct from the reduced-motion endpoint.");
+    for (NSNumber *aValue in @[@2, @9]) {
+        NSInteger a = aValue.integerValue;
+        LessonIntroView *intro = [self showProblemA:a b:9 make:YES width:736];
+        intro.autoresizingMask = UIViewAutoresizingNone;
+        [self settleIntro:intro atStep:2];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateIdle);
+        NSUInteger before = intro.playbackGeneration;
+        NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+        [intro goToNextStep];
+        NSUInteger generation = intro.playbackGeneration;
+        XCTAssertEqual(generation, before + 1);
+        XCTAssertEqual(intro.playbackStepIndex, 3);
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+        XCTAssertNotNil([intro valueForKey:@"stepAnimator"]);
+        // These are already endpoint quantities. They alone must not pass a
+        // completion gate while the actual presentation is still in transit.
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], a - 1);
+        XCTAssertTrue([[[intro valueForKey:@"stage"] accessibilityValue] hasPrefix:@"這一步完成後："]);
+        XCTAssertTrue([[[intro valueForKey:@"progressLabel"] accessibilityValue] containsString:@"動態播放中"]);
+        NSPredicate *naturallyCompleted = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+            LessonIntroView *view = object;
+            return view.playbackGeneration == generation && view.playbackStepIndex == 3 && view.currentStepIndex == 3
+                && view.playbackState == LessonIntroPlaybackStateCompleted;
+        }];
+        XCTNSPredicateExpectation *completed = [[XCTNSPredicateExpectation alloc] initWithPredicate:naturallyCompleted object:intro];
+        [self waitForExpectations:@[completed] timeout:8];
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqualObjects([intro valueForKey:@"activeAnimationGeneration"], @0);
+        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+        XCTAssertEqualObjects([[intro valueForKey:@"progressLabel"] accessibilityValue],
+            ([NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，動態播放完成", (unsigned long)generation]));
+        XCTAssertFalse([[[intro valueForKey:@"stage"] accessibilityValue] hasPrefix:@"這一步完成後："]);
+        [self assertVisibleDotsFitWithoutOverlapping:intro];
+        [self assertEquationHidden:intro a:a b:9 make:YES];
+        [intro stopPlayback];
+        // A later static render must not erase an actual, already observed end.
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCompleted);
+        [intro goToPreviousStep];
+        XCTAssertEqual(intro.currentStepIndex, 2);
+        XCTAssertEqual(intro.playbackStepIndex, 3);
+        NSString *backStatus = [[intro valueForKey:@"progressLabel"] accessibilityValue];
+        XCTAssertTrue([backStatus containsString:@"先前第 4 小步（動態播放完成）"]);
+        XCTAssertTrue([backStatus containsString:@"目前第 3 小步是靜止圖示"]);
+        XCTAssertFalse([backStatus containsString:@"第 3 小步，動態播放完成"]);
+        [self assertEquationHidden:intro a:a b:9 make:YES];
+    }
+}
+
+- (void)testLateWrongAnimatorGenerationOrSelectedStepCannotCertifyCompletion {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression needs an active native animator.");
+    LessonIntroView *intro = [self showProblemA:2 b:9 make:YES width:736];
+    [self settleIntro:intro atStep:3];
+    [intro replayCurrentStep];
+    UIViewPropertyAnimator *oldAnimator = [intro valueForKey:@"stepAnimator"];
+    NSUInteger oldGeneration = intro.playbackGeneration;
+    [intro stopPlayback];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+    [intro completeStepAnimation:oldAnimator generation:oldGeneration step:3 position:UIViewAnimatingPositionEnd];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+    [intro replayCurrentStep];
+    UIViewPropertyAnimator *currentAnimator = [intro valueForKey:@"stepAnimator"];
+    NSUInteger generation = intro.playbackGeneration;
+    XCTAssertEqual(generation, oldGeneration + 1);
+    XCTAssertNotEqual(currentAnimator, oldAnimator);
+    [intro completeStepAnimation:oldAnimator generation:generation step:3 position:UIViewAnimatingPositionEnd];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+    [intro completeStepAnimation:currentAnimator generation:oldGeneration step:3 position:UIViewAnimatingPositionEnd];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+    [intro completeStepAnimation:currentAnimator generation:generation step:2 position:UIViewAnimatingPositionEnd];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+    [intro setValue:@4 forKey:@"step"];
+    [intro completeStepAnimation:currentAnimator generation:generation step:3 position:UIViewAnimatingPositionEnd];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+    XCTAssertEqualObjects([intro valueForKey:@"stepAnimator"], currentAnimator);
+    [intro setValue:@3 forKey:@"step"];
+    [intro stopPlayback];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
+}
+
+- (void)testBackReplayAndNextInvalidateAnOlderRunningGeneration {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression needs active native animators.");
+    for (NSString *action in @[@"back", @"replay", @"next"]) {
+        LessonIntroView *intro = [self showProblemA:2 b:9 make:YES width:736];
+        [self settleIntro:intro atStep:3];
+        [intro replayCurrentStep];
+        UIViewPropertyAnimator *oldAnimator = [intro valueForKey:@"stepAnimator"];
+        NSUInteger oldGeneration = intro.playbackGeneration;
+        if ([action isEqualToString:@"back"]) [intro goToPreviousStep];
+        else if ([action isEqualToString:@"replay"]) [intro replayCurrentStep];
+        else [intro goToNextStep];
+        BOOL back = [action isEqualToString:@"back"];
+        NSInteger selectedStep = back ? 2 : [action isEqualToString:@"next"] ? 4 : 3;
+        LessonIntroPlaybackState expected = back ? LessonIntroPlaybackStateCancelled : LessonIntroPlaybackStateRunning;
+        XCTAssertEqual(intro.currentStepIndex, selectedStep);
+        XCTAssertEqual(intro.playbackState, expected);
+        XCTAssertEqual(intro.playbackGeneration, oldGeneration + (back ? 0 : 1));
+        XCTAssertNotEqual([intro valueForKey:@"stepAnimator"], oldAnimator);
+        [intro completeStepAnimation:oldAnimator generation:oldGeneration step:3 position:UIViewAnimatingPositionEnd];
+        XCTAssertEqual(intro.playbackState, expected);
+        XCTAssertEqual(intro.currentStepIndex, selectedStep);
+        if (selectedStep < 4) [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
+}
+
+- (void)testLifecycleInterruptionInvalidatesTheRunningGenerationWithoutNaturalCompletion {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression needs active native animators.");
+    for (NSString *action in @[@"stop", @"background", @"motion", @"hidden", @"alpha", @"detach", @"height", @"width"]) {
+        LessonIntroView *intro = [self showProblemA:2 b:9 make:YES width:736];
+        intro.autoresizingMask = UIViewAutoresizingNone;
+        [self settleIntro:intro atStep:3];
+        [intro replayCurrentStep];
+        UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
+        NSUInteger generation = intro.playbackGeneration;
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+        if ([action isEqualToString:@"background"]) {
+            [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+        } else if ([action isEqualToString:@"motion"]) {
+            [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+        } else if ([action isEqualToString:@"hidden"]) intro.hidden = YES;
+        else if ([action isEqualToString:@"alpha"]) intro.alpha = 0;
+        else if ([action isEqualToString:@"detach"]) [intro removeFromSuperview];
+        else if ([action isEqualToString:@"height"] || [action isEqualToString:@"width"]) {
+            intro.frame = CGRectMake(0, 0, [action isEqualToString:@"width"] ? 288 : 736, 420);
+            [intro setNeedsLayout]; [intro layoutIfNeeded];
+        } else [intro stopPlayback];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled, @"%@", action);
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqualObjects([intro valueForKey:@"activeAnimationGeneration"], @0);
+        XCTAssertEqual(intro.playbackGeneration, generation);
+        XCTAssertEqual(intro.playbackStepIndex, 3);
+        XCTAssertEqual(intro.currentStepIndex, 3);
+        [intro completeStepAnimation:animator generation:generation step:3 position:UIViewAnimatingPositionEnd];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+        XCTAssertTrue([[[intro valueForKey:@"progressLabel"] accessibilityValue] containsString:@"動態已停止"]);
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
+}
+
+- (void)testFinishingAtStartOrCurrentSettlesWithoutClaimingNaturalCompletion {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression needs active native animators.");
+    for (NSNumber *position in @[@(UIViewAnimatingPositionStart), @(UIViewAnimatingPositionCurrent)]) {
+        LessonIntroView *intro = [self showProblemA:2 b:9 make:YES width:736];
+        [self settleIntro:intro atStep:3];
+        [intro replayCurrentStep];
+        UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
+        [animator pauseAnimation];
+        animator.fractionComplete = 0.2;
+        [animator stopAnimation:NO];
+        [animator finishAnimationAtPosition:position.integerValue];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqual(intro.currentStepIndex, 3);
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
+}
+
+- (void)testReducedMotionHasItsOwnGenerationAndNeverClaimsNaturalCompletion {
+    CLReducedMotionIntroView *intro = [[CLReducedMotionIntroView alloc] initWithProblem:[self problemA:9 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    intro.forceReducedMotion = YES;
+    [self hostIntro:intro width:736 height:500];
+    [self settleIntro:intro atStep:2];
+    [intro goToNextStep];
+    NSUInteger generation = intro.playbackGeneration;
+    XCTAssertGreaterThan(generation, 0u);
+    XCTAssertEqual(intro.playbackStepIndex, 3);
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateReducedMotion);
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    XCTAssertEqualObjects([intro valueForKey:@"activeAnimationGeneration"], @0);
+    XCTAssertTrue([[[intro valueForKey:@"progressLabel"] accessibilityValue] containsString:@"減少動態，直接顯示這一步"]);
+    XCTAssertFalse([[[intro valueForKey:@"stage"] accessibilityValue] hasPrefix:@"這一步完成後："]);
+    [intro replayCurrentStep];
+    XCTAssertEqual(intro.playbackGeneration, generation + 1);
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateReducedMotion);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 8);
+    [self assertEquationHidden:intro a:9 b:9 make:YES];
+}
+
+- (void)testPreLayoutPlaybackRequestsAreCancelledWithoutLosingTheirIdentity {
+    LessonIntroView *intro = [[LessonIntroView alloc] initWithProblem:[self problemA:9 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateIdle);
+    XCTAssertEqual(intro.playbackGeneration, 0u);
+    [intro replayCurrentStep];
+    XCTAssertEqual(intro.playbackGeneration, 1u);
+    XCTAssertEqual(intro.playbackStepIndex, 0);
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    [intro goToNextStep];
+    XCTAssertEqual(intro.playbackGeneration, 2u);
+    XCTAssertEqual(intro.playbackStepIndex, 1);
+    XCTAssertEqual(intro.currentStepIndex, 1);
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateCancelled);
+    XCTAssertTrue([[[intro valueForKey:@"progressLabel"] accessibilityValue] containsString:@"第 2 次播放，第 2 小步，動態已停止"]);
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    [self assertEquationHidden:intro a:9 b:9 make:YES];
+}
+
+- (void)testEnablingReducedMotionDuringPlaybackInvalidatesTheOldAnimator {
+    XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression begins with native motion enabled.");
+    CLReducedMotionIntroView *intro = [[CLReducedMotionIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    [self hostIntro:intro width:736 height:500];
+    [self settleIntro:intro atStep:3];
+    [intro replayCurrentStep];
+    UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
+    NSUInteger generation = intro.playbackGeneration;
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+    intro.forceReducedMotion = YES;
+    [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateReducedMotion);
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    [intro completeStepAnimation:animator generation:generation step:3 position:UIViewAnimatingPositionEnd];
+    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateReducedMotion);
+    intro.forceReducedMotion = NO;
+    [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+    XCTAssertNil([intro valueForKey:@"stepAnimator"], @"Changing a preference never automatically replays or advances.");
+    XCTAssertEqual(intro.playbackGeneration, generation);
+    XCTAssertEqual(intro.currentStepIndex, 3);
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
 }
 
 - (void)testEveryValidBreakTenProblemRemovesOnlyCrossedDotsAndKeepsOriginalOnes {
@@ -791,12 +1232,16 @@
             [self attachGeometryForIntro:intro name:context];
             CGFloat stageWidth = size.width - 32;
             BOOL wide = size.width >= 544;
-            CGFloat frameWidth = wide ? MIN(280, (stageWidth - 32) / 2) : MIN(280, stageWidth - 8);
-            CGFloat x = wide ? (stageWidth - frameWidth * 2 - 24) / 2 : (stageWidth - frameWidth) / 2;
+            BOOL compactMake = make.boolValue && !wide;
+            CGFloat frameWidth = wide ? MIN(280, (stageWidth - 32) / 2)
+                : MIN(280, stageWidth - (compactMake ? 48 : 8));
+            CGFloat x = wide ? (stageWidth - frameWidth * 2 - 24) / 2
+                : compactMake ? 44 + (stageWidth - 48 - frameWidth) / 2 : (stageWidth - frameWidth) / 2;
             CGRect expectedFirst = CGRectMake(x, 34, frameWidth, 100);
-            CGRect expectedSecond = CGRectMake(wide ? x + frameWidth + 24 : x, wide ? 34 : 188, frameWidth, 100);
+            CGRect expectedSecond = CGRectMake(wide ? x + frameWidth + 24 : x,
+                wide ? 34 : compactMake ? 184 : 188, frameWidth, 100);
             XCTAssertEqualWithAccuracy(stage.bounds.size.width, stageWidth, 0.001);
-            XCTAssertEqualWithAccuracy(stage.bounds.size.height, wide ? 138 : 292, 0.001);
+            XCTAssertEqualWithAccuracy(stage.bounds.size.height, wide ? 138 : compactMake ? 320 : 292, 0.001);
             XCTAssertTrue(CGRectEqualToRect(first.frame, expectedFirst));
             XCTAssertTrue(CGRectEqualToRect(second.frame, expectedSecond));
             XCTAssertTrue(CGRectEqualToRect([intro.geometrySnapshots.lastObject[@"stage"] CGRectValue], stage.bounds));

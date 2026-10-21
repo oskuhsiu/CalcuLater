@@ -588,6 +588,29 @@
     XCTAssertTrue([stage waitForExistenceWithTimeout:5]);
     return [stage.value description];
 }
+- (NSUInteger)tenFramePlaybackGeneration {
+    XCUIElement *progress = self.app.staticTexts[@"lessonIntro.progress"];
+    XCTAssertTrue(progress.exists);
+    NSScanner *scanner = [NSScanner scannerWithString:[progress.value description]];
+    unsigned long long generation = 0;
+    BOOL parsed = [scanner scanString:@"第" intoString:nil] && [scanner scanUnsignedLongLong:&generation]
+        && [scanner scanString:@"次播放" intoString:nil];
+    XCTAssertTrue(parsed, @"Expected a real playback generation, got %@", progress.value);
+    return (NSUInteger)generation;
+}
+- (void)waitForTenFrameNaturalCompletionAfterGeneration:(NSUInteger)previous step:(NSInteger)step {
+    XCUIElement *progress = self.app.staticTexts[@"lessonIntro.progress"];
+    NSString *expected = [NSString stringWithFormat:@"第 %lu 次播放，第 %ld 小步，動態播放完成",
+        (unsigned long)previous + 1, (long)step + 1];
+    NSString *selected = [NSString stringWithFormat:@"第 %ld 小步", (long)step + 1];
+    NSPredicate *naturalEnd = [NSPredicate predicateWithFormat:@"value == %@ AND label BEGINSWITH %@", expected, selected];
+    XCTestExpectation *completed = [self expectationForPredicate:naturalEnd evaluatedWithObject:progress handler:nil];
+    // The longest real transfer is 6.68 seconds. Synchronous endpoint counts,
+    // cancellation, Reduce Motion, and a newer Replay cannot satisfy this gate.
+    [self waitForExpectations:@[completed] timeout:8];
+    XCTAssertEqualObjects([progress.value description], expected);
+    XCTAssertEqual([self tenFramePlaybackGeneration], previous + 1);
+}
 - (void)inspectTenFrameStage {
     XCUIElement *stage = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"];
     XCUIElement *scroll = self.app.scrollViews[@"lessonIntro.content"];
@@ -650,17 +673,34 @@
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"lessonIntro.narration"].label containsString:@"9 拆成 8 和 1"]);
     [self capture:@"42-make-ten-select-eight-leave-one"];
+    NSUInteger beforeFirstTransfer = [self tenFramePlaybackGeneration];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     NSString *progress = self.app.staticTexts[@"lessonIntro.progress"].label;
     [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
     [self capture:@"43a-make-ten-transfer-first-play-before-inspection"];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeFirstTransfer step:3];
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"43b-make-ten-first-play-naturally-completed"];
+    NSUInteger beforeReplay = [self tenFramePlaybackGeneration];
     [self inspectTenFrameStage];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeReplay step:3];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.progress"].label, progress);
     [self capture:@"43-make-ten-transfer-eight-existing-dots"];
     [self.app.buttons[@"lessonIntro.previous"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 2 個，第二框 9 個"]);
+    NSUInteger beforeBackNext = [self tenFramePlaybackGeneration];
     [self.app.buttons[@"lessonIntro.next"] tap];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeBackNext step:3];
+    XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"43c-make-ten-back-next-naturally-completed"];
+    // A separate fourth playback attempts an interruption. It must not stand
+    // in for any complete transfer above. XCUITest may idle until it finishes
+    // before issuing the rotation; record that honestly as continuity only.
+    NSUInteger beforeInterruption = [self tenFramePlaybackGeneration];
+    NSString *beforeRotationPlayback = [self.app.staticTexts[@"lessonIntro.progress"].value description];
+    [self.app.buttons[@"lessonIntro.replay"] tap];
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationLandscapeLeft;
     NSPredicate *landscape = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
         XCUIElement *window = object;
@@ -670,6 +710,23 @@
     XCTestExpectation *rotated = [self expectationForPredicate:landscape
         evaluatedWithObject:self.app.windows.firstMatch handler:nil];
     [self waitForExpectations:@[rotated] timeout:5];
+    NSString *afterRotationPlayback = [self.app.staticTexts[@"lessonIntro.progress"].value description];
+    NSString *cancelled = [NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，動態已停止，顯示目前這一步",
+        (unsigned long)beforeInterruption + 1];
+    NSString *completed = [NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，動態播放完成",
+        (unsigned long)beforeInterruption + 1];
+    BOOL observedCancellation = [afterRotationPlayback isEqualToString:cancelled];
+    XCTAssertTrue(observedCancellation || [afterRotationPlayback isEqualToString:completed],
+        @"The exact fourth generation must be settled after rotation, not replaced or still running.");
+    NSString *interpretation = observedCancellation
+        ? @"Cancellation observed for the fourth playback; inspect video to locate the interruption."
+        : @"Natural completion observed; rotation continuity only, not UI interruption proof.";
+    XCTAttachment *lifecycle = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
+        @"Before fourth Replay: %@\nRequested generation: %lu\nAfter rotation: %@\n%@",
+        beforeRotationPlayback, (unsigned long)beforeInterruption + 1, afterRotationPlayback, interpretation]];
+    lifecycle.name = @"44-make-ten-fourth-playback-rotation-lifecycle";
+    lifecycle.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:lifecycle];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.progress"].label, progress);
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
@@ -731,6 +788,23 @@
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 9 個，第二框 9 個"]);
     [self inspectTenFrameStage];
     [self capture:@"48-make-ten-eighteen-countable-dots"];
+    [self.app.buttons[@"lessonIntro.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"lessonIntro.narration"].label containsString:@"9 拆成 1 和 8"]);
+    [self capture:@"48a-make-ten-select-one-leave-eight-in-original-slots"];
+    NSUInteger beforeTransfer = [self tenFramePlaybackGeneration];
+    [self.app.buttons[@"lessonIntro.next"] tap];
+    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
+    [self capture:@"48b-make-ten-one-transfer-first-play-before-inspection"];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeTransfer step:3];
+    XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"48c-make-ten-one-arrived-eight-remainders-still-in-original-slots"];
+    NSUInteger beforeReplay = [self tenFramePlaybackGeneration];
+    [self inspectTenFrameStage];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeReplay step:3];
+    XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"48d-make-ten-one-transfer-replay-naturally-completed"];
     [self.app.buttons[@"explanation.vertical"] tap];
     XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
     XCUIElement *vertical = [self.app descendantsMatchingType:XCUIElementTypeAny][@"teaching.screen"];

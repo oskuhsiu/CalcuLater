@@ -6,7 +6,9 @@ environment, screen recording, screenshots, UI hierarchy and xcresults are retai
 This script only runs on a Mac with the repository's selected Xcode/runtime.
 """
 from contextlib import contextmanager
+from collections import Counter
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -17,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
@@ -28,9 +31,14 @@ TEST_TIMEOUT = 900
 VIDEO_START_TIMEOUT = 10
 VIDEO_STOP_TIMEOUT = 15
 VIDEO_KILL_TIMEOUT = 5
+TEST_BUNDLE_TYPES = {
+    "Calcu LaterTests": "Unit test bundle",
+    "Calcu LaterUITests": "UI test bundle",
+}
 TEN_FRAME_TESTS = [
     "Calcu LaterUITests/Calcu_LaterUITests/testMakeTenCurrentNineDotsReplayBackRotateAndFinish",
     "Calcu LaterUITests/Calcu_LaterUITests/testBreakTenCurrentEightOnesSurviveReplayBackgroundAndReturn",
+    "Calcu LaterUITests/Calcu_LaterUITests/testTenFrameVerticalComparisonAndSwipeReturnToTheOriginalQuestion",
 ]
 LAYOUT_TESTS = ["Calcu LaterUITests/Calcu_LaterLayoutUITests"] + TEN_FRAME_TESTS
 SCENARIOS = {
@@ -64,26 +72,30 @@ def scenario():
     return name, SCENARIOS[name]
 
 
-def required_test_methods(identifiers):
-    """Resolve this repository's Objective-C test selection before execution.
+def required_test_inventory(identifiers):
+    """Resolve selected source methods to their unambiguous target bundles.
 
-    Test classes live in same-named .m files with zero-argument void test methods.
-    Reject missing/empty filters or overlapping selections, never fall back to
-    another class. Source inventory is intent; passing XCTest lines are proof.
+    Source inventory is intent, never execution evidence. Keep the historical
+    Class/method API, but do not discard the selected source's target identity.
     """
-    required = set()
+    required = {}
+    class_sources = {}
     for identifier in identifiers:
         parts = identifier.split("/")
-        if (not 1 <= len(parts) <= 3 or parts[0] not in ("Calcu LaterTests", "Calcu LaterUITests")
+        if (not 1 <= len(parts) <= 3 or parts[0] not in TEST_BUNDLE_TYPES
                 or any(not re.fullmatch(r"[A-Za-z_]\w*", part) for part in parts[1:])):
             raise SystemExit(f"Unsupported test selection: {identifier}")
         directory = ROOT / parts[0]
         paths = (sorted(directory.rglob("*.m")) if len(parts) == 1
                  else [directory / f"{parts[1]}.m"])
-        matched = set()
+        matched = {}
         for path in paths:
             if not path.is_file():
                 raise SystemExit(f"Missing selected test source: {path}")
+            source_key = (parts[0], path.stem)
+            if source_key in class_sources and class_sources[source_key] != path:
+                raise SystemExit(f"Ambiguous selected test class source: {path.stem}")
+            class_sources[source_key] = path
             implementations = re.findall(
                 r"^@implementation\s+" + re.escape(path.stem) + r"\s*$(.*?)^@end\b",
                 path.read_text(), re.MULTILINE | re.DOTALL)
@@ -93,16 +105,231 @@ def required_test_methods(identifiers):
                                  implementations[0], re.MULTILINE)
             if not methods or len(methods) != len(set(methods)):
                 raise SystemExit(f"Missing or duplicate test methods in selected source: {path}")
-            matched.update(f"{path.stem}/{method}" for method in methods
-                           if len(parts) < 3 or method == parts[2])
+            for method in methods:
+                if len(parts) == 3 and method != parts[2]:
+                    continue
+                key = f"{path.stem}/{method}"
+                if key in matched or key in required:
+                    raise SystemExit(f"Overlapping or ambiguous selected test method: {key}")
+                matched[key] = parts[0]
         if not matched:
             raise SystemExit(f"Selected test filter resolves to no methods: {identifier}")
-        if required & matched:
-            raise SystemExit(f"Overlapping selected test methods: {identifier}")
         required.update(matched)
     if not required:
         raise SystemExit("No test methods selected; no fallback tests will run.")
-    return sorted(required)
+    return dict(sorted(required.items()))
+
+
+def required_test_methods(identifiers):
+    return list(required_test_inventory(identifiers))
+
+
+def expected_execution_device(owned, environment, scenario_name):
+    """Bind result identity to the device and runtime actually inventoried."""
+    if (owned["scenario"] != scenario_name or environment["scenario"] != scenario_name
+            or environment["ownedSimulatorUDID"] != owned["udid"]
+            or environment["deviceType"]["identifier"] != owned["deviceType"]
+            or environment["runtime"]["identifier"] != owned["runtime"]):
+        raise ValueError("Owned Simulator and retained environment identities disagree.")
+    device = {
+        "deviceId": owned["udid"], "deviceName": owned["name"],
+        "architecture": environment["architecture"],
+        "modelName": environment["deviceType"]["name"], "platform": "iOS Simulator",
+        "osVersion": environment["runtime"]["version"],
+        "osBuildNumber": environment["runtime"]["buildversion"],
+    }
+    if any(not isinstance(value, str) or not value for value in device.values()):
+        raise ValueError("Missing owned Simulator identity; no result-device fallback is allowed.")
+    return device
+
+
+def structured_execution_report(raw, required, expected_device):
+    """Accept only the reviewed Xcode 16.4 single-device, nonrepeated tree.
+
+    Every identity and Passed result is checked, including container results.
+    Additional/ambiguous JSON fields, wrappers, devices or configurations fail
+    closed. A future schema needs review, not a console or aggregate fallback.
+    """
+    report = {"status": "rejected", "evidenceSource": "xcresult-tests.log",
+              "requiredPassedTests": sorted(required), "requiredTestTargets": required,
+              "expectedDevice": expected_device, "observedTests": [],
+              "nonPassingNodes": [], "errors": []}
+
+    def issue(path, reason):
+        report["errors"].append({"path": path, "reason": reason})
+
+    def object_shape(value, keys, path):
+        if not isinstance(value, dict):
+            issue(path, "Expected an object.")
+            return False
+        missing = set(keys) - value.keys()
+        extra = value.keys() - set(keys)
+        if missing or extra:
+            issue(path, f"Unsupported fields: missing={sorted(missing)}, extra={sorted(extra)}.")
+            return False
+        return True
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"Duplicate JSON object field: {key}")
+            value[key] = item
+        return value
+
+    def invalid_constant(value):
+        raise ValueError(f"Non-JSON numeric constant: {value}")
+
+    def url(*parts):
+        return "test://com.apple.xcode/" + "/".join(quote(part, safe="") for part in (SCHEME, *parts))
+
+    def node(value, expected_type, path, expected_name=None, expected_url=None):
+        keys = {"nodeType", "name", "result"}
+        if expected_type == "Test Case":
+            keys.update(("nodeIdentifier", "nodeIdentifierURL", "duration", "durationInSeconds"))
+        else:
+            keys.add("children")
+            if expected_type != "Test Plan":
+                keys.add("nodeIdentifierURL")
+        if not object_shape(value, keys, path):
+            return False
+        if value["nodeType"] != expected_type:
+            issue(path, f"Unsupported node type {value['nodeType']!r}; expected {expected_type!r}.")
+            return False
+        if not isinstance(value["name"], str) or not value["name"]:
+            issue(path, "Missing node name.")
+            return False
+        if expected_name is not None and value["name"] != expected_name:
+            issue(path, f"Wrong node name; expected {expected_name!r}.")
+        if expected_url is not None and value["nodeIdentifierURL"] != expected_url:
+            issue(path, f"Wrong nodeIdentifierURL; expected {expected_url!r}.")
+        if value["result"] != "Passed":
+            report["nonPassingNodes"].append({"path": path, "name": value["name"],
+                                              "nodeType": value["nodeType"], "result": value["result"]})
+        if expected_type == "Test Case":
+            duration = value["durationInSeconds"]
+            if (not isinstance(value["duration"], str) or not value["duration"]
+                    or type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0):
+                issue(path, "Invalid test-case duration fields.")
+        elif not isinstance(value["children"], list) or not value["children"]:
+            issue(path, "Expected nonempty children; no empty-container pass is accepted.")
+            return False
+        return True
+
+    try:
+        data = json.loads(raw, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+    except (ValueError, TypeError, RecursionError) as error:
+        issue("$", f"Invalid structured JSON: {error}")
+        data = None
+    expected = {f"{target}/{method}" for method, target in required.items()}
+    if (not required or any(target not in TEST_BUNDLE_TYPES
+                           or not re.fullmatch(r"[A-Za-z_]\w*/test\w*", method)
+                           for method, target in required.items())):
+        issue("source", "Empty or unsupported source inventory.")
+    if object_shape(data, {"devices", "testPlanConfigurations", "testNodes"}, "$"):
+        report["observedDevices"] = data["devices"]
+        report["observedConfigurations"] = data["testPlanConfigurations"]
+        if data["devices"] != [expected_device]:
+            issue("$.devices", "Expected exactly the owned Simulator's full inventoried identity.")
+        if data["testPlanConfigurations"] != [{"configurationId": "1", "configurationName": "Test Scheme Action"}]:
+            issue("$.testPlanConfigurations", "Unsupported/multiple test plan configurations.")
+        plans = data["testNodes"]
+        if not isinstance(plans, list) or len(plans) != 1:
+            issue("$.testNodes", "Expected exactly one test plan.")
+        elif node(plans[0], "Test Plan", "$.testNodes[0]", SCHEME):
+            bundles = []
+            suites = []
+            for bi, bundle in enumerate(plans[0]["children"]):
+                bp = f"$.testNodes[0].children[{bi}]"
+                target = bundle.get("name") if isinstance(bundle, dict) else None
+                if not isinstance(target, str) or target not in TEST_BUNDLE_TYPES:
+                    issue(bp, "Unknown test bundle identity.")
+                    continue
+                bundles.append(target)
+                if not node(bundle, TEST_BUNDLE_TYPES[target], bp, target, url(target)):
+                    continue
+                for si, suite in enumerate(bundle["children"]):
+                    sp = f"{bp}.children[{si}]"
+                    class_name = suite.get("name") if isinstance(suite, dict) else None
+                    if not isinstance(class_name, str) or not re.fullmatch(r"[A-Za-z_]\w*", class_name):
+                        issue(sp, "Invalid class identity.")
+                        continue
+                    suites.append(f"{target}/{class_name}")
+                    if not node(suite, "Test Suite", sp, class_name, url(target, class_name)):
+                        continue
+                    for ci, case in enumerate(suite["children"]):
+                        cp = f"{sp}.children[{ci}]"
+                        method = case.get("name") if isinstance(case, dict) else None
+                        if not isinstance(method, str) or not re.fullmatch(r"test\w*", method):
+                            issue(cp, "Invalid test method identity.")
+                            continue
+                        if not node(case, "Test Case", cp, method, url(target, class_name, method)):
+                            continue
+                        identifier = f"{class_name}/{method}"
+                        if case["nodeIdentifier"] != identifier:
+                            issue(cp, f"Wrong nodeIdentifier; expected {identifier!r}.")
+                        report["observedTests"].append({"identifier": f"{target}/{identifier}",
+                                                        "result": case["result"], "path": cp})
+            expected_bundles = set(required.values())
+            if Counter(bundles) != Counter({target: 1 for target in expected_bundles}):
+                issue("$.testNodes[0].children", "Missing, duplicate or unexpected test bundles.")
+            expected_suites = {f"{target}/{method.split('/')[0]}" for method, target in required.items()}
+            if Counter(suites) != Counter({suite: 1 for suite in expected_suites}):
+                issue("suites", "Missing, duplicate or unexpected test suites.")
+    observed = Counter(item["identifier"] for item in report["observedTests"])
+    passed = {item["identifier"] for item in report["observedTests"] if item["result"] == "Passed"}
+    report.update({
+        "missingTests": sorted(expected - observed.keys()),
+        "missingPassedTests": sorted(method for method, target in required.items()
+                                     if f"{target}/{method}" not in passed),
+        "unexpectedTests": sorted(observed.keys() - expected),
+        "duplicateTests": sorted(method for method, count in observed.items() if count != 1),
+        "observedPassedTests": sorted(item.split("/", 1)[1] for item in passed),
+    })
+    if not any(report[key] for key in ("errors", "nonPassingNodes", "missingTests",
+                                      "missingPassedTests", "unexpectedTests", "duplicateTests")):
+        report["status"] = "verified"
+    return report
+
+
+def verify_test_execution(output, required, owned, scenario_name, selected):
+    """Read the current bundle only after xcodebuild succeeds; never rerun tests."""
+    passed = re.findall(r"^Test Case '-\[([^\] ]+) ([^\]]+)\]' passed \(", output, re.MULTILINE)
+    console = [f"{class_name}/{method}" for class_name, method in passed]
+    result = {"scenario": scenario_name, "ownedSimulatorUDID": owned["udid"],
+              "sourceSHA": os.environ.get("GITHUB_SHA"), "onlyTesting": selected["onlyTesting"],
+              "status": "unverified", "evidenceSource": "xcresult-tests.log",
+              "automaticRetryAllowed": False,
+              "consoleComparison": {"evidenceSource": "test.log", "authoritative": False,
+                                    "observedPassedTests": console,
+                                    "missingPassedTests": sorted(set(required) - set(console)),
+                                    "unexpectedPassedTests": sorted(set(console) - set(required))}}
+    phase = "owned-device-identity"
+    try:
+        environment = json.loads((EVIDENCE / "environment.json").read_text())
+        expected_device = expected_execution_device(owned, environment, scenario_name)
+        phase = "tool-help"
+        run("xcresult-tests-help", ["xcrun", "xcresulttool", "help", "get", "test-results", "tests"])
+        phase = "structured-results"
+        raw = run("xcresult-tests", ["xcrun", "xcresulttool", "get", "test-results", "tests",
+                                    "--path", "build/Tests.xcresult"])
+        phase = "verify-structured-results"
+        result.update(structured_execution_report(raw, required, expected_device))
+        if result["status"] != "verified":
+            raise SystemExit("xcodebuild exited successfully but exact structured test execution "
+                             "was not verified. See test-execution.json and xcresult-tests.log; "
+                             "missing, failed, skipped or ambiguous results are not passes.")
+    except (Exception, SystemExit, KeyboardInterrupt) as error:
+        result.update({"status": "failed", "failedPhase": phase, "error": str(error)})
+        raise
+    finally:
+        already_failing = sys.exc_info()[0] is not None
+        try:
+            (EVIDENCE / "test-execution.json").write_text(json.dumps(result, indent=2))
+        except Exception as error:
+            if not already_failing:
+                raise
+            print(f"::warning::Could not save test-execution.json: {error}", flush=True)
 
 
 def signal_owned_process(process, signum):
@@ -414,7 +641,7 @@ def inventory_diagnostics():
 def prepare():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     scenario_name, selected = scenario()
-    required = required_test_methods(selected["onlyTesting"])
+    required = required_test_inventory(selected["onlyTesting"])
     runtime = os.environ["SIM_RUNTIME"]
     device_type = os.environ["SIM_DEVICE_TYPE"]
     fingerprint = {
@@ -443,7 +670,8 @@ def prepare():
         "scenario": scenario_name,
         "onlyTesting": selected["onlyTesting"],
         "arguments": [f"-only-testing:{identifier}" for identifier in selected["onlyTesting"]],
-        "requiredPassedTests": required,
+        "requiredPassedTests": list(required),
+        "requiredTestTargets": required,
         "inventorySource": "checked-out Objective-C test implementations",
         "sourceSHA": fingerprint["sourceSHA"],
         "selectionIsNotExecutionEvidence": True,
@@ -549,7 +777,7 @@ def configure():
 
 def test():
     scenario_name, selected = scenario()
-    required = required_test_methods(selected["onlyTesting"])
+    required = required_test_inventory(selected["onlyTesting"])
     owned = state()
     configuration = json.loads((EVIDENCE / "scenario-configuration.json").read_text())
     if (configuration["status"] != "verified" or configuration["scenario"] != scenario_name
@@ -562,28 +790,9 @@ def test():
                                                  "-maximum-concurrent-test-simulator-destinations", "1"]
                      + [f"-only-testing:{identifier}" for identifier in selected["onlyTesting"]]
                      + ["test-without-building"], timeout=TEST_TIMEOUT)
-    # This exact Objective-C XCTest line format was observed in the retained
-    # Xcode 16.4 baseline. Missing/changed evidence must not turn an empty class
-    # selection into a green layout job. Every selected method must pass, not
-    # just one method in the last selected class. Never overwrite xcodebuild's exit.
-    passed = re.findall(r"^Test Case '-\[([^\] ]+) ([^\]]+)\]' passed \(", output, re.MULTILINE)
-    observed = [f"{class_name}/{method}" for class_name, method in passed]
-    missing = sorted(set(required) - set(observed))
-    required_suites = ["Calcu LaterTests.xctest"] if scenario_name == "standard" else []
-    missing_suites = [name for name in required_suites if f"Test Suite '{name}' passed" not in output]
-    verified = not missing and not missing_suites
-    (EVIDENCE / "test-execution.json").write_text(json.dumps({
-        "scenario": scenario_name, "ownedSimulatorUDID": owned["udid"],
-        "sourceSHA": os.environ.get("GITHUB_SHA"), "onlyTesting": selected["onlyTesting"],
-        "requiredPassedTests": required, "missingPassedTests": missing,
-        "requiredPassedSuites": required_suites, "missingPassedSuites": missing_suites,
-        "observedPassedTests": observed,
-        "status": "verified" if verified else "missing-execution-evidence",
-        "evidenceSource": "test.log", "automaticRetryAllowed": False,
-    }, indent=2))
-    if not verified:
-        raise SystemExit("xcodebuild exited successfully but selected test execution was not observed. "
-                         "See test-execution.json and the xcresult; a missing test is not a pass.")
+    # Console output can interleave NSLog inside a method name. Retain it for
+    # comparison, but only the exact xcresult tree can prove selected execution.
+    verify_test_execution(output, required, owned, scenario_name, selected)
 
 
 def export():
@@ -616,20 +825,26 @@ def export():
                          + "\n\nRequested content size: " + selected["contentSize"]
                          + "\n\nExact test selection:\n"
                          + "".join("- " + identifier + "\n" for identifier in selected["onlyTesting"])
-                         + "\nSelection is not proof of execution. Check test.json, test-execution.json, test-summary.log "
+                         + "\nSelection is not proof of execution. Check test.json, test-execution.json, xcresult-tests.log, test-summary.log "
                          "and the xcresult for actual results. Check scenario-configuration.json for "
                          "the retained tool help, setter and exact content-size readback. "
                          "Download this scenario's native-evidence artifact for the environment fingerprint, "
                          "per-stage logs, original xcresults, screenshot/hierarchy attachments and "
-                         "native-flows.mp4 when capture succeeds. This records the unchanged acceptance stage; "
+                         "the video-package-manifest.json. Original native-flows.mp4 bytes are retained separately "
+                         "as bounded native-video parts when capture succeeds; reassemble and verify with "
+                         "scripts/ci/package_native_video.py before viewing. No transcoding occurs. "
+                         "This records the unchanged acceptance stage; "
                          "record-video.json/log report startup, termination and evidence gaps separately "
                          "from test.json. A nonempty video is not a visual or animation pass: inspect "
                          "the actual teaching exchanges before claiming motion validation. "
                          "A missing test result is not a pass. Standard retains the model/component target "
                          "plus Calcu_LaterUITests; the three layout variants retain all five "
-                         "Calcu_LaterLayoutUITests flows and add the actual-question 2 + 9 and "
-                         "18 − 9 ten-frame methods. Every selected source method must have a "
-                         "passing test.log entry; test-execution.json lists any missing methods. "
+                         "Calcu_LaterLayoutUITests flows and add the actual-question 2 + 9, "
+                         "9 + 9 and18 − 9 ten-frame methods. Every selected source method must have a "
+                         "unique Passed case in the expected xcresult bundle on the owned device; "
+                         "test-execution.json lists missing, non-passing, duplicate and unexpected results. "
+                         "xcresult-tests-help.log retains the selected tool contract; console output is "
+                         "diagnostic only, never an alternative passing path. "
                          "Boilerplate repeated launch configurations are excluded.\n")
 
 

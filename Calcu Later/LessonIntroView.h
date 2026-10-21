@@ -4,6 +4,14 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(NSInteger, LessonIntroPlaybackState) {
+    LessonIntroPlaybackStateIdle,
+    LessonIntroPlaybackStateRunning,
+    LessonIntroPlaybackStateCompleted,
+    LessonIntroPlaybackStateCancelled,
+    LessonIntroPlaybackStateReducedMotion,
+};
+
 @protocol LessonIntroViewDelegate <NSObject>
 - (void)lessonIntroDidFinish:(LessonIntroView *)introView;
 @end
@@ -16,6 +24,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSInteger currentStepIndex;
 @property (nonatomic, readonly) NSInteger numberOfSteps;
 @property (nonatomic, copy, readonly) NSString *currentNarration;
+
+/// Describes the latest requested playback, not the synchronous model-layer
+/// endpoint. Every Next/Replay playback has a new generation and captured step.
+/// Only the matching animator's natural .end is Completed. A static settlement
+/// after interruption is Cancelled (or ReducedMotion), never Completed.
+@property (nonatomic, readonly) LessonIntroPlaybackState playbackState;
+@property (nonatomic, readonly) NSUInteger playbackGeneration;
+@property (nonatomic, readonly) NSInteger playbackStepIndex;
 
 /// Canonical L1–L5 examples. “開始練習” remains available to skip the example.
 - (instancetype)initWithLesson:(Lesson *)lesson;

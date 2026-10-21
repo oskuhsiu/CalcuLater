@@ -52,6 +52,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Validate offline evidence handling
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Verify environment and create owned simulator
         run: python3 scripts/ci/native_quality.py prepare
       - name: Build app and tests
@@ -65,14 +67,131 @@ jobs:
       - name: Export result evidence
         if: always()
         run: python3 scripts/ci/native_quality.py export
+      - name: Package original recording without transcoding
+        id: video-parts
+        if: always()
+        run: >-
+          python3 scripts/ci/package_native_video.py package
+          --source build/evidence/native-flows.mp4
+          --output build/video-evidence
+          --manifest build/evidence/video-package-manifest.json
       - name: Retain native evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-evidence-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: build/evidence/
+          path: |
+            build/evidence/
+            !build/evidence/native-flows.mp4
           retention-days: 7
           if-no-files-found: error
+      - name: Retain original video part 000
+        id: video-part-000
+        if: ${{ always() && steps.video-parts.outputs.part_count > 0 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-000
+          path: build/video-evidence/part-000/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 001
+        id: video-part-001
+        if: ${{ always() && steps.video-parts.outputs.part_count > 1 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-001
+          path: build/video-evidence/part-001/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 002
+        id: video-part-002
+        if: ${{ always() && steps.video-parts.outputs.part_count > 2 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-002
+          path: build/video-evidence/part-002/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 003
+        id: video-part-003
+        if: ${{ always() && steps.video-parts.outputs.part_count > 3 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-003
+          path: build/video-evidence/part-003/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 004
+        id: video-part-004
+        if: ${{ always() && steps.video-parts.outputs.part_count > 4 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-004
+          path: build/video-evidence/part-004/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 005
+        id: video-part-005
+        if: ${{ always() && steps.video-parts.outputs.part_count > 5 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-005
+          path: build/video-evidence/part-005/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 006
+        id: video-part-006
+        if: ${{ always() && steps.video-parts.outputs.part_count > 6 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-006
+          path: build/video-evidence/part-006/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Retain original video part 007
+        id: video-part-007
+        if: ${{ always() && steps.video-parts.outputs.part_count > 7 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}-part-007
+          path: build/video-evidence/part-007/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
+      - name: Preserve original video if packaging or part upload failed
+        if: >-
+          ${{ always() && (steps.video-parts.outcome != 'success' ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-000.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-001.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-002.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-003.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-004.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-005.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-006.outcome) ||
+          contains(fromJSON('["failure","cancelled"]'), steps.video-part-007.outcome) ) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-video-fallback-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: build/evidence/native-flows.mp4
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn
+          overwrite: false
       - name: Clean up owned simulator
         if: always()
         run: python3 scripts/ci/native_quality.py cleanup
