@@ -24,6 +24,7 @@
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *renderedSteps;
 @property (nonatomic, strong) NSMutableArray<NSArray<NSDictionary *> *> *snapshots;
 @property (nonatomic, strong) NSMutableArray<NSValue *> *viewportSnapshots;
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *geometrySnapshots;
 @property (nonatomic) NSUInteger framingCount;
 @property (nonatomic) NSUInteger snapshotCountAtFraming;
 @property (nonatomic) BOOL animatorExistedAtFraming;
@@ -45,6 +46,11 @@
     UIScrollView *scroll = [self valueForKey:@"scrollView"];
     UIView *stage = [self valueForKey:@"stage"];
     [self.viewportSnapshots addObject:[NSValue valueWithCGRect:[scroll convertRect:scroll.bounds toView:stage]]];
+    if (!self.geometrySnapshots) self.geometrySnapshots = [NSMutableArray array];
+    [self.geometrySnapshots addObject:@{@"step": @(step), @"intro": [NSValue valueWithCGRect:self.bounds],
+        @"stage": [NSValue valueWithCGRect:stage.bounds],
+        @"firstFrame": [NSValue valueWithCGRect:[[self valueForKey:@"firstFrame"] frame]],
+        @"secondFrame": [NSValue valueWithCGRect:[[self valueForKey:@"secondFrame"] frame]]}];
 }
 - (void)frameNewStepScene:(CGRect)scene frames:(CGRect)frames counters:(CGRect)counters {
     [super frameNewStepScene:scene frames:frames counters:counters];
@@ -124,12 +130,44 @@
     for (UIView *dot in [self visibleDotsInIntro:intro]) if ([[dot valueForKey:@"crossedOut"] boolValue]) count++;
     return count;
 }
+- (void)attachGeometryForIntro:(LessonIntroView *)intro name:(NSString *)name {
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    UIView *stage = [intro valueForKey:@"stage"];
+    NSMutableString *trace = [NSMutableString stringWithFormat:
+        @"intro=%@ stage=%@ stageFrame=%@ selectedStep=%ld animator=%@\nscroll=%@ contentSize=%@ offset=%@\n",
+        NSStringFromCGRect(intro.bounds), NSStringFromCGRect(stage.bounds), NSStringFromCGRect(stage.frame),
+        (long)intro.currentStepIndex, [intro valueForKey:@"stepAnimator"], NSStringFromCGRect(scroll.bounds),
+        NSStringFromCGSize(scroll.contentSize), NSStringFromCGPoint(scroll.contentOffset)];
+    for (NSString *key in @[@"firstFrame", @"secondFrame", @"firstCountLabel", @"secondCountLabel"]) {
+        UIView *part = [intro valueForKey:key];
+        [trace appendFormat:@"%@=%@ alpha=%.3f\n", key, NSStringFromCGRect(part.frame), (double)part.alpha];
+    }
+    for (UIView *dot in [intro valueForKey:@"dots"]) {
+        [trace appendFormat:@"%@ identity=%p frame=%@ alpha=%.3f crossed=%@ selected=%@\n",
+            dot.accessibilityIdentifier, (__bridge void *)dot, NSStringFromCGRect(dot.frame), (double)dot.alpha,
+            [dot valueForKey:@"crossedOut"], [dot valueForKey:@"selectedForTen"]];
+    }
+    if ([intro isKindOfClass:CLRecordingIntroView.class]) {
+        CLRecordingIntroView *recording = (CLRecordingIntroView *)intro;
+        [trace appendFormat:@"framingCount=%lu\nrendered geometry=%@\n", (unsigned long)recording.framingCount,
+            recording.geometrySnapshots];
+    }
+    XCTAttachment *attachment = [XCTAttachment attachmentWithString:trace];
+    attachment.name = name;
+    attachment.lifetime = XCTAttachmentLifetimeDeleteOnSuccess;
+    [self addAttachment:attachment];
+}
 - (void)assertVisibleDotsFitWithoutOverlapping:(LessonIntroView *)intro {
     UIView *stage = [intro valueForKey:@"stage"];
     UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
     NSArray<UIView *> *dots = [self visibleDotsInIntro:intro];
+    BOOL attachedGeometry = NO;
     for (NSUInteger index = 0; index < dots.count; index++) {
         CGRect dot = dots[index].frame;
+        if (!CGRectContainsRect(CGRectInset(stage.bounds, -0.5, -0.5), dot) && !attachedGeometry) {
+            [self attachGeometryForIntro:intro name:@"Counter outside final stage bounds"];
+            attachedGeometry = YES;
+        }
         XCTAssertTrue(CGRectContainsRect(CGRectInset(stage.bounds, -0.5, -0.5), dot));
         XCTAssertTrue(CGRectContainsRect(first.frame, dot) || CGRectContainsRect(second.frame, dot));
         XCTAssertGreaterThanOrEqual(dot.size.width, 30);
@@ -711,6 +749,170 @@
     XCTAssertEqual(intro.currentStepIndex, 2);
     XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 8);
     [self assertVisibleDotsFitWithoutOverlapping:intro];
+}
+
+- (void)testRepeatedTenFrameResizesRenderFinalChildBoundsAndPreserveReplaySourceGeometry {
+    NSArray<NSValue *> *sizes = @[
+        [NSValue valueWithCGSize:CGSizeMake(736, 260)], // Wide height-only.
+        [NSValue valueWithCGSize:CGSizeMake(288, 260)], // Wide to compact.
+        [NSValue valueWithCGSize:CGSizeMake(288, 300)], // Compact height-only.
+        [NSValue valueWithCGSize:CGSizeMake(736, 300)], // Compact to wide.
+        [NSValue valueWithCGSize:CGSizeMake(544, 300)], // Narrowest side-by-side.
+        [NSValue valueWithCGSize:CGSizeMake(543, 300)], // Cross the exact boundary.
+        [NSValue valueWithCGSize:CGSizeMake(544, 300)],
+        [NSValue valueWithCGSize:CGSizeMake(320, 300)],
+        [NSValue valueWithCGSize:CGSizeMake(288, 300)]  // Same orientation, new width.
+    ];
+    for (NSNumber *make in @[@YES, @NO]) {
+        NSInteger a = make.boolValue ? 2 : 18, selectedStep = make.boolValue ? 3 : 2;
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc]
+            initWithProblem:[self problemA:a b:9 make:make.boolValue]
+            lesson:[self lessonAtIndex:make.boolValue ? 3 : 4]];
+        [self hostIntro:intro width:736 height:300];
+        [self settleIntro:intro atStep:selectedStep];
+        NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+        UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+        UIView *stage = [intro valueForKey:@"stage"];
+        UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
+        CGFloat chosenOffset = 32;
+        [scroll setContentOffset:CGPointMake(0, chosenOffset) animated:NO];
+        NSUInteger framingCount = intro.framingCount;
+        for (NSValue *sizeValue in sizes) {
+            CGSize size = sizeValue.CGSizeValue;
+            [intro replayCurrentStep];
+            if (!UIAccessibilityIsReduceMotionEnabled()) XCTAssertNotNil([intro valueForKey:@"stepAnimator"]);
+            intro.frame = (CGRect){CGPointZero, size};
+            [intro setNeedsLayout];
+            [intro layoutIfNeeded];
+            // Observe immediately after one public layout pass. A second
+            // layout, Play, Stop or Replay here would conceal stale geometry.
+            NSString *context = [NSString stringWithFormat:@"%@ resize to %@", make.boolValue ? @"make" : @"break",
+                NSStringFromCGSize(size)];
+            [self attachGeometryForIntro:intro name:context];
+            CGFloat stageWidth = size.width - 32;
+            BOOL wide = size.width >= 544;
+            CGFloat frameWidth = wide ? MIN(280, (stageWidth - 32) / 2) : MIN(280, stageWidth - 8);
+            CGFloat x = wide ? (stageWidth - frameWidth * 2 - 24) / 2 : (stageWidth - frameWidth) / 2;
+            CGRect expectedFirst = CGRectMake(x, 34, frameWidth, 100);
+            CGRect expectedSecond = CGRectMake(wide ? x + frameWidth + 24 : x, wide ? 34 : 188, frameWidth, 100);
+            XCTAssertEqualWithAccuracy(stage.bounds.size.width, stageWidth, 0.001);
+            XCTAssertEqualWithAccuracy(stage.bounds.size.height, wide ? 138 : 292, 0.001);
+            XCTAssertTrue(CGRectEqualToRect(first.frame, expectedFirst));
+            XCTAssertTrue(CGRectEqualToRect(second.frame, expectedSecond));
+            XCTAssertTrue(CGRectEqualToRect([intro.geometrySnapshots.lastObject[@"stage"] CGRectValue], stage.bounds));
+            XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+            XCTAssertEqual(intro.currentStepIndex, selectedStep);
+            XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+            XCTAssertEqual([self visibleDotsInIntro:intro].count, make.boolValue ? 11u : 9u);
+            XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], make.boolValue ? 10 : 1);
+            XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], make.boolValue ? 1 : 8);
+            XCTAssertEqual(intro.framingCount, framingCount);
+            XCTAssertGreaterThan(scroll.contentSize.height - scroll.bounds.size.height, chosenOffset);
+            XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
+            [self assertEquationHidden:intro a:a b:9 make:make.boolValue];
+            [self assertVisibleDotsFitWithoutOverlapping:intro];
+            for (UIView *dot in identities) {
+                XCTAssertEqualWithAccuracy(dot.bounds.size.width, 32, 0.001);
+                XCTAssertEqualWithAccuracy(dot.bounds.size.height, 32, 0.001);
+                if (dot.alpha > 0.5) XCTAssertTrue(CGRectContainsRect(stage.bounds, dot.frame));
+            }
+
+            NSUInteger snapshotsBeforeReplay = intro.snapshots.count;
+            [intro replayCurrentStep];
+            [self attachGeometryForIntro:intro name:[context stringByAppendingString:@" Replay source"]];
+            XCTAssertEqual(intro.snapshots.count, snapshotsBeforeReplay + 2);
+            if (intro.snapshots.count < snapshotsBeforeReplay + 2) continue;
+            NSArray<NSDictionary *> *source = intro.snapshots[snapshotsBeforeReplay];
+            NSDictionary *sourceGeometry = intro.geometrySnapshots[intro.geometrySnapshots.count - 2];
+            XCTAssertEqualObjects(sourceGeometry[@"step"], @(selectedStep - 1));
+            XCTAssertTrue(CGRectEqualToRect([sourceGeometry[@"stage"] CGRectValue], stage.bounds));
+            XCTAssertTrue(CGRectEqualToRect([sourceGeometry[@"firstFrame"] CGRectValue], expectedFirst));
+            XCTAssertTrue(CGRectEqualToRect([sourceGeometry[@"secondFrame"] CGRectValue], expectedSecond));
+            NSInteger sourceFirstCount = make.boolValue ? 2 : 10;
+            for (NSUInteger index = 0; index < source.count; index++) {
+                CGRect frame = [source[index][@"frame"] CGRectValue];
+                CGRect expectedFrame = index < sourceFirstCount ? expectedFirst : expectedSecond;
+                NSInteger slot = index < sourceFirstCount ? index : index - sourceFirstCount;
+                CGPoint center = [source[index][@"center"] CGPointValue];
+                XCTAssertEqualWithAccuracy([source[index][@"alpha"] doubleValue], 1, 0.001);
+                XCTAssertTrue(CGRectContainsRect(stage.bounds, frame));
+                XCTAssertTrue(CGRectContainsRect(expectedFrame, frame));
+                XCTAssertEqualWithAccuracy(center.x, expectedFrame.origin.x + (slot % 5 + 0.5) * frameWidth / 5, 0.001);
+                XCTAssertEqualWithAccuracy(center.y, expectedFrame.origin.y + (slot / 5 + 0.5) * 50, 0.001);
+            }
+            XCTAssertEqual(intro.currentStepIndex, selectedStep);
+            XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+            XCTAssertEqual(intro.framingCount, framingCount);
+            XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
+            [self assertEquationHidden:intro a:a b:9 make:make.boolValue];
+        }
+    }
+}
+
+- (void)testUnchangedStageLayoutDoesNotInterruptReplayOrRenderAnotherSnapshot {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    [self hostIntro:intro width:736 height:260];
+    [self settleIntro:intro atStep:3];
+    [intro replayCurrentStep];
+    UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
+    if (!UIAccessibilityIsReduceMotionEnabled()) XCTAssertNotNil(animator);
+    NSUInteger snapshotCount = intro.snapshots.count;
+    UIView *stage = [intro valueForKey:@"stage"];
+    [stage setNeedsLayout];
+    [stage layoutIfNeeded];
+    XCTAssertEqual([intro valueForKey:@"stepAnimator"], animator);
+    XCTAssertEqual(intro.snapshots.count, snapshotCount);
+    XCTAssertEqual(intro.currentStepIndex, 3);
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
+}
+
+- (void)testDescendantStageWidthChangeSettlesMotionWithoutAnIntroBoundsChange {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:18 b:9 make:NO]
+        lesson:[self lessonAtIndex:4]];
+    [self hostIntro:intro width:736 height:260];
+    [self settleIntro:intro atStep:2];
+    NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    UIView *stage = [intro valueForKey:@"stage"];
+    NSLayoutConstraint *contentWidth = nil;
+    for (NSLayoutConstraint *constraint in scroll.constraints) {
+        if (constraint.firstItem == stage.superview && constraint.firstAttribute == NSLayoutAttributeWidth
+            && constraint.secondItem == scroll.frameLayoutGuide && constraint.secondAttribute == NSLayoutAttributeWidth) {
+            contentWidth = constraint;
+            break;
+        }
+    }
+    XCTAssertNotNil(contentWidth);
+    if (!contentWidth) return;
+    CGRect introBounds = intro.bounds;
+    NSString *narration = intro.currentNarration;
+    NSUInteger framingCount = intro.framingCount;
+    [scroll setContentOffset:CGPointMake(0, 32) animated:NO];
+    for (NSNumber *width in @[@512, @704]) {
+        [intro replayCurrentStep];
+        if (!UIAccessibilityIsReduceMotionEnabled()) XCTAssertNotNil([intro valueForKey:@"stepAnimator"]);
+        contentWidth.constant = width.doubleValue - intro.bounds.size.width;
+        // Lay out only the actual constraint-owning descendant subtree. The
+        // intro's size is unchanged, so a parent-size observer cannot repair it.
+        [scroll setNeedsLayout];
+        [scroll layoutIfNeeded];
+        [self attachGeometryForIntro:intro name:[NSString stringWithFormat:@"Descendant stage width %@", width]];
+        XCTAssertTrue(CGRectEqualToRect(intro.bounds, introBounds));
+        XCTAssertEqualWithAccuracy(stage.bounds.size.width, width.doubleValue, 0.001);
+        XCTAssertTrue(CGRectEqualToRect([intro.geometrySnapshots.lastObject[@"stage"] CGRectValue], stage.bounds));
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqual(intro.currentStepIndex, 2);
+        XCTAssertEqualObjects(intro.currentNarration, narration);
+        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 1);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 8);
+        XCTAssertEqual(intro.framingCount, framingCount);
+        XCTAssertGreaterThan(scroll.contentSize.height - scroll.bounds.size.height, 32);
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 32, 0.001);
+        [self assertEquationHidden:intro a:18 b:9 make:NO];
+        [self assertVisibleDotsFitWithoutOverlapping:intro];
+    }
 }
 
 - (void)testShortScreensScrollInsteadOfShrinkingEitherTenFrame {

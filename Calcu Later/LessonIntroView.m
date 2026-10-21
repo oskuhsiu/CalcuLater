@@ -6,6 +6,24 @@
 #import "SoundManager.h"
 #import <math.h>
 
+/// Auto Layout reaches this nested scroll/stack child after the intro's own
+/// layout callback. Only the stage knows when its actual bounds have changed.
+@interface CLIntroStageView : UIView
+@property (nonatomic, copy) void (^sizeDidLayout)(void);
+@property (nonatomic) CGSize lastLaidOutSize;
+@end
+
+@implementation CLIntroStageView
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (CGSizeEqualToSize(self.lastLaidOutSize, self.bounds.size)) return;
+    // Cache before notifying: rendering its children can request another pass,
+    // but an unchanged stage must not interrupt a child-requested Replay.
+    self.lastLaidOutSize = self.bounds.size;
+    if (self.sizeDidLayout) self.sizeDidLayout();
+}
+@end
+
 /// A real five-/ten-frame: an empty space is never presented as another object.
 @interface CLIntroFrameView : UIView
 @property (nonatomic) NSInteger capacity;
@@ -124,8 +142,9 @@
 @property (nonatomic) BOOL finished;
 @property (nonatomic) BOOL hasPresentedInitialScene;
 @property (nonatomic) NSInteger step;
-@property (nonatomic) CGSize lastStageSize;
 @property (nonatomic) CGSize lastBoundsSize;
+- (BOOL)prepareStageDots;
+- (void)settleStageAfterLayout;
 @end
 
 @implementation LessonIntroView
@@ -250,7 +269,10 @@
     self.problemLabel.accessibilityIdentifier = @"lessonIntro.equation";
     self.narration = [self labelWithSize:20 weight:UIFontWeightMedium];
     self.narration.accessibilityIdentifier = @"lessonIntro.narration";
-    self.stage = [[UIView alloc] init];
+    CLIntroStageView *stage = [[CLIntroStageView alloc] init];
+    __weak typeof(self) weakSelf = self;
+    stage.sizeDidLayout = ^{ [weakSelf settleStageAfterLayout]; };
+    self.stage = stage;
     self.stage.isAccessibilityElement = YES;
     self.stage.accessibilityIdentifier = @"lessonIntro.stage";
     self.readButton = [self button:@"聽聽這一步" color:ChildUI.skyBlue action:@selector(readCurrentStep) identifier:@"lessonIntro.read"];
@@ -321,10 +343,10 @@
 
 #pragma mark - Layout and lifecycle
 
-- (BOOL)usesSideBySideTenFrames {
+- (BOOL)usesSideBySideTenFramesAtWidth:(CGFloat)width {
     // Two full frames need 240 points each, a 24-point gutter and outer room.
     // Keep the 32-point counters and readable annotation lanes at every width.
-    return [self isTenStrategy] && self.bounds.size.width - 32 >= 512;
+    return [self isTenStrategy] && width >= 512;
 }
 
 - (void)layoutSubviews {
@@ -337,12 +359,14 @@
     CGFloat buttonHeight = MAX(60, ceil(lineHeight) + 24);
     self.buttonStack.axis = stackVertically ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
     self.buttonStackHeight.constant = stackVertically ? buttonHeight * 2 + 12 : buttonHeight;
-    self.stageHeight.constant = [self isTenStrategy] ? ([self usesSideBySideTenFrames] ? 138 : 292) : 244;
+    self.stageHeight.constant = [self isTenStrategy]
+        ? ([self usesSideBySideTenFramesAtWidth:self.bounds.size.width - 32] ? 138 : 292) : 244;
     [super layoutSubviews];
-    if (!CGSizeEqualToSize(self.lastStageSize, self.stage.bounds.size)
-        || !CGSizeEqualToSize(self.lastBoundsSize, self.bounds.size)) {
-        self.lastStageSize = self.stage.bounds.size;
+    if (!CGSizeEqualToSize(self.lastBoundsSize, self.bounds.size)) {
         self.lastBoundsSize = self.bounds.size;
+        // Height-only resizing must settle motion even if stage size is fixed.
+        // If nested layout has not resized the stage yet, its callback will
+        // render this same selected step again using the final child bounds.
         [self stopPlayback];
     }
 }
@@ -376,6 +400,15 @@
     [self cancelStepAnimation];
     [SpeechManager.sharedInstance stop];
     [self renderStepAnimated:NO];
+}
+- (void)settleStageAfterLayout {
+    [self cancelStepAnimation];
+    [SpeechManager.sharedInstance stop];
+    if (![self prepareStageDots]) return;
+    // The child owns only its manual diagram layout. Do not reassign sibling
+    // labels/buttons here: that can invalidate the surrounding stack mid-pass.
+    [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
+    [self updateStageAccessibility];
 }
 - (void)applicationWillResignActive:(NSNotification *)notification { [self stopPlayback]; }
 - (void)motionPreferenceChanged:(NSNotification *)notification { [self stopPlayback]; }
@@ -513,7 +546,9 @@
     BOOL merged = self.lessonKind == LessonKindAddSimple && step >= 2;
     BOOL singleFrame = merged || self.lessonKind == LessonKindSubSimple;
     BOOL strategy = [self isTenStrategy];
-    BOOL sideBySide = [self usesSideBySideTenFrames];
+    // Keep orientation and positions in the same, actually laid-out coordinate
+    // space. The parent can already have its next width during nested layout.
+    BOOL sideBySide = [self usesSideBySideTenFramesAtWidth:width];
     if (sideBySide) {
         frameWidth = MIN(280, (width - 32) / 2);
         x = (width - frameWidth * 2 - 24) / 2;
@@ -626,14 +661,7 @@
         [self layoutIfNeeded];
         [self.scrollView layoutIfNeeded];
     }
-    if (self.stage.bounds.size.width <= 0 || self.lessonKind == LessonKindMultiplication) return;
-    NSInteger count = [self isAddition] ? self.a + self.b : self.a;
-    while (self.dots.count < count) {
-        CLIntroDotView *dot = [[CLIntroDotView alloc] initWithFrame:CGRectMake(0, 0, 32, 32)];
-        dot.accessibilityIdentifier = [NSString stringWithFormat:@"lessonIntro.dot.%lu", (unsigned long)self.dots.count];
-        [self.stage addSubview:dot];
-        [self.dots addObject:dot];
-    }
+    if (![self prepareStageDots]) return;
     CGRect scene = CGRectNull, frames = CGRectNull, counters = CGRectNull;
     if (frameNewStep) {
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
@@ -661,6 +689,18 @@
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
     }
     [self updateStageAccessibility];
+}
+
+- (BOOL)prepareStageDots {
+    if (self.stage.bounds.size.width <= 0 || self.lessonKind == LessonKindMultiplication) return NO;
+    NSInteger count = [self isAddition] ? self.a + self.b : self.a;
+    while (self.dots.count < count) {
+        CLIntroDotView *dot = [[CLIntroDotView alloc] initWithFrame:CGRectMake(0, 0, 32, 32)];
+        dot.accessibilityIdentifier = [NSString stringWithFormat:@"lessonIntro.dot.%lu", (unsigned long)self.dots.count];
+        [self.stage addSubview:dot];
+        [self.dots addObject:dot];
+    }
+    return YES;
 }
 
 @end
