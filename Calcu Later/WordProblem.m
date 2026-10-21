@@ -1,5 +1,6 @@
 #import "WordProblem.h"
 #import "ArithmeticProblem.h"
+#import "GroupingStoryContext.h"
 
 @implementation WordProblem
 
@@ -21,6 +22,34 @@
              isFractionAnswer:(BOOL)isFractionAnswer
               answerNumerator:(NSInteger)answerNumerator
             answerDenominator:(NSInteger)answerDenominator {
+    return [self initWithStory:storyText templateID:templateID grade:grade
+                       number1:number1 number2:number2 operator:operatorSymbol answer:answer unit:unit
+                 missingAddend:missingAddend missingSubtrahend:missingSubtrahend missingMinuend:missingMinuend
+                     remainder:remainder number3:number3 operator2:operator2 intermediate:intermediate
+              isFractionAnswer:isFractionAnswer answerNumerator:answerNumerator answerDenominator:answerDenominator
+               groupingContext:nil strategyText:nil];
+}
+
+- (instancetype)initWithStory:(NSString *)storyText
+                   templateID:(NSString *)templateID
+                        grade:(NSInteger)grade
+                      number1:(NSInteger)number1
+                      number2:(NSInteger)number2
+                     operator:(NSString *)operatorSymbol
+                       answer:(NSInteger)answer
+                         unit:(NSString *)unit
+                missingAddend:(BOOL)missingAddend
+            missingSubtrahend:(BOOL)missingSubtrahend
+               missingMinuend:(BOOL)missingMinuend
+                    remainder:(NSInteger)remainder
+                      number3:(NSInteger)number3
+                    operator2:(NSString *)operator2
+                 intermediate:(NSInteger)intermediate
+             isFractionAnswer:(BOOL)isFractionAnswer
+              answerNumerator:(NSInteger)answerNumerator
+            answerDenominator:(NSInteger)answerDenominator
+              groupingContext:(GroupingStoryContext *)groupingContext
+                 strategyText:(NSString *)strategyText {
     self = [super init];
     if (self) {
         _storyText = [storyText copy];
@@ -31,6 +60,8 @@
         _operatorSymbol = [operatorSymbol copy];
         _answer = answer;
         _unit = [unit copy] ?: @"";
+        _groupingContext = [groupingContext copy];
+        _strategyText = [strategyText copy];
         _missingAddend = missingAddend;
         _missingSubtrahend = missingSubtrahend;
         _missingMinuend = missingMinuend;
@@ -108,7 +139,27 @@
             (long)self.number1, op, (long)self.number2, answer];
 }
 
+- (NSString *)strategyHintText {
+    if (self.strategyText.length > 0) return self.strategyText;
+    if (self.isFractionAnswer) return @"先看整個是否平均分成一樣大的份數，再比較取了幾份。";
+    if (self.operator2) return @"先依故事的順序找出第一步，再想下一步要加上或減去什麼。";
+    if (self.missingAddend) return @"已知總數和其中一部分，用總數減去已知的部分。";
+    if (self.missingSubtrahend) return @"比較原來的數量和剩下的數量，找出拿走了多少。";
+    if (self.missingMinuend) return @"把拿走的和剩下的合起來，找出原來的數量。";
+    if ([self.operatorSymbol isEqualToString:@"×"] || [self.operatorSymbol isEqualToString:@"*"])
+        return @"先找出兩個已知數量之間的關係，再用乘法求題目要找的量。";
+    if ([self.operatorSymbol isEqualToString:@"÷"] || [self.operatorSymbol isEqualToString:@"/"])
+        return @"先想想題目要找的是每份多少，還是能分成幾份，再列出除法算式。";
+    return @"先找出已知的數量和題目要問的量，再依故事列出算式。";
+}
+
 - (NSString *)workedExplanationText {
+    NSString *worked = [self arithmeticWorkedExplanationText];
+    return self.strategyText.length > 0
+        ? [NSString stringWithFormat:@"%@\n%@", self.strategyText, worked] : worked;
+}
+
+- (NSString *)arithmeticWorkedExplanationText {
     if (self.isFractionAnswer) {
         return [NSString stringWithFormat:
                 @"把整個平均分成 %ld 等份\n取其中 %ld 份，就是 %ld/%ld",
@@ -149,18 +200,30 @@
         if (self.remainder > 0) {
             // 包、盤、隊等是商的單位，不等於剩下的糖果、球員等單位。
             // 運算列保持純數字，只在本題所問的商旁標註 unit，絕不猜餘數單位。
+            NSString *leftoverLine = @"";
+            if (self.groupingContext) {
+                NSString *where = self.groupingContext.meaning == GroupingStoryMeaningShareEqually
+                    ? @"，留在一起，還沒有分給任何人或組" : @"，還不夠成為完整的一組";
+                leftoverLine = [NSString stringWithFormat:@"剩下的%@有 %ld %@%@。\n",
+                                self.groupingContext.itemName, (long)self.remainder,
+                                self.groupingContext.leftoverUnit, where];
+            }
             return [NSString stringWithFormat:
-                    @"%ld ÷ %ld = %ld 餘 %ld\n驗算：%ld × %ld + %ld = %ld\n這題只答商：%@",
+                    @"%ld ÷ %ld = %ld 餘 %ld\n驗算：%ld × %ld + %ld = %ld\n%@這題只答商：%@",
                     (long)self.number1, (long)self.number2, (long)self.answer, (long)self.remainder,
                     (long)self.answer, (long)self.number2, (long)self.remainder, (long)self.number1,
-                    answerText];
+                    leftoverLine, answerText];
         }
         return [NSString stringWithFormat:
                 @"%ld ÷ %ld = %ld\n驗算：%ld × %ld = %ld\n%@",
                 (long)self.number1, (long)self.number2, (long)self.answer,
                 (long)self.answer, (long)self.number2, (long)self.number1, answerLine];
     }
-    if ([self.operatorSymbol isEqualToString:@"×"] && self.number2 >= 1 && self.number2 <= 6) {
+    // For catalog text-only stories, keep the equation but do not replace their roles
+    // with generic repeated addition (e.g. age and conversion factors are reversed).
+    if ([self.operatorSymbol isEqualToString:@"×"] && self.number2 >= 1 && self.number2 <= 6 &&
+        (self.strategyText.length == 0 ||
+         (self.groupingContext && self.groupingContext.meaning == GroupingStoryMeaningBuildEqualGroups))) {
         NSMutableArray<NSString *> *parts = [NSMutableArray array];
         for (NSInteger i = 0; i < self.number2; i++) {
             [parts addObject:[NSString stringWithFormat:@"%ld", (long)self.number1]];

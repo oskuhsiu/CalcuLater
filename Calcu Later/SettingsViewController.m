@@ -96,12 +96,24 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     [super viewDidLoad];
     self.title = @"設定";
     self.settingsManager = self.settingsManager ?: SettingsManager.sharedInstance;
-    [DecorativeBackgroundView installInViewController:self theme:BackgroundThemeSettings];
+    DecorativeBackgroundView *background = [DecorativeBackgroundView installInViewController:self theme:BackgroundThemeSettings];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
         style:UIBarButtonItemStyleDone target:self action:@selector(doneButtonTapped)];
     self.navigationItem.rightBarButtonItem.accessibilityIdentifier = @"settings.done";
     self.navigationItem.rightBarButtonItem.accessibilityHint = @"返回主畫面，變更已自動儲存";
-    self.navigationController.navigationBar.tintColor = ChildUI.brownText;
+    self.navigationItem.rightBarButtonItem.tintColor = ChildUI.brownText;
+
+    // Rows scroll beneath the bar. Give this sheet an opaque surface in every
+    // bar state so their text never competes with the persistent title / Done.
+    // Navigation-item overrides stay local; other screens keep their appearance.
+    UINavigationBarAppearance *navigationAppearance = [[UINavigationBarAppearance alloc] init];
+    [navigationAppearance configureWithOpaqueBackground];
+    navigationAppearance.backgroundColor = background.backgroundColor;
+    navigationAppearance.titleTextAttributes = @{NSForegroundColorAttributeName: ChildUI.brownText};
+    self.navigationItem.standardAppearance = navigationAppearance;
+    self.navigationItem.scrollEdgeAppearance = navigationAppearance;
+    self.navigationItem.compactAppearance = navigationAppearance;
+    self.navigationItem.compactScrollEdgeAppearance = navigationAppearance;
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;

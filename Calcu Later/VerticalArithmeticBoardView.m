@@ -259,6 +259,18 @@ typedef struct {
     return CGSizeMake(width, [self metricsForWidth:width].height);
 }
 
+- (CGRect)currentConcreteTransformationRect {
+    if (!self.currentStep || self.currentStep.kind != ArithmeticTeachingStepKindRegroup || !self.illustrationView) return CGRectNull;
+    return [self.illustrationView convertRect:self.illustrationView.bounds toView:self];
+}
+
+- (CGRect)currentTransformationRect {
+    CGRect concrete = self.currentConcreteTransformationRect;
+    if (CGRectIsNull(concrete) || !self.gridView) return CGRectNull;
+    CGRect grid = [self.gridView convertRect:self.gridView.bounds toView:self];
+    return CGRectUnion(grid, concrete);
+}
+
 - (CGSize)intrinsicContentSize {
     CGFloat width = CGRectGetWidth(self.bounds);
     return CGSizeMake(UIViewNoIntrinsicMetric, width > 0 ? [self sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)].height : UIViewNoIntrinsicMetric);

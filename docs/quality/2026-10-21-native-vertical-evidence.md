@@ -70,3 +70,21 @@ regressions and the separate layout acceptance flows exercise the correction.
 **Its new native rendering, largest text and selection-induced reflow remain
 pending in the next run.** The 180-pass result above applies to the recorded
 source, not this later correction or the newly added layout matrix.
+
+## Additional motion inspection
+
+Original decoded frame sequences were inspected for both exchanges in 500 − 128:
+5 hundreds / 0 tens becomes 4 hundreds / 10 tens, then 10 tens / 0 ones becomes
+9 tens / 10 ones. The moving place-value packet and the splitting concrete units
+are visible between the before and settled states; the written result row remains
+empty until its later explicit write steps. This is stronger evidence than an
+endpoint screenshot, but it is not a child comprehension study.
+
+The retained Simulator MP4 has discontinuous presentation timestamps. Ordinary
+seek-based/resampled contact sheets can therefore select or label the wrong
+moment. Inspection used decoded frames in their actual output order, retaining
+frame indices and PTS within contiguous transformation sequences. Do not infer a
+whole-test wall-clock timeline or exact global animation duration from this file.
+The raw recording and XCTest timing remain separate evidence. The source animation
+is finite; the actual reviewed motion demonstrates its transitions, not a reliable
+full-video clock. Later recordings should be checked for this limitation too.

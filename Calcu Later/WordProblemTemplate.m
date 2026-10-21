@@ -1,4 +1,5 @@
 #import "WordProblemTemplate.h"
+#import "GroupingStoryContext.h"
 
 @implementation WordProblemTemplate
 
@@ -21,6 +22,35 @@
                       minC:(NSInteger)minC
                       maxC:(NSInteger)maxC
                 isFraction:(BOOL)isFraction {
+    return [self initWithID:templateID grade:grade operator:operatorSymbol pattern:storyPattern unit:unit
+                      minA:minA maxA:maxA minB:minB maxB:maxB
+        requireAGreaterEqB:requireAGE requireDivisible:requireDiv
+             missingAddend:missingAddend missingSubtrahend:missingSubtrahend missingMinuend:missingMinuend
+          requireRemainder:requireRemainder operator2:operator2 minC:minC maxC:maxC isFraction:isFraction
+           groupingContext:nil strategyPattern:nil];
+}
+
+- (instancetype)initWithID:(NSString *)templateID
+                     grade:(NSInteger)grade
+                  operator:(NSString *)operatorSymbol
+                   pattern:(NSString *)storyPattern
+                      unit:(NSString *)unit
+                      minA:(NSInteger)minA
+                      maxA:(NSInteger)maxA
+                      minB:(NSInteger)minB
+                      maxB:(NSInteger)maxB
+        requireAGreaterEqB:(BOOL)requireAGE
+          requireDivisible:(BOOL)requireDiv
+             missingAddend:(BOOL)missingAddend
+         missingSubtrahend:(BOOL)missingSubtrahend
+            missingMinuend:(BOOL)missingMinuend
+          requireRemainder:(BOOL)requireRemainder
+                 operator2:(NSString *)operator2
+                      minC:(NSInteger)minC
+                      maxC:(NSInteger)maxC
+                isFraction:(BOOL)isFraction
+           groupingContext:(GroupingStoryContext *)groupingContext
+           strategyPattern:(NSString *)strategyPattern {
     self = [super init];
     if (self) {
         _templateID = [templateID copy];
@@ -28,6 +58,8 @@
         _operatorSymbol = [operatorSymbol copy];
         _storyPattern = [storyPattern copy];
         _unit = [unit copy] ?: @"";
+        _groupingContext = [groupingContext copy];
+        _strategyPattern = [strategyPattern copy];
         _minA = minA;
         _maxA = maxA;
         _minB = minB;
@@ -50,6 +82,31 @@
 
 
 #pragma mark - Catalog
+
+/// These helpers are used only at the reviewed catalog call sites below. They do not
+/// classify an arbitrary template by its ID, operation, answer unit or Chinese prose.
+static WordProblemTemplate *WithTeaching(WordProblemTemplate *t, GroupingStoryContext *context, NSString *strategy) {
+    return [[WordProblemTemplate alloc] initWithID:t.templateID grade:t.grade
+                                         operator:t.operatorSymbol pattern:t.storyPattern unit:t.unit
+                                             minA:t.minA maxA:t.maxA minB:t.minB maxB:t.maxB
+                               requireAGreaterEqB:t.requireAGreaterEqualB requireDivisible:t.requireDivisible
+                                    missingAddend:t.missingAddend missingSubtrahend:t.missingSubtrahend
+                                   missingMinuend:t.missingMinuend requireRemainder:t.requireRemainder
+                                        operator2:t.operator2 minC:t.minC maxC:t.maxC isFraction:t.isFraction
+                                  groupingContext:context strategyPattern:strategy];
+}
+
+static WordProblemTemplate *TG(WordProblemTemplate *t, GroupingStoryMeaning meaning,
+                               NSString *itemName, NSString *itemUnit, NSString *groupName, NSString *strategy) {
+    GroupingStoryContext *context = [[GroupingStoryContext alloc] initWithMeaning:meaning
+                                                                       itemName:itemName itemUnit:itemUnit
+                                                                      groupName:groupName answerUnit:t.unit];
+    return WithTeaching(t, context, strategy);
+}
+
+static WordProblemTemplate *TT(WordProblemTemplate *t, NSString *strategy) {
+    return WithTeaching(t, nil, strategy);
+}
 
 /// 內部 helper：標準題型（無 missingAddend / 無餘數要求 / 單步驟）。
 static WordProblemTemplate *T(NSString *tid, NSInteger grade, NSString *op,
@@ -376,20 +433,20 @@ static WordProblemTemplate *T2(NSString *tid, NSInteger grade,
     [arr addObject:T(@"g2_wt_g_diff",     2, @"−", @"一袋米 {a} 公克，倒出 {b} 公克煮飯後，還剩幾公克？", @"公克", 280, 900, 80, 380, YES, NO)];
 
     // — 乘法（九九乘法範圍） —
-    [arr addObject:T(@"g2_mul_dumpling",  2, @"×", @"每盤水餃有 {a} 個，{b} 盤共有幾個水餃？", @"個", 2, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_row",       2, @"×", @"教室裡每排有 {a} 個學生，共有 {b} 排，教室裡共有幾個學生？", @"個", 2, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_day_page",  2, @"×", @"小明每天讀 {a} 頁書，{b} 天共讀了幾頁書？", @"頁", 2, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_legs_dog",  2, @"×", @"每隻狗有 4 條腿，{b} 隻狗共有幾條腿？", @"條", 4, 4, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_flower",    2, @"×", @"一束花有 {a} 朵，{b} 束花共有幾朵？", @"朵", 3, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_candy",     2, @"×", @"一盒糖果有 {a} 顆，{b} 盒共有幾顆糖果？", @"顆", 4, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_basket",    2, @"×", @"每籃裝 {a} 顆蘋果，{b} 籃共有幾顆蘋果？", @"顆", 4, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_wheel",     2, @"×", @"每台車有 {a} 個輪子，{b} 台車共有幾個輪子？", @"個", 3, 4, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_finger",    2, @"×", @"每隻手有 {a} 根手指，{b} 隻手共有幾根手指？", @"根", 5, 5, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_age",       2, @"×", @"弟弟 {b} 歲，哥哥的年紀是弟弟的 {a} 倍，哥哥幾歲？", @"歲", 2, 5, 3, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_packet",    2, @"×", @"一包餅乾有 {a} 塊，買 {b} 包共有幾塊餅乾？", @"塊", 3, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_egg_box",   2, @"×", @"一盒雞蛋裝 {a} 顆，{b} 盒共有幾顆雞蛋？", @"顆", 6, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_chair",     2, @"×", @"每張桌子配 {a} 把椅子，{b} 張桌子共配幾把椅子？", @"把", 2, 6, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_jiaozi",    2, @"×", @"每碗麵放 {a} 顆貢丸，{b} 碗共需要幾顆貢丸？", @"顆", 2, 5, 2, 9, NO, NO)];
+    [arr addObject:TG(T(@"g2_mul_dumpling",  2, @"×", @"每盤水餃有 {a} 個，{b} 盤共有幾個水餃？", @"個", 2, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"水餃", @"個", @"盤", @"每盤有 {a} 個水餃，共有 {b} 盤。把每盤一樣多的水餃合起來，求總數。")];
+    [arr addObject:TG(T(@"g2_mul_row",       2, @"×", @"教室裡每排有 {a} 個學生，共有 {b} 排，教室裡共有幾個學生？", @"個", 2, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"學生", @"個", @"排", @"每排有 {a} 個學生，共有 {b} 排。把每排一樣多的學生人數合起來。")];
+    [arr addObject:TG(T(@"g2_mul_day_page",  2, @"×", @"小明每天讀 {a} 頁書，{b} 天共讀了幾頁書？", @"頁", 2, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"書", @"頁", @"天", @"每天都讀 {a} 頁書，連續讀了 {b} 天。把每天讀的頁數合起來，求總頁數。")];
+    [arr addObject:TG(T(@"g2_mul_legs_dog",  2, @"×", @"每隻狗有 4 條腿，{b} 隻狗共有幾條腿？", @"條", 4, 4, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"腿", @"條", @"隻狗", @"每隻狗有 {a} 條腿，共有 {b} 隻狗。這裡要累加的是腿的條數，不是狗的隻數。")];
+    [arr addObject:TG(T(@"g2_mul_flower",    2, @"×", @"一束花有 {a} 朵，{b} 束花共有幾朵？", @"朵", 3, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"花", @"朵", @"束", @"每束有 {a} 朵花，共有 {b} 束。把每束一樣多的花合起來，求總朵數。")];
+    [arr addObject:TG(T(@"g2_mul_candy",     2, @"×", @"一盒糖果有 {a} 顆，{b} 盒共有幾顆糖果？", @"顆", 4, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"糖果", @"顆", @"盒", @"每盒有 {a} 顆糖果，共有 {b} 盒。把每盒一樣多的糖果合起來，求總顆數。")];
+    [arr addObject:TG(T(@"g2_mul_basket",    2, @"×", @"每籃裝 {a} 顆蘋果，{b} 籃共有幾顆蘋果？", @"顆", 4, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"蘋果", @"顆", @"籃", @"每籃有 {a} 顆蘋果，共有 {b} 籃。把每籃一樣多的蘋果合起來。")];
+    [arr addObject:TG(T(@"g2_mul_wheel",     2, @"×", @"每台車有 {a} 個輪子，{b} 台車共有幾個輪子？", @"個", 3, 4, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"輪子", @"個", @"台車", @"每台車有 {a} 個輪子，共有 {b} 台車。這裡要累加的是輪子的個數，不是車的台數。")];
+    [arr addObject:TG(T(@"g2_mul_finger",    2, @"×", @"每隻手有 {a} 根手指，{b} 隻手共有幾根手指？", @"根", 5, 5, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"手指", @"根", @"隻手", @"每隻手有 {a} 根手指，共有 {b} 隻手。把每隻手的手指根數合起來。")];
+    [arr addObject:TT(T(@"g2_mul_age",       2, @"×", @"弟弟 {b} 歲，哥哥的年紀是弟弟的 {a} 倍，哥哥幾歲？", @"歲", 2, 5, 3, 9, NO, NO), @"先看弟弟的年齡：{b} 歲。哥哥是弟弟的 {a} 倍，所以把 {b} 歲重複 {a} 次。")];
+    [arr addObject:TG(T(@"g2_mul_packet",    2, @"×", @"一包餅乾有 {a} 塊，買 {b} 包共有幾塊餅乾？", @"塊", 3, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"餅乾", @"塊", @"包", @"每包有 {a} 塊餅乾，共有 {b} 包。把每包一樣多的餅乾合起來。")];
+    [arr addObject:TG(T(@"g2_mul_egg_box",   2, @"×", @"一盒雞蛋裝 {a} 顆，{b} 盒共有幾顆雞蛋？", @"顆", 6, 9, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"雞蛋", @"顆", @"盒", @"每盒有 {a} 顆雞蛋，共有 {b} 盒。把每盒一樣多的雞蛋合起來。")];
+    [arr addObject:TG(T(@"g2_mul_chair",     2, @"×", @"每張桌子配 {a} 把椅子，{b} 張桌子共配幾把椅子？", @"把", 2, 6, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"椅子", @"把", @"張桌子", @"每張桌子配 {a} 把椅子，共有 {b} 張桌子。把每張桌子需要的椅子把數合起來。")];
+    [arr addObject:TG(T(@"g2_mul_jiaozi",    2, @"×", @"每碗麵放 {a} 顆貢丸，{b} 碗共需要幾顆貢丸？", @"顆", 2, 5, 2, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"貢丸", @"顆", @"碗麵", @"每碗麵放 {a} 顆貢丸，共有 {b} 碗麵。把每碗需要的貢丸顆數合起來。")];
 
     // — 未知數在前（百以內，配合 G2 進階加減）—
     [arr addObject:TM(@"g2_miss_save",    2, @"小華原本存了幾元？媽媽再給他 {b} 元後，存錢筒裡共有 {a} 元。", @"元", 45, 380, 25, 180)];
@@ -405,8 +462,8 @@ static WordProblemTemplate *T2(NSString *tid, NSInteger grade,
     [arr addObject:T(@"g2_add_order",      2, @"+", @"運動會排隊，從前面數小明是第 {a} 個，後面還有 {b} 個人，這一隊共有幾個人？", @"個", 5, 25, 5, 25, NO, NO)];
 
     // — 總價＝單價 × 數量（乘法的「錢」情境） —
-    [arr addObject:T(@"g2_mul_price_pen",  2, @"×", @"一枝筆 {a} 元，買 {b} 枝共要付幾元？", @"元", 5, 9, 2, 9, NO, NO)];
-    [arr addObject:T(@"g2_mul_price_snack",2, @"×", @"一包餅乾 {a} 元，買 {b} 包共要付幾元？", @"元", 6, 9, 2, 9, NO, NO)];
+    [arr addObject:TT(T(@"g2_mul_price_pen",  2, @"×", @"一枝筆 {a} 元，買 {b} 枝共要付幾元？", @"元", 5, 9, 2, 9, NO, NO), @"一枝筆要 {a} 元，買 {b} 枝。把每枝的價錢累加 {b} 次，求的是總價，不是筆的枝數。")];
+    [arr addObject:TT(T(@"g2_mul_price_snack",2, @"×", @"一包餅乾 {a} 元，買 {b} 包共要付幾元？", @"元", 6, 9, 2, 9, NO, NO), @"一包餅乾要 {a} 元，買 {b} 包。把每包的價錢累加 {b} 次，求的是總價，不是餅乾的塊數。")];
 
     // — 二步驟題（同優先級 a±b±c）：對應 N-2-2「二步驟解題」 —
     [arr addObject:T2(@"g2_two_threeday", 2, @"+", @"+", @"小明第一天讀了 {a} 頁、第二天讀了 {b} 頁、第三天讀了 {c} 頁，三天共讀了幾頁？", @"頁", 25, 120, 18, 95, 15, 90)];
@@ -449,55 +506,55 @@ static WordProblemTemplate *T2(NSString *tid, NSInteger grade,
     [arr addObject:T(@"g3_sub_pages2",    3, @"−", @"一套書共 {a} 頁，小明已經讀了 {b} 頁，還剩幾頁沒讀？", @"頁", 1280, 6500, 380, 2800, YES, NO)];
 
     // — 乘法（一位數 × 二位數） —
-    [arr addObject:T(@"g3_mul_class_size", 3, @"×", @"每班有 {a} 個學生，學校有 {b} 班，全校共有幾個學生？", @"個", 20, 35, 3, 9, NO, NO)];
-    [arr addObject:T(@"g3_mul_box",       3, @"×", @"一盒巧克力有 {a} 顆，買 {b} 盒共有幾顆巧克力？", @"顆", 12, 30, 3, 9, NO, NO)];
-    [arr addObject:T(@"g3_mul_multiple",  3, @"×", @"小華有 {a} 元，小明的錢是小華的 {b} 倍，小明有幾元？", @"元", 15, 45, 3, 9, NO, NO)];
-    [arr addObject:T(@"g3_mul_bag",       3, @"×", @"一袋米 {a} 公斤，{b} 袋共有幾公斤？", @"公斤", 12, 25, 3, 9, NO, NO)];
-    [arr addObject:T(@"g3_mul_seat",      3, @"×", @"電影院每排有 {a} 個座位，共 {b} 排，電影院共有幾個座位？", @"個", 15, 30, 4, 9, NO, NO)];
+    [arr addObject:TG(T(@"g3_mul_class_size", 3, @"×", @"每班有 {a} 個學生，學校有 {b} 班，全校共有幾個學生？", @"個", 20, 35, 3, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"學生", @"個", @"班", @"每班有 {a} 個學生，共有 {b} 班。把各班一樣多的學生人數合起來。")];
+    [arr addObject:TG(T(@"g3_mul_box",       3, @"×", @"一盒巧克力有 {a} 顆，買 {b} 盒共有幾顆巧克力？", @"顆", 12, 30, 3, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"巧克力", @"顆", @"盒", @"每盒有 {a} 顆巧克力，共有 {b} 盒。把每盒一樣多的巧克力合起來。")];
+    [arr addObject:TT(T(@"g3_mul_multiple",  3, @"×", @"小華有 {a} 元，小明的錢是小華的 {b} 倍，小明有幾元？", @"元", 15, 45, 3, 9, NO, NO), @"小華有 {a} 元，小明的錢是小華的 {b} 倍。把小華的金額當作 1 份，求 {b} 份是多少元。")];
+    [arr addObject:TT(T(@"g3_mul_bag",       3, @"×", @"一袋米 {a} 公斤，{b} 袋共有幾公斤？", @"公斤", 12, 25, 3, 9, NO, NO), @"每袋米重 {a} 公斤，共有 {b} 袋。把每袋的重量累加 {b} 次，求的是總重量，不是袋數。")];
+    [arr addObject:TG(T(@"g3_mul_seat",      3, @"×", @"電影院每排有 {a} 個座位，共 {b} 排，電影院共有幾個座位？", @"個", 15, 30, 4, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"座位", @"個", @"排", @"每排有 {a} 個座位，共有 {b} 排。把每排一樣多的座位數合起來。")];
 
     // — 乘法（一位數 × 三位數） —
     // 故事改為「每箱裝 {a} 顆…買 {b} 箱」這種「三位數重複 b 次」的情境，
     // 比「每班有 {a} 個學生」更貼近 N-3-4 的 1-digit × 3-digit。
-    [arr addObject:T(@"g3_mul_school3",   3, @"×", @"每箱蘋果 {a} 顆，水果店進了 {b} 箱，共有幾顆蘋果？", @"顆", 105, 320, 3, 9, NO, NO)];   // 三位數 × 一位數
-    [arr addObject:T(@"g3_mul_pages3",    3, @"×", @"小明每天讀 {a} 頁書，{b} 天共讀了幾頁？", @"頁", 35, 120, 3, 9, NO, NO)];
-    [arr addObject:T(@"g3_mul_factory3",  3, @"×", @"工廠每天生產 {a} 個玩具，{b} 天共生產幾個玩具？", @"個", 105, 320, 3, 9, NO, NO)];
-    [arr addObject:T(@"g3_mul_ticket3",   3, @"×", @"一張票 {a} 元，賣出 {b} 張共收到幾元？", @"元", 120, 280, 3, 8, NO, NO)];
+    [arr addObject:TG(T(@"g3_mul_school3",   3, @"×", @"每箱蘋果 {a} 顆，水果店進了 {b} 箱，共有幾顆蘋果？", @"顆", 105, 320, 3, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"蘋果", @"顆", @"箱", @"每箱有 {a} 顆蘋果，共有 {b} 箱。把每箱一樣多的蘋果合起來。")];   // 三位數 × 一位數
+    [arr addObject:TG(T(@"g3_mul_pages3",    3, @"×", @"小明每天讀 {a} 頁書，{b} 天共讀了幾頁？", @"頁", 35, 120, 3, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"書", @"頁", @"天", @"每天都讀 {a} 頁書，連續讀了 {b} 天。把每天讀的頁數合起來，求總頁數。")];
+    [arr addObject:TG(T(@"g3_mul_factory3",  3, @"×", @"工廠每天生產 {a} 個玩具，{b} 天共生產幾個玩具？", @"個", 105, 320, 3, 9, NO, NO), GroupingStoryMeaningBuildEqualGroups, @"玩具", @"個", @"天", @"每天都生產 {a} 個玩具，連續生產 {b} 天。把每天的產量合起來，求玩具總個數。")];
+    [arr addObject:TT(T(@"g3_mul_ticket3",   3, @"×", @"一張票 {a} 元，賣出 {b} 張共收到幾元？", @"元", 120, 280, 3, 8, NO, NO), @"一張票是 {a} 元，賣出 {b} 張。把每張票的價錢累加 {b} 次，求的是收到的總金額。")];
 
     // — 單位換算（透過乘法表達） —
-    [arr addObject:T(@"g3_mul_week_day",  3, @"×", @"一週有 7 天，{a} 週共有幾天？", @"天", 3, 25, 7, 7, NO, NO)];
-    [arr addObject:T(@"g3_mul_hour_min",  3, @"×", @"一小時等於 60 分鐘，{a} 小時共有幾分鐘？", @"分鐘", 2, 9, 60, 60, NO, NO)];
-    [arr addObject:T(@"g3_mul_min_sec",   3, @"×", @"一分鐘等於 60 秒，{a} 分鐘共有幾秒？", @"秒", 2, 9, 60, 60, NO, NO)];
-    [arr addObject:T(@"g3_mul_m_cm",      3, @"×", @"1 公尺等於 100 公分，{a} 公尺等於幾公分？", @"公分", 2, 9, 100, 100, NO, NO)];
-    [arr addObject:T(@"g3_mul_kg_g",      3, @"×", @"1 公斤等於 1000 公克，{a} 公斤等於幾公克？", @"公克", 2, 9, 1000, 1000, NO, NO)];
-    [arr addObject:T(@"g3_mul_l_ml",      3, @"×", @"1 公升等於 1000 毫升，{a} 公升等於幾毫升？", @"毫升", 2, 9, 1000, 1000, NO, NO)];
-    [arr addObject:T(@"g3_mul_km_m",      3, @"×", @"1 公里等於 1000 公尺，{a} 公里等於幾公尺？", @"公尺", 2, 9, 1000, 1000, NO, NO)];
-    [arr addObject:T(@"g3_mul_dozen",     3, @"×", @"一打鉛筆有 12 枝，{a} 打共有幾枝鉛筆？", @"枝", 2, 9, 12, 12, NO, NO)];
+    [arr addObject:TT(T(@"g3_mul_week_day",  3, @"×", @"一週有 7 天，{a} 週共有幾天？", @"天", 3, 25, 7, 7, NO, NO), @"1 週有 {b} 天。這裡有 {a} 週，所以把每週的 {b} 天累加 {a} 次，換成天數。")];
+    [arr addObject:TT(T(@"g3_mul_hour_min",  3, @"×", @"一小時等於 60 分鐘，{a} 小時共有幾分鐘？", @"分鐘", 2, 9, 60, 60, NO, NO), @"1 小時有 {b} 分鐘。這裡有 {a} 小時，所以把 {b} 分鐘累加 {a} 次。")];
+    [arr addObject:TT(T(@"g3_mul_min_sec",   3, @"×", @"一分鐘等於 60 秒，{a} 分鐘共有幾秒？", @"秒", 2, 9, 60, 60, NO, NO), @"1 分鐘有 {b} 秒。這裡有 {a} 分鐘，所以把 {b} 秒累加 {a} 次。")];
+    [arr addObject:TT(T(@"g3_mul_m_cm",      3, @"×", @"1 公尺等於 100 公分，{a} 公尺等於幾公分？", @"公分", 2, 9, 100, 100, NO, NO), @"1 公尺有 {b} 公分。這裡有 {a} 公尺，所以把 {b} 公分累加 {a} 次。")];
+    [arr addObject:TT(T(@"g3_mul_kg_g",      3, @"×", @"1 公斤等於 1000 公克，{a} 公斤等於幾公克？", @"公克", 2, 9, 1000, 1000, NO, NO), @"1 公斤有 {b} 公克。這裡有 {a} 公斤，所以把 {b} 公克累加 {a} 次。")];
+    [arr addObject:TT(T(@"g3_mul_l_ml",      3, @"×", @"1 公升等於 1000 毫升，{a} 公升等於幾毫升？", @"毫升", 2, 9, 1000, 1000, NO, NO), @"1 公升有 {b} 毫升。這裡有 {a} 公升，所以把 {b} 毫升累加 {a} 次。")];
+    [arr addObject:TT(T(@"g3_mul_km_m",      3, @"×", @"1 公里等於 1000 公尺，{a} 公里等於幾公尺？", @"公尺", 2, 9, 1000, 1000, NO, NO), @"1 公里有 {b} 公尺。這裡有 {a} 公里，所以把 {b} 公尺累加 {a} 次。")];
+    [arr addObject:TT(T(@"g3_mul_dozen",     3, @"×", @"一打鉛筆有 12 枝，{a} 打共有幾枝鉛筆？", @"枝", 2, 9, 12, 12, NO, NO), @"1 打鉛筆有 {b} 枝。這裡有 {a} 打，所以把每打的 {b} 枝累加 {a} 次。")];
 
     // — 除法（除數為一位數，整除）—
-    [arr addObject:T(@"g3_div_share_candy",  3, @"÷", @"媽媽買了 {a} 顆糖果，平分給 {b} 個小朋友，每個小朋友可分到幾顆糖果？", @"顆", 12, 81, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_pack",         3, @"÷", @"有 {a} 顆糖果，每 {b} 顆裝成一包，可以裝成幾包？", @"包", 12, 81, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_group",        3, @"÷", @"{a} 個學生分成 {b} 組，每組有幾個學生？", @"個", 12, 81, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_plate",        3, @"÷", @"有 {a} 顆水餃，每盤放 {b} 顆，可以裝成幾盤？", @"盤", 12, 81, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_row",          3, @"÷", @"教室有 {a} 個座位排成 {b} 排，每排有幾個座位？", @"個", 12, 81, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_multiple",     3, @"÷", @"小明有 {a} 元，是小華的 {b} 倍，小華有幾元？", @"元", 12, 81, 2, 9, NO, YES)];
+    [arr addObject:TG(T(@"g3_div_share_candy",  3, @"÷", @"媽媽買了 {a} 顆糖果，平分給 {b} 個小朋友，每個小朋友可分到幾顆糖果？", @"顆", 12, 81, 2, 9, NO, YES), GroupingStoryMeaningShareEqually, @"糖果", @"顆", @"個小朋友", @"把 {a} 顆糖果平均分給 {b} 個小朋友。每輪每人分 1 顆，讓每個人分到的一樣多，再看每人有幾顆。")];
+    [arr addObject:TG(T(@"g3_div_pack",         3, @"÷", @"有 {a} 顆糖果，每 {b} 顆裝成一包，可以裝成幾包？", @"包", 12, 81, 2, 9, NO, YES), GroupingStoryMeaningMakeGroupsOf, @"糖果", @"顆", @"包", @"每 {b} 顆糖果裝成一包。從 {a} 顆糖果中一次取出一包的份量，數一數能裝成幾包。")];
+    [arr addObject:TG(T(@"g3_div_group",        3, @"÷", @"{a} 個學生平均分成 {b} 組，每組有幾個學生？", @"個", 12, 81, 2, 9, NO, YES), GroupingStoryMeaningShareEqually, @"學生", @"個", @"組", @"把 {a} 個學生平均分成 {b} 組，每組人數一樣多。求的是每組有幾個學生，不是組數。")];
+    [arr addObject:TG(T(@"g3_div_plate",        3, @"÷", @"有 {a} 顆水餃，每盤放 {b} 顆，可以裝成幾盤？", @"盤", 12, 81, 2, 9, NO, YES), GroupingStoryMeaningMakeGroupsOf, @"水餃", @"顆", @"盤", @"每盤放 {b} 顆水餃。從 {a} 顆水餃中一次取出一盤的份量，數一數能裝成幾盤。")];
+    [arr addObject:TG(T(@"g3_div_row",          3, @"÷", @"教室有 {a} 個座位排成 {b} 排，每排的座位一樣多，每排有幾個座位？", @"個", 12, 81, 2, 9, NO, YES), GroupingStoryMeaningShareEqually, @"座位", @"個", @"排", @"把 {a} 個座位平均排成 {b} 排，每排座位一樣多。求的是每排有幾個座位，不是排數。")];
+    [arr addObject:TT(T(@"g3_div_multiple",     3, @"÷", @"小明有 {a} 元，是小華的 {b} 倍，小華有幾元？", @"元", 12, 81, 2, 9, NO, YES), @"小明的 {a} 元包含 {b} 份小華的錢。先求其中 1 份的金額，不是把錢分給 {b} 個人。")];
 
     // — 除法：較大被除數（覆蓋 N-3-5「除數為一位數」上限） —
-    [arr addObject:T(@"g3_div_big_share",    3, @"÷", @"工廠生產了 {a} 個產品，平均分裝到 {b} 個箱子，每箱有幾個？", @"個", 60, 360, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_big_pack",     3, @"÷", @"商店有 {a} 顆水果，每 {b} 顆裝一袋，可以裝幾袋？", @"袋", 60, 360, 3, 9, NO, YES)];
+    [arr addObject:TG(T(@"g3_div_big_share",    3, @"÷", @"工廠生產了 {a} 個產品，平均分裝到 {b} 個箱子，每箱有幾個？", @"個", 60, 360, 2, 9, NO, YES), GroupingStoryMeaningShareEqually, @"產品", @"個", @"個箱子", @"把 {a} 個產品平均分裝到 {b} 個箱子，讓每箱一樣多。求的是每箱的產品個數。")];
+    [arr addObject:TG(T(@"g3_div_big_pack",     3, @"÷", @"商店有 {a} 顆水果，每 {b} 顆裝一袋，可以裝幾袋？", @"袋", 60, 360, 3, 9, NO, YES), GroupingStoryMeaningMakeGroupsOf, @"水果", @"顆", @"袋", @"每 {b} 顆水果裝成一袋。從 {a} 顆水果中一次取出一袋的份量，數一數能裝成幾袋。")];
 
     // — 單位換算（除法方向）—
-    [arr addObject:T(@"g3_div_min_hour",     3, @"÷", @"{a} 分鐘等於幾小時？", @"小時", 60, 540, 60, 60, NO, YES)];
-    [arr addObject:T(@"g3_div_cm_m",         3, @"÷", @"{a} 公分等於幾公尺？", @"公尺", 100, 900, 100, 100, NO, YES)];
+    [arr addObject:TT(T(@"g3_div_min_hour",     3, @"÷", @"{a} 分鐘等於幾小時？", @"小時", 60, 540, 60, 60, NO, YES), @"每 {b} 分鐘是 1 小時。想一想 {a} 分鐘裡包含幾段 {b} 分鐘，換成小時數。")];
+    [arr addObject:TT(T(@"g3_div_cm_m",         3, @"÷", @"{a} 公分等於幾公尺？", @"公尺", 100, 900, 100, 100, NO, YES), @"每 {b} 公分是 1 公尺。想一想 {a} 公分裡包含幾段 {b} 公分，換成公尺數。")];
 
     // — 正方形周長（邊長 × 4）：幾何情境的乘法 —
-    [arr addObject:T(@"g3_mul_square_peri", 3, @"×", @"一個正方形的邊長是 {a} 公分，它的周長是幾公分？", @"公分", 5, 60, 4, 4, NO, NO)];
+    [arr addObject:TT(T(@"g3_mul_square_peri", 3, @"×", @"一個正方形的邊長是 {a} 公分，它的周長是幾公分？", @"公分", 5, 60, 4, 4, NO, NO), @"正方形有 4 條一樣長的邊，每條邊長 {a} 公分。周長是沿著四條邊走一圈的長度，把四條邊長加起來。")];
 
     // — 比較型「少」（四位數，求較小量） —
     [arr addObject:T(@"g3_sub_less_factory", 3, @"−", @"甲工廠生產 {a} 個零件，乙工廠比甲工廠少 {b} 個，乙工廠生產幾個零件？", @"個", 1500, 8500, 380, 2800, YES, NO)];
 
     // — 平均（總量 ÷ 份數 = 平均，整除） —
-    [arr addObject:T(@"g3_div_avg_page",  3, @"÷", @"小明 {b} 天共讀了 {a} 頁書，平均每天讀幾頁？", @"頁", 60, 360, 2, 9, NO, YES)];
-    [arr addObject:T(@"g3_div_avg_money", 3, @"÷", @"{b} 個小朋友平分 {a} 元，平均每人分到幾元？", @"元", 60, 360, 2, 9, NO, YES)];
+    [arr addObject:TT(T(@"g3_div_avg_page",  3, @"÷", @"小明 {b} 天共讀了 {a} 頁書，平均每天讀幾頁？", @"頁", 60, 360, 2, 9, NO, YES), @"把總共 {a} 頁平均分成 {b} 天的份量，求平均每天的頁數；不代表每天實際讀得一樣多。")];
+    [arr addObject:TT(T(@"g3_div_avg_money", 3, @"÷", @"{b} 個小朋友平分 {a} 元，平均每人分到幾元？", @"元", 60, 360, 2, 9, NO, YES), @"把 {a} 元平均分給 {b} 個小朋友，讓每個人分到的金額一樣多。求的是每人的元數，不是硬幣的枚數。")];
 
     // — 二步驟題（同優先級 a±b±c）：對應 N-3-2 三、四位數加減的二步驟解題 —
     [arr addObject:T2(@"g3_two_warehouse",3, @"+", @"−", @"倉庫原有 {a} 箱貨，進貨 {b} 箱後又出貨 {c} 箱，現在倉庫有幾箱貨？", @"箱", 800, 3500, 280, 1500, 200, 1800)];
@@ -517,12 +574,12 @@ static WordProblemTemplate *T2(NSString *tid, NSInteger grade,
     // — 有餘數除法（108 課綱 N-3-5 核心；題目只問商）—
     // 故事文字以「最多分幾顆/每盤裝幾包/可以裝成幾包」呈現，避免問餘數
     // （目前只在等式面板顯示「a ÷ b = q⋯r」讓孩子看到完整算式）。
-    [arr addObject:TR(@"g3_rem_share_candy", 3, @"{a} 顆糖果平分給 {b} 個小朋友，每人最多可以分到幾顆？", @"顆", 13, 79, 3, 9)];
-    [arr addObject:TR(@"g3_rem_pack",        3, @"有 {a} 顆糖果，每 {b} 顆裝一包，可以裝成幾包？（剩下的不夠裝一包）", @"包", 13, 79, 3, 9)];
-    [arr addObject:TR(@"g3_rem_plate",       3, @"有 {a} 顆水餃，每盤放 {b} 顆，最多可以裝滿幾盤？", @"盤", 13, 79, 3, 9)];
-    [arr addObject:TR(@"g3_rem_team",        3, @"{a} 個球員分成每隊 {b} 人，最多可以分成幾隊？", @"隊", 13, 79, 3, 9)];
-    [arr addObject:TR(@"g3_rem_seat",        3, @"教室裡有 {a} 個學生要坐成每排 {b} 人，可以坐滿幾排？", @"排", 13, 79, 3, 9)];
-    [arr addObject:TR(@"g3_rem_box_big",     3, @"工廠生產了 {a} 個零件，每盒裝 {b} 個，最多可以裝滿幾盒？", @"盒", 50, 280, 3, 9)];
+    [arr addObject:TG(TR(@"g3_rem_share_candy", 3, @"{a} 顆糖果平分給 {b} 個小朋友，每人最多可以分到幾顆？", @"顆", 13, 79, 3, 9), GroupingStoryMeaningShareEqually, @"糖果", @"顆", @"個小朋友", @"把 {a} 顆糖果平均分給 {b} 個小朋友。每輪每人分 1 顆，直到剩下的不夠每人再分 1 顆；剩下的留在一起。")];
+    [arr addObject:TG(TR(@"g3_rem_pack",        3, @"有 {a} 顆糖果，每 {b} 顆裝一包，可以裝成幾包？（剩下的不夠裝一包）", @"包", 13, 79, 3, 9), GroupingStoryMeaningMakeGroupsOf, @"糖果", @"顆", @"包", @"每 {b} 顆糖果裝成一包。從 {a} 顆糖果中一包一包地裝，只數完整的包；不夠一包的糖果留下。")];
+    [arr addObject:TG(TR(@"g3_rem_plate",       3, @"有 {a} 顆水餃，每盤放 {b} 顆，最多可以裝滿幾盤？", @"盤", 13, 79, 3, 9), GroupingStoryMeaningMakeGroupsOf, @"水餃", @"顆", @"盤", @"每盤要放滿 {b} 顆水餃。從 {a} 顆水餃中一盤一盤地裝，只數裝滿的盤；不夠一盤的水餃留下。")];
+    [arr addObject:TG(TR(@"g3_rem_team",        3, @"{a} 個球員分成每隊 {b} 人，最多可以分成幾隊？", @"隊", 13, 79, 3, 9), GroupingStoryMeaningMakeGroupsOf, @"球員", @"人", @"隊", @"每隊需要 {b} 人。把 {a} 個球員依這個人數組隊，只數人數完整的隊；不夠一隊的球員留下。")];
+    [arr addObject:TG(TR(@"g3_rem_seat",        3, @"教室裡有 {a} 個學生要坐成每排 {b} 人，可以坐滿幾排？", @"排", 13, 79, 3, 9), GroupingStoryMeaningMakeGroupsOf, @"學生", @"人", @"排", @"每排坐滿 {b} 人。把 {a} 個學生依這個人數排座位，只數坐滿的排；不滿一排的學生另外計算。")];
+    [arr addObject:TG(TR(@"g3_rem_box_big",     3, @"工廠生產了 {a} 個零件，每盒裝 {b} 個，最多可以裝滿幾盒？", @"盒", 50, 280, 3, 9), GroupingStoryMeaningMakeGroupsOf, @"零件", @"個", @"盒", @"每盒裝滿 {b} 個零件。從 {a} 個零件中一盒一盒地裝，只數裝滿的盒；不夠一盒的零件留下。")];
 
     return [arr copy];
 }

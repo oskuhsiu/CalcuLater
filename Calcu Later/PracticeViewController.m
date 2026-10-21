@@ -13,6 +13,8 @@
 #import "DrawingCanvasView.h"
 #import "ExplanationViewController.h"
 #import "VerticalTeachingViewController.h"
+#import "GroupingTeachingViewController.h"
+#import "GroupingStoryContext.h"
 #import "ChildUIKit.h"
 #import "DecorativeBackgroundView.h"
 #import "MascotView.h"
@@ -394,11 +396,42 @@
     NSUInteger index = [arguments indexOfObject:@"-CalcuLaterScenario"];
     if (index == NSNotFound || index + 1 >= arguments.count) return nil;
     NSString *scenario = arguments[index + 1];
+    if (self.kind == PracticeKindLesson && self.lesson.kind == LessonKindMakeTen
+        && ([scenario isEqualToString:@"make-ten-nine"] || [scenario isEqualToString:@"make-ten-eighteen"])) {
+        NSInteger a = [scenario isEqualToString:@"make-ten-nine"] ? 2 : 9;
+        return @[[[ArithmeticProblem alloc] initWithNumber1:a number2:9 operator:@"+" answer:a + 9]];
+    }
+    if (self.kind == PracticeKindLesson && self.lesson.kind == LessonKindBreakTen
+        && [scenario isEqualToString:@"break-ten-nine"]) {
+        return @[[[ArithmeticProblem alloc] initWithNumber1:18 number2:9 operator:@"-" answer:9]];
+    }
     if (self.kind == PracticeKindStory && [scenario isEqualToString:@"remainder"]) {
         return @[[[WordProblem alloc] initWithStory:@"有 23 顆糖果，每 4 顆裝成一包，可以裝滿幾包？"
             templateID:@"quality.remainder" grade:3 number1:23 number2:4 operator:@"÷" answer:5 unit:@"包"
             missingAddend:NO missingSubtrahend:NO missingMinuend:NO remainder:3
             number3:0 operator2:nil intermediate:0 isFractionAnswer:NO answerNumerator:0 answerDenominator:0]];
+    }
+    if (self.kind == PracticeKindStory && ([scenario isEqualToString:@"sharing"] || [scenario isEqualToString:@"packing"]
+        || [scenario isEqualToString:@"groups"])) {
+        BOOL build = [scenario isEqualToString:@"groups"];
+        BOOL share = [scenario isEqualToString:@"sharing"];
+        GroupingStoryContext *context = [[GroupingStoryContext alloc]
+            initWithMeaning:build ? GroupingStoryMeaningBuildEqualGroups
+                : share ? GroupingStoryMeaningShareEqually : GroupingStoryMeaningMakeGroupsOf
+            itemName:@"糖果" itemUnit:@"顆" groupName:share ? @"個小朋友" : @"包"
+            answerUnit:build || share ? @"顆" : @"包"];
+        NSString *story = build ? @"每包有 3 顆糖果，4 包糖果一共有幾顆？"
+            : share ? @"有 23 顆糖果，平均分給 4 個小朋友，每個小朋友最多可以分到幾顆？"
+                    : @"有 23 顆糖果，每 4 顆裝成一包，可以裝滿幾包？";
+        return @[[[WordProblem alloc] initWithStory:story templateID:[@"quality." stringByAppendingString:scenario]
+            grade:build ? 2 : 3 number1:build ? 3 : 23 number2:4 operator:build ? @"×" : @"÷"
+            answer:build ? 12 : 5 unit:build || share ? @"顆" : @"包"
+            missingAddend:NO missingSubtrahend:NO missingMinuend:NO remainder:build ? 0 : 3
+            number3:0 operator2:nil intermediate:0 isFractionAnswer:NO answerNumerator:0 answerDenominator:0
+            groupingContext:context strategyText:nil]];
+    }
+    if (self.kind == PracticeKindDrill && [scenario isEqualToString:@"division-meanings"]) {
+        return @[[[ArithmeticProblem alloc] initWithNumber1:12 number2:3 operator:@"÷" answer:4]];
     }
     if (self.kind == PracticeKindStory && [scenario isEqualToString:@"fraction"]) {
         return @[[[WordProblem alloc] initWithStory:@"一張色紙平均分成 4 等份，塗上其中 1 份。塗色的部分是整張色紙的幾分之幾？"
@@ -575,7 +608,9 @@
     BOOL strategyLesson = self.lesson && (self.lesson.kind == LessonKindMakeTen || self.lesson.kind == LessonKindBreakTen);
     BOOL needsPlaceValue = MAX(problem.number1, MAX(problem.number2, problem.answer)) > 20;
     UIViewController *explanation;
-    if (needsPlaceValue && !strategyLesson && [VerticalTeachingViewController supportsProblem:problem wordProblem:self.wordProblem]) {
+    if ([GroupingTeachingViewController supportsProblem:problem wordProblem:self.wordProblem]) {
+        explanation = [[GroupingTeachingViewController alloc] initWithProblem:problem wordProblem:self.wordProblem];
+    } else if (needsPlaceValue && !strategyLesson && [VerticalTeachingViewController supportsProblem:problem wordProblem:self.wordProblem]) {
         explanation = [[VerticalTeachingViewController alloc] initWithProblem:problem wordProblem:self.wordProblem];
     } else {
         // Count small sets and retain the lesson's make-ten/break-ten strategy.

@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 
+@class GroupingStoryContext;
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// 一個應用題的「題型模板」。
@@ -13,6 +15,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSString *operatorSymbol;   // + − × ÷
 @property (nonatomic, copy, readonly) NSString *storyPattern;     // 含 {a} {b} 的題目文字
 @property (nonatomic, copy, readonly) NSString *unit;             // 答案單位
+
+/// Explicit catalog producer metadata; nil for unclassified/custom or text-only templates.
+@property (nonatomic, copy, readonly, nullable) GroupingStoryContext *groupingContext;
+/// Only {a}, {b}, {c} are rendered; no answer/remainder placeholders are supported.
+@property (nonatomic, copy, readonly, nullable) NSString *strategyPattern;
 
 @property (nonatomic, assign, readonly) NSInteger minA;
 @property (nonatomic, assign, readonly) NSInteger maxA;
@@ -62,6 +69,29 @@ NS_ASSUME_NONNULL_BEGIN
                       minC:(NSInteger)minC
                       maxC:(NSInteger)maxC
                 isFraction:(BOOL)isFraction;
+
+/// Explicit teaching metadata; the original initializer always defaults it to nil.
+- (instancetype)initWithID:(NSString *)templateID
+                     grade:(NSInteger)grade
+                  operator:(NSString *)operatorSymbol
+                   pattern:(NSString *)storyPattern
+                      unit:(NSString *)unit
+                      minA:(NSInteger)minA
+                      maxA:(NSInteger)maxA
+                      minB:(NSInteger)minB
+                      maxB:(NSInteger)maxB
+        requireAGreaterEqB:(BOOL)requireAGE
+          requireDivisible:(BOOL)requireDiv
+             missingAddend:(BOOL)missingAddend
+         missingSubtrahend:(BOOL)missingSubtrahend
+            missingMinuend:(BOOL)missingMinuend
+          requireRemainder:(BOOL)requireRemainder
+                 operator2:(nullable NSString *)operator2
+                      minC:(NSInteger)minC
+                      maxC:(NSInteger)maxC
+                isFraction:(BOOL)isFraction
+           groupingContext:(nullable GroupingStoryContext *)groupingContext
+           strategyPattern:(nullable NSString *)strategyPattern;
 
 @end
 

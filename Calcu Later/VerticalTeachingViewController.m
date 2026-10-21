@@ -27,6 +27,7 @@
 @property (nonatomic, strong) ChildButton *replayButton;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableSet<NSNumber *> *> *attemptedValues;
 @property (nonatomic, strong) NSMutableIndexSet *answeredSteps;
+- (BOOL)frameCurrentTransformation;
 @end
 
 @implementation VerticalTeachingViewController
@@ -236,8 +237,31 @@
     [self.view layoutIfNeeded];
     [self updateBoardHeight];
     [self.view layoutIfNeeded];
-    if (animated) [self.board showStepAtIndex:self.stepIndex animated:YES];
-    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, self.heading);
+    BOOL framedTransformation = NO;
+    if (animated) {
+        framedTransformation = [self frameCurrentTransformation];
+        [self.board showStepAtIndex:self.stepIndex animated:YES];
+    }
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
+        framedTransformation ? self.board : self.heading);
+}
+- (BOOL)frameCurrentTransformation {
+    CGRect focus = self.board.currentTransformationRect;
+    CGFloat viewportHeight = self.scroll.bounds.size.height;
+    if (CGRectIsNull(focus) || CGRectIsEmpty(focus) || viewportHeight <= 0) return NO;
+    // Keep the full written/concrete relationship when it fits. In landscape,
+    // prioritize the countable exchange instead of playing it below the fold.
+    // The rest remains scrollable; Replay never resets the inspection position.
+    if (focus.size.height > viewportHeight - 16) focus = self.board.currentConcreteTransformationRect;
+    if (CGRectIsNull(focus) || CGRectIsEmpty(focus)) return NO;
+    CGRect inContent = [self.board convertRect:focus toView:self.scroll];
+    CGRect viewport = self.scroll.bounds;
+    if (CGRectGetMinY(inContent) >= CGRectGetMinY(viewport) + 8
+        && CGRectGetMaxY(inContent) <= CGRectGetMaxY(viewport) - 8) return NO;
+    CGFloat proposed = CGRectGetMinY(inContent) - MAX(8, (viewportHeight - inContent.size.height) / 2);
+    CGFloat maximum = MAX(0, self.scroll.contentSize.height - viewportHeight);
+    [self.scroll setContentOffset:CGPointMake(0, MIN(maximum, MAX(0, proposed))) animated:NO];
+    return YES;
 }
 - (NSArray<NSNumber *> *)choiceValuesForStep:(ArithmeticTeachingStep *)step {
     NSInteger answer = step.expectedAnswer.integerValue;

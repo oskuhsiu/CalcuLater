@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 @class ArithmeticProblem;
+@class GroupingStoryContext;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -16,6 +17,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSString *operatorSymbol;  // + − × ÷
 @property (nonatomic, assign, readonly) NSInteger answer;
 @property (nonatomic, copy, readonly) NSString *unit;            // 答案單位（顆 / 個 / 元 / 人…），UI 顯示用
+
+/// Reviewed producer metadata only. Legacy/custom initializers leave these nil.
+@property (nonatomic, copy, readonly, nullable) GroupingStoryContext *groupingContext;
+/// Rendered from a catalog strategy pattern using only the given operands, not the answer.
+@property (nonatomic, copy, readonly, nullable) NSString *strategyText;
 
 /// 「未知數在前」(missing addend) 題型：等式渲染為「? + number2 = number1」，
 /// 內部仍以 number1 − number2 = answer 計算，因此 DistractorGenerator / AnimatedHintView
@@ -70,6 +76,28 @@ NS_ASSUME_NONNULL_BEGIN
               answerNumerator:(NSInteger)answerNumerator
             answerDenominator:(NSInteger)answerDenominator;
 
+/// Explicit teaching metadata; the original full initializer remains source-compatible.
+- (instancetype)initWithStory:(NSString *)storyText
+                   templateID:(NSString *)templateID
+                        grade:(NSInteger)grade
+                      number1:(NSInteger)number1
+                      number2:(NSInteger)number2
+                     operator:(NSString *)operatorSymbol
+                       answer:(NSInteger)answer
+                         unit:(NSString *)unit
+                missingAddend:(BOOL)missingAddend
+            missingSubtrahend:(BOOL)missingSubtrahend
+               missingMinuend:(BOOL)missingMinuend
+                    remainder:(NSInteger)remainder
+                      number3:(NSInteger)number3
+                    operator2:(nullable NSString *)operator2
+                 intermediate:(NSInteger)intermediate
+             isFractionAnswer:(BOOL)isFractionAnswer
+              answerNumerator:(NSInteger)answerNumerator
+            answerDenominator:(NSInteger)answerDenominator
+              groupingContext:(nullable GroupingStoryContext *)groupingContext
+                 strategyText:(nullable NSString *)strategyText;
+
 /// 舊版 init：不帶 missingAddend / remainder，等同於 missingAddend=NO、remainder=0。
 - (instancetype)initWithStory:(NSString *)storyText
                    templateID:(NSString *)templateID
@@ -79,6 +107,9 @@ NS_ASSUME_NONNULL_BEGIN
                      operator:(NSString *)operatorSymbol
                        answer:(NSInteger)answer
                          unit:(NSString *)unit;
+
+/// A strategy only: never reveals the computed answer, quotient, remainder or intermediate result.
+- (NSString *)strategyHintText;
 
 /// 完整的解題說明，會揭示答案，並保留特殊題型的語意與答案單位。
 /// 有餘除法以 q × b + r = a 驗算，unit 只標在商的答案旁，不冒充餘數單位。

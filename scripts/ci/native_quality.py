@@ -28,6 +28,11 @@ TEST_TIMEOUT = 900
 VIDEO_START_TIMEOUT = 10
 VIDEO_STOP_TIMEOUT = 15
 VIDEO_KILL_TIMEOUT = 5
+TEN_FRAME_TESTS = [
+    "Calcu LaterUITests/Calcu_LaterUITests/testMakeTenCurrentNineDotsReplayBackRotateAndFinish",
+    "Calcu LaterUITests/Calcu_LaterUITests/testBreakTenCurrentEightOnesSurviveReplayBackgroundAndReturn",
+]
+LAYOUT_TESTS = ["Calcu LaterUITests/Calcu_LaterLayoutUITests"] + TEN_FRAME_TESTS
 SCENARIOS = {
     "standard": {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
@@ -37,17 +42,17 @@ SCENARIOS = {
     "compact": {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
         "contentSize": "large",
-        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterLayoutUITests"],
+        "onlyTesting": LAYOUT_TESTS,
     },
     "tablet": {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPad-10th-generation",
         "contentSize": "large",
-        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterLayoutUITests"],
+        "onlyTesting": LAYOUT_TESTS,
     },
     "maximumAccessibilityText": {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
         "contentSize": "accessibility-extra-extra-extra-large",
-        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterLayoutUITests"],
+        "onlyTesting": LAYOUT_TESTS,
     },
 }
 
@@ -57,6 +62,47 @@ def scenario():
     if name not in SCENARIOS:
         raise SystemExit(f"Unknown native scenario: {name}; no fallback tests will run.")
     return name, SCENARIOS[name]
+
+
+def required_test_methods(identifiers):
+    """Resolve this repository's Objective-C test selection before execution.
+
+    Test classes live in same-named .m files with zero-argument void test methods.
+    Reject missing/empty filters or overlapping selections, never fall back to
+    another class. Source inventory is intent; passing XCTest lines are proof.
+    """
+    required = set()
+    for identifier in identifiers:
+        parts = identifier.split("/")
+        if (not 1 <= len(parts) <= 3 or parts[0] not in ("Calcu LaterTests", "Calcu LaterUITests")
+                or any(not re.fullmatch(r"[A-Za-z_]\w*", part) for part in parts[1:])):
+            raise SystemExit(f"Unsupported test selection: {identifier}")
+        directory = ROOT / parts[0]
+        paths = (sorted(directory.rglob("*.m")) if len(parts) == 1
+                 else [directory / f"{parts[1]}.m"])
+        matched = set()
+        for path in paths:
+            if not path.is_file():
+                raise SystemExit(f"Missing selected test source: {path}")
+            implementations = re.findall(
+                r"^@implementation\s+" + re.escape(path.stem) + r"\s*$(.*?)^@end\b",
+                path.read_text(), re.MULTILINE | re.DOTALL)
+            if len(implementations) != 1:
+                raise SystemExit(f"Unsupported selected test implementation: {path}")
+            methods = re.findall(r"^\s*-\s*\(\s*void\s*\)\s*(test\w*)\s*\{",
+                                 implementations[0], re.MULTILINE)
+            if not methods or len(methods) != len(set(methods)):
+                raise SystemExit(f"Missing or duplicate test methods in selected source: {path}")
+            matched.update(f"{path.stem}/{method}" for method in methods
+                           if len(parts) < 3 or method == parts[2])
+        if not matched:
+            raise SystemExit(f"Selected test filter resolves to no methods: {identifier}")
+        if required & matched:
+            raise SystemExit(f"Overlapping selected test methods: {identifier}")
+        required.update(matched)
+    if not required:
+        raise SystemExit("No test methods selected; no fallback tests will run.")
+    return sorted(required)
 
 
 def signal_owned_process(process, signum):
@@ -368,6 +414,7 @@ def inventory_diagnostics():
 def prepare():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     scenario_name, selected = scenario()
+    required = required_test_methods(selected["onlyTesting"])
     runtime = os.environ["SIM_RUNTIME"]
     device_type = os.environ["SIM_DEVICE_TYPE"]
     fingerprint = {
@@ -396,6 +443,8 @@ def prepare():
         "scenario": scenario_name,
         "onlyTesting": selected["onlyTesting"],
         "arguments": [f"-only-testing:{identifier}" for identifier in selected["onlyTesting"]],
+        "requiredPassedTests": required,
+        "inventorySource": "checked-out Objective-C test implementations",
         "sourceSHA": fingerprint["sourceSHA"],
         "selectionIsNotExecutionEvidence": True,
     }, indent=2))
@@ -500,6 +549,7 @@ def configure():
 
 def test():
     scenario_name, selected = scenario()
+    required = required_test_methods(selected["onlyTesting"])
     owned = state()
     configuration = json.loads((EVIDENCE / "scenario-configuration.json").read_text())
     if (configuration["status"] != "verified" or configuration["scenario"] != scenario_name
@@ -514,16 +564,20 @@ def test():
                      + ["test-without-building"], timeout=TEST_TIMEOUT)
     # This exact Objective-C XCTest line format was observed in the retained
     # Xcode 16.4 baseline. Missing/changed evidence must not turn an empty class
-    # selection into a green layout job. Never overwrite xcodebuild's own exit.
+    # selection into a green layout job. Every selected method must pass, not
+    # just one method in the last selected class. Never overwrite xcodebuild's exit.
     passed = re.findall(r"^Test Case '-\[([^\] ]+) ([^\]]+)\]' passed \(", output, re.MULTILINE)
-    required_class = selected["onlyTesting"][-1].split("/")[-1]
-    verified = any(class_name == required_class for class_name, _ in passed)
-    if scenario_name == "standard":
-        verified = verified and "Test Suite 'Calcu LaterTests.xctest' passed" in output
+    observed = [f"{class_name}/{method}" for class_name, method in passed]
+    missing = sorted(set(required) - set(observed))
+    required_suites = ["Calcu LaterTests.xctest"] if scenario_name == "standard" else []
+    missing_suites = [name for name in required_suites if f"Test Suite '{name}' passed" not in output]
+    verified = not missing and not missing_suites
     (EVIDENCE / "test-execution.json").write_text(json.dumps({
         "scenario": scenario_name, "ownedSimulatorUDID": owned["udid"],
-        "sourceSHA": os.environ.get("GITHUB_SHA"), "requiredUIClass": required_class,
-        "observedPassedTests": [f"{class_name}/{method}" for class_name, method in passed],
+        "sourceSHA": os.environ.get("GITHUB_SHA"), "onlyTesting": selected["onlyTesting"],
+        "requiredPassedTests": required, "missingPassedTests": missing,
+        "requiredPassedSuites": required_suites, "missingPassedSuites": missing_suites,
+        "observedPassedTests": observed,
         "status": "verified" if verified else "missing-execution-evidence",
         "evidenceSource": "test.log", "automaticRetryAllowed": False,
     }, indent=2))
@@ -572,8 +626,11 @@ def export():
                          "from test.json. A nonempty video is not a visual or animation pass: inspect "
                          "the actual teaching exchanges before claiming motion validation. "
                          "A missing test result is not a pass. Standard retains the model/component target "
-                         "plus Calcu_LaterUITests; the three layout variants select only "
-                         "Calcu_LaterLayoutUITests. Boilerplate repeated launch configurations are excluded.\n")
+                         "plus Calcu_LaterUITests; the three layout variants retain all five "
+                         "Calcu_LaterLayoutUITests flows and add the actual-question 2 + 9 and "
+                         "18 − 9 ten-frame methods. Every selected source method must have a "
+                         "passing test.log entry; test-execution.json lists any missing methods. "
+                         "Boilerplate repeated launch configurations are excluded.\n")
 
 
 def cleanup():

@@ -2,6 +2,7 @@
 #import "SettingsManager.h"
 #import "SettingsViewController.h"
 #import "ProblemGenerator.h"
+#import "ChildUIKit.h"
 
 @interface SettingsTests : XCTestCase
 @property (nonatomic, copy) NSString *suiteName;
@@ -183,6 +184,36 @@
 }
 - (UILabel *)titleInCell:(UITableViewCell *)cell { return [self label:@"settings.row.title" inView:cell.contentView]; }
 - (UILabel *)detailInCell:(UITableViewCell *)cell { return [self label:@"settings.row.detail" inView:cell.contentView]; }
+
+- (void)testSettingsNavigationUsesLocalOpaqueAppearancesForEveryScrollState {
+    SettingsViewController *controller = [[SettingsViewController alloc] initWithSettingsManager:[self freshManager]];
+    UINavigationController *navigation = [[UINavigationController alloc] init];
+    UINavigationBarAppearance *unchangedBarAppearance = [[UINavigationBarAppearance alloc] init];
+    [unchangedBarAppearance configureWithTransparentBackground];
+    unchangedBarAppearance.backgroundColor = UIColor.cyanColor;
+    navigation.navigationBar.standardAppearance = unchangedBarAppearance;
+    navigation.navigationBar.tintColor = UIColor.magentaColor;
+    [navigation setViewControllers:@[controller] animated:NO];
+    [controller loadViewIfNeeded];
+
+    // This is an appearance-contract check, not a rendered scrolling test.
+    for (NSString *key in @[@"standardAppearance", @"scrollEdgeAppearance",
+                            @"compactAppearance", @"compactScrollEdgeAppearance"]) {
+        UINavigationBarAppearance *appearance = [controller.navigationItem valueForKey:key];
+        XCTAssertNotNil(appearance, @"%@ must not fall back to a transparent state.", key);
+        if (!appearance) continue;
+        XCTAssertNil(appearance.backgroundEffect);
+        XCTAssertNotNil(appearance.backgroundColor);
+        if (appearance.backgroundColor) {
+            XCTAssertEqualWithAccuracy(CGColorGetAlpha(appearance.backgroundColor.CGColor), 1.0, 0.001);
+        }
+        XCTAssertEqualObjects(appearance.titleTextAttributes[NSForegroundColorAttributeName], ChildUI.brownText);
+    }
+    XCTAssertEqualObjects(navigation.navigationBar.standardAppearance.backgroundColor, UIColor.cyanColor);
+    XCTAssertEqualObjects(navigation.navigationBar.tintColor, UIColor.magentaColor);
+    XCTAssertEqualObjects(controller.navigationItem.rightBarButtonItem.tintColor, ChildUI.brownText);
+    XCTAssertEqualObjects(controller.navigationItem.rightBarButtonItem.accessibilityIdentifier, @"settings.done");
+}
 
 - (void)testAnswerModeAndDifficultyPersistBeforeSheetDismissal {
     SettingsViewController *controller = [[SettingsViewController alloc] initWithSettingsManager:[self freshManager]];

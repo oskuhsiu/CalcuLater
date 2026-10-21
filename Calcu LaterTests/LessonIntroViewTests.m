@@ -2,9 +2,13 @@
 #import <UIKit/UIKit.h>
 #import "LessonIntroView.h"
 #import "Lesson.h"
+#import "ArithmeticProblem.h"
+#import "ExplanationViewController.h"
 
 @interface LessonIntroView (TeachingTests)
 - (void)renderStepAnimated:(BOOL)animated;
+- (void)applyDotStateForStep:(NSInteger)step;
+- (void)frameNewStepScene:(CGRect)scene frames:(CGRect)frames counters:(CGRect)counters;
 @end
 
 @interface CLIntroFinishObserver : NSObject <LessonIntroViewDelegate>
@@ -12,6 +16,42 @@
 @end
 @implementation CLIntroFinishObserver
 - (void)lessonIntroDidFinish:(LessonIntroView *)introView { self.finishCount++; }
+@end
+
+/// Records the real renderer's snapshots, including the before-state used for
+/// Replay. No substitute renderer and no globally disabled animations.
+@interface CLRecordingIntroView : LessonIntroView
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *renderedSteps;
+@property (nonatomic, strong) NSMutableArray<NSArray<NSDictionary *> *> *snapshots;
+@property (nonatomic, strong) NSMutableArray<NSValue *> *viewportSnapshots;
+@property (nonatomic) NSUInteger framingCount;
+@property (nonatomic) NSUInteger snapshotCountAtFraming;
+@property (nonatomic) BOOL animatorExistedAtFraming;
+@end
+@implementation CLRecordingIntroView
+- (void)applyDotStateForStep:(NSInteger)step {
+    [super applyDotStateForStep:step];
+    if (!self.renderedSteps) self.renderedSteps = [NSMutableArray array];
+    if (!self.snapshots) self.snapshots = [NSMutableArray array];
+    if (!self.viewportSnapshots) self.viewportSnapshots = [NSMutableArray array];
+    [self.renderedSteps addObject:@(step)];
+    NSMutableArray *snapshot = [NSMutableArray array];
+    for (UIView *dot in [self valueForKey:@"dots"]) {
+        [snapshot addObject:@{@"center": [NSValue valueWithCGPoint:dot.center],
+            @"frame": [NSValue valueWithCGRect:dot.frame], @"alpha": @(dot.alpha),
+            @"crossed": [dot valueForKey:@"crossedOut"]}];
+    }
+    [self.snapshots addObject:snapshot];
+    UIScrollView *scroll = [self valueForKey:@"scrollView"];
+    UIView *stage = [self valueForKey:@"stage"];
+    [self.viewportSnapshots addObject:[NSValue valueWithCGRect:[scroll convertRect:scroll.bounds toView:stage]]];
+}
+- (void)frameNewStepScene:(CGRect)scene frames:(CGRect)frames counters:(CGRect)counters {
+    [super frameNewStepScene:scene frames:frames counters:counters];
+    self.framingCount++;
+    self.snapshotCountAtFraming = self.snapshots.count;
+    self.animatorExistedAtFraming = [self valueForKey:@"stepAnimator"] != nil;
+}
 @end
 
 @interface LessonIntroViewTests : XCTestCase
@@ -30,7 +70,11 @@
     [super tearDown];
 }
 
-- (LessonIntroView *)showLessonAtIndex:(NSUInteger)index width:(CGFloat)width height:(CGFloat)height {
+- (Lesson *)lessonAtIndex:(NSUInteger)index { return [LessonCatalog addSubLessons][index]; }
+- (ArithmeticProblem *)problemA:(NSInteger)a b:(NSInteger)b make:(BOOL)make {
+    return [[ArithmeticProblem alloc] initWithNumber1:a number2:b operator:make ? @"+" : @"-" answer:make ? a + b : a - b];
+}
+- (LessonIntroView *)hostIntro:(LessonIntroView *)intro width:(CGFloat)width height:(CGFloat)height {
     [self.intro stopPlayback];
     [self.intro removeFromSuperview];
     self.hostWindow.hidden = YES;
@@ -38,10 +82,10 @@
     UIViewController *host = [[UIViewController alloc] init];
     self.hostWindow.rootViewController = host;
     self.hostWindow.hidden = NO;
-    // Do not let the simulator's current screen size substitute for the width
-    // under test before the synthetic window has completed its first layout.
+    // Complete synthetic-window layout before the simulator can substitute its
+    // screen size for the compact/wide geometry being checked.
     host.view.frame = self.hostWindow.bounds;
-    self.intro = [[LessonIntroView alloc] initWithLesson:[LessonCatalog addSubLessons][index]];
+    self.intro = intro;
     self.intro.frame = host.view.bounds;
     self.intro.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [host.view addSubview:self.intro];
@@ -51,53 +95,108 @@
     [self.intro layoutIfNeeded];
     return self.intro;
 }
-
+- (LessonIntroView *)showLessonAtIndex:(NSUInteger)index width:(CGFloat)width height:(CGFloat)height {
+    return [self hostIntro:[[LessonIntroView alloc] initWithLesson:[self lessonAtIndex:index]] width:width height:height];
+}
+- (LessonIntroView *)showProblemA:(NSInteger)a b:(NSInteger)b make:(BOOL)make width:(CGFloat)width {
+    LessonIntroView *intro = [[LessonIntroView alloc] initWithProblem:[self problemA:a b:b make:make]
+        lesson:[self lessonAtIndex:make ? 3 : 4]];
+    XCTAssertNotNil(intro);
+    return [self hostIntro:intro width:width height:500];
+}
+- (void)settleIntro:(LessonIntroView *)intro atStep:(NSInteger)step {
+    [intro setValue:@(step) forKey:@"step"];
+    [intro renderStepAnimated:NO];
+}
 - (NSArray<UIView *> *)visibleDotsInIntro:(LessonIntroView *)intro {
     NSMutableArray *visible = [NSMutableArray array];
     for (UIView *dot in [intro valueForKey:@"dots"]) if (dot.alpha > 0.5) [visible addObject:dot];
     return visible;
 }
-
+- (NSInteger)countInFrame:(NSString *)key intro:(LessonIntroView *)intro {
+    UIView *frame = [intro valueForKey:key];
+    NSInteger count = 0;
+    for (UIView *dot in [self visibleDotsInIntro:intro]) if (CGRectContainsPoint(frame.frame, dot.center)) count++;
+    return count;
+}
+- (NSInteger)crossedCount:(LessonIntroView *)intro {
+    NSInteger count = 0;
+    for (UIView *dot in [self visibleDotsInIntro:intro]) if ([[dot valueForKey:@"crossedOut"] boolValue]) count++;
+    return count;
+}
 - (void)assertVisibleDotsFitWithoutOverlapping:(LessonIntroView *)intro {
     UIView *stage = [intro valueForKey:@"stage"];
+    UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
     NSArray<UIView *> *dots = [self visibleDotsInIntro:intro];
     for (NSUInteger index = 0; index < dots.count; index++) {
-        XCTAssertTrue(CGRectContainsRect(CGRectInset(stage.bounds, -0.5, -0.5), dots[index].frame));
-        XCTAssertGreaterThanOrEqual(dots[index].bounds.size.width, 28);
+        CGRect dot = dots[index].frame;
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(stage.bounds, -0.5, -0.5), dot));
+        XCTAssertTrue(CGRectContainsRect(first.frame, dot) || CGRectContainsRect(second.frame, dot));
+        XCTAssertGreaterThanOrEqual(dot.size.width, 30);
+        for (UILabel *label in @[[intro valueForKey:@"firstCountLabel"], [intro valueForKey:@"secondCountLabel"]]) {
+            if (label.alpha > 0.5) XCTAssertFalse(CGRectIntersectsRect(dot, label.frame));
+        }
         for (NSUInteger other = index + 1; other < dots.count; other++) {
-            XCTAssertFalse(CGRectIntersectsRect(dots[index].frame, dots[other].frame));
+            XCTAssertFalse(CGRectIntersectsRect(dot, dots[other].frame));
         }
     }
 }
+- (void)assertEquationHidden:(LessonIntroView *)intro a:(NSInteger)a b:(NSInteger)b make:(BOOL)make {
+    NSString *expected = [NSString stringWithFormat:@"%ld %@ %ld = ?", (long)a, make ? @"+" : @"−", (long)b];
+    XCTAssertEqualObjects([[intro valueForKey:@"problemLabel"] text], expected);
+}
 
-- (void)testFooterButtonsFitCompactAndWideLayouts {
+- (CGRect)counterBoundsInSnapshots:(NSArray<NSArray<NSDictionary *> *> *)snapshots {
+    CGRect bounds = CGRectNull;
+    for (NSArray<NSDictionary *> *snapshot in snapshots) {
+        for (NSDictionary *dot in snapshot) {
+            if ([dot[@"alpha"] doubleValue] > 0.01) bounds = CGRectUnion(bounds, [dot[@"frame"] CGRectValue]);
+        }
+    }
+    return bounds;
+}
+
+- (void)assertLastTransitionIsFramedBeforeItsTargetIsApplied:(CLRecordingIntroView *)intro {
+    XCTAssertGreaterThanOrEqual(intro.snapshots.count, 2u);
+    if (intro.snapshots.count < 2) return;
+    XCTAssertGreaterThan(intro.framingCount, 0u);
+    XCTAssertFalse(intro.animatorExistedAtFraming);
+    XCTAssertEqual(intro.snapshotCountAtFraming + 1, intro.snapshots.count);
+    NSUInteger source = intro.snapshots.count - 2;
+    XCTAssertEqual(intro.renderedSteps[source].integerValue, intro.currentStepIndex - 1);
+    XCTAssertEqual(intro.renderedSteps.lastObject.integerValue, intro.currentStepIndex);
+    CGRect movement = [self counterBoundsInSnapshots:@[intro.snapshots[source], intro.snapshots.lastObject]];
+    // This viewport is recorded inside applyDotStateForStep:, not after the
+    // animation or a test-driven scroll. Both endpoints must already fit.
+    CGRect viewport = intro.viewportSnapshots.lastObject.CGRectValue;
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -0.5, -0.5), movement));
+}
+
+- (void)testAllFourFooterControlsFitCompactAndWideLayouts {
     for (NSNumber *width in @[@288, @320, @343, @358, @736]) {
         LessonIntroView *intro = [self showLessonAtIndex:0 width:width.doubleValue height:420];
-        UIButton *replay = [intro valueForKey:@"replayButton"];
-        UIButton *start = [intro valueForKey:@"startButton"];
-        CGRect replayRect = [replay.superview convertRect:replay.frame toView:intro];
-        CGRect startRect = [start.superview convertRect:start.frame toView:intro];
-        XCTAssertTrue(CGRectContainsRect(intro.bounds, replayRect));
-        XCTAssertTrue(CGRectContainsRect(intro.bounds, startRect));
-        XCTAssertFalse(CGRectIntersectsRect(replayRect, startRect));
-        XCTAssertGreaterThanOrEqual(replayRect.size.height, 60);
-        XCTAssertGreaterThanOrEqual(startRect.size.height, 60);
-        XCTAssertEqualWithAccuracy(replayRect.size.width, startRect.size.width, 0.5);
+        NSMutableArray<NSValue *> *frames = [NSMutableArray array];
+        for (NSString *key in @[@"previousButton", @"nextButton", @"replayButton", @"startButton"]) {
+            UIButton *button = [intro valueForKey:key];
+            CGRect rect = [button.superview convertRect:button.frame toView:intro];
+            XCTAssertTrue(CGRectContainsRect(intro.bounds, rect));
+            XCTAssertGreaterThanOrEqual(rect.size.height, 60);
+            XCTAssertGreaterThanOrEqual(rect.size.width, 60);
+            for (NSValue *other in frames) XCTAssertFalse(CGRectIntersectsRect(rect, other.CGRectValue));
+            [frames addObject:[NSValue valueWithCGRect:rect]];
+        }
         UIStackView *footer = [intro valueForKey:@"buttonStack"];
         if (width.doubleValue == 288) XCTAssertEqual(footer.axis, UILayoutConstraintAxisVertical);
         if (width.doubleValue == 736) XCTAssertEqual(footer.axis, UILayoutConstraintAxisHorizontal);
     }
 }
 
-- (void)testAllIntroStepsStayCountableOnSmallPhoneAndIPad {
+- (void)testAllCanonicalIntroStepsStayCountableOnSmallPhoneAndIPad {
     for (NSNumber *width in @[@288, @343, @736]) {
         for (NSUInteger lesson = 0; lesson < 5; lesson++) {
             LessonIntroView *intro = [self showLessonAtIndex:lesson width:width.doubleValue height:420];
-            [intro stopPlayback];
-            NSInteger lastStep = lesson == 3 ? 4 : 3;
-            for (NSInteger step = 0; step <= lastStep; step++) {
-                [intro setValue:@(step) forKey:@"step"];
-                [intro renderStepAnimated:NO];
+            for (NSInteger step = 0; step < intro.numberOfSteps; step++) {
+                [self settleIntro:intro atStep:step];
                 [self assertVisibleDotsFitWithoutOverlapping:intro];
             }
         }
@@ -106,122 +205,433 @@
 
 - (void)testAdditionUsesNineActualDotsInsteadOfOverflowingSingleRow {
     LessonIntroView *intro = [self showLessonAtIndex:1 width:288 height:420];
-    [intro stopPlayback];
-    [intro setValue:@3 forKey:@"step"];
-    [intro renderStepAnimated:NO];
+    [self settleIntro:intro atStep:3];
     NSArray<UIView *> *dots = [self visibleDotsInIntro:intro];
     XCTAssertEqual(dots.count, 9u);
     XCTAssertNotEqualWithAccuracy(dots.firstObject.center.y, dots.lastObject.center.y, 1);
     [self assertVisibleDotsFitWithoutOverlapping:intro];
 }
 
-- (void)testMakeTenTransfersExactlyTwoDotsIntoTenFrame {
-    LessonIntroView *intro = [self showLessonAtIndex:3 width:288 height:420];
-    [intro stopPlayback];
-    [intro setValue:@1 forKey:@"step"];
-    [intro renderStepAnimated:NO];
-    NSArray<UIView *> *originalDots = [[intro valueForKey:@"dots"] copy];
-    XCTAssertEqual([self visibleDotsInIntro:intro].count, 13u);
-    [intro setValue:@3 forKey:@"step"];
-    [intro renderStepAnimated:NO];
-    XCTAssertEqualObjects([intro valueForKey:@"dots"], originalDots);
-    UIView *firstFrame = [intro valueForKey:@"firstFrame"];
-    UIView *secondFrame = [intro valueForKey:@"secondFrame"];
-    NSInteger firstCount = 0, secondCount = 0;
-    for (UIView *dot in [self visibleDotsInIntro:intro]) {
-        if (CGRectContainsPoint(firstFrame.frame, dot.center)) firstCount++;
-        if (CGRectContainsPoint(secondFrame.frame, dot.center)) secondCount++;
+- (void)testEveryValidMakeTenProblemConservesAllDotsAndUsesTwoTenFrames {
+    for (NSNumber *width in @[@288, @736]) {
+        for (NSInteger a = 2; a <= 9; a++) {
+            for (NSInteger b = 11 - a; b <= 9; b++) {
+                @autoreleasepool {
+                    LessonIntroView *intro = [self showProblemA:a b:b make:YES width:width.doubleValue];
+                    NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+                    XCTAssertEqual(identities.count, (NSUInteger)(a + b));
+                    XCTAssertEqualObjects([[intro valueForKey:@"firstFrame"] valueForKey:@"capacity"], @10);
+                    XCTAssertEqualObjects([[intro valueForKey:@"secondFrame"] valueForKey:@"capacity"], @10);
+                    NSInteger need = 10 - a, rest = b - need;
+                    for (NSInteger step = 0; step < intro.numberOfSteps; step++) {
+                        [self settleIntro:intro atStep:step];
+                        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+                        XCTAssertEqual([self visibleDotsInIntro:intro].count, (NSUInteger)(step == 0 ? a : a + b));
+                        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], step < 3 ? a : 10);
+                        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], step == 0 ? 0 : step < 3 ? b : rest);
+                        XCTAssertEqual([self crossedCount:intro], 0);
+                        UIView *firstFrame = [intro valueForKey:@"firstFrame"];
+                        for (NSInteger offset = 0; offset < b; offset++) {
+                            UIView *dot = identities[a + offset];
+                            if (step >= 3) XCTAssertEqual(CGRectContainsPoint(firstFrame.frame, dot.center), offset < need);
+                            XCTAssertEqual([[dot valueForKey:@"selectedForTen"] boolValue], step >= 2 && offset < need);
+                        }
+                        if (step < intro.numberOfSteps - 1) [self assertEquationHidden:intro a:a b:b make:YES];
+                        else {
+                            NSString *sum = [NSString stringWithFormat:@"10 + %ld = %ld", (long)rest, (long)(a + b)];
+                            XCTAssertTrue([intro.currentNarration containsString:sum]);
+                        }
+                        [self assertVisibleDotsFitWithoutOverlapping:intro];
+                    }
+                }
+            }
+        }
     }
-    XCTAssertEqual(firstCount, 10);
-    XCTAssertEqual(secondCount, 3);
-    XCTAssertTrue([[[intro valueForKey:@"narration"] text] containsString:@"8 + 2"]);
 }
 
-- (void)testBreakTenKeepsTheOriginalTwoAndLeavesSevenDots {
-    LessonIntroView *intro = [self showLessonAtIndex:4 width:288 height:420];
+- (void)testEveryValidBreakTenProblemRemovesOnlyCrossedDotsAndKeepsOriginalOnes {
+    for (NSNumber *width in @[@288, @736]) {
+        for (NSInteger a = 11; a <= 18; a++) {
+            for (NSInteger b = a % 10 + 1; b <= 9; b++) {
+                @autoreleasepool {
+                    LessonIntroView *intro = [self showProblemA:a b:b make:NO width:width.doubleValue];
+                    NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+                    NSMutableArray<NSValue *> *onesPositions = [NSMutableArray array];
+                    for (NSInteger i = 10; i < a; i++) [onesPositions addObject:[NSValue valueWithCGPoint:identities[i].center]];
+                    XCTAssertEqualObjects([[intro valueForKey:@"secondFrame"] valueForKey:@"capacity"], @10);
+                    for (NSInteger step = 0; step < intro.numberOfSteps; step++) {
+                        [self settleIntro:intro atStep:step];
+                        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+                        XCTAssertEqual([self visibleDotsInIntro:intro].count, (NSUInteger)(step < 2 ? a : a - b));
+                        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], step < 2 ? 10 : 10 - b);
+                        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], a % 10);
+                        XCTAssertEqual([self crossedCount:intro], step == 1 ? b : 0);
+                        for (NSInteger i = 0; i < a; i++) {
+                            UIView *dot = identities[i];
+                            if (i >= 10) {
+                                XCTAssertEqualWithAccuracy(dot.alpha, 1, 0.001);
+                                XCTAssertTrue(CGPointEqualToPoint(dot.center, onesPositions[i - 10].CGPointValue));
+                                XCTAssertFalse([[dot valueForKey:@"crossedOut"] boolValue]);
+                            } else {
+                                BOOL removed = step >= 2 && i >= 10 - b;
+                                XCTAssertEqualWithAccuracy(dot.alpha, removed ? 0 : 1, 0.001);
+                            }
+                        }
+                        if (step < intro.numberOfSteps - 1) [self assertEquationHidden:intro a:a b:b make:NO];
+                        else {
+                            NSString *sum = [NSString stringWithFormat:@"%ld + %ld = %ld", (long)(10 - b), (long)(a % 10), (long)(a - b)];
+                            XCTAssertTrue([intro.currentNarration containsString:sum]);
+                        }
+                        [self assertVisibleDotsFitWithoutOverlapping:intro];
+                    }
+                }
+            }
+        }
+    }
+}
+
+- (void)testCanonicalStrategiesKeepTheFamiliarEightPlusFiveAndTwelveMinusFive {
+    LessonIntroView *make = [self showLessonAtIndex:3 width:288 height:420];
+    [self assertEquationHidden:make a:8 b:5 make:YES];
+    [self settleIntro:make atStep:3];
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:make], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:make], 3);
+    XCTAssertTrue([make.currentNarration containsString:@"8 + 2"]);
+    LessonIntroView *subtract = [self showLessonAtIndex:4 width:288 height:420];
+    [self assertEquationHidden:subtract a:12 b:5 make:NO];
+    [self settleIntro:subtract atStep:3];
+    XCTAssertEqual([self visibleDotsInIntro:subtract].count, 7u);
+}
+
+- (void)testExplicitProblemIsAValidatedValueSnapshot {
+    ArithmeticProblem *problem = [self problemA:2 b:9 make:YES];
+    LessonIntroView *intro = [[LessonIntroView alloc] initWithProblem:problem lesson:[self lessonAtIndex:3]];
+    problem.number1 = 99; problem.number2 = 70; problem.answer = 0;
+    problem.operatorSymbol = @"×"; problem.isMultiStep = YES;
+    [self hostIntro:intro width:288 height:500];
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
+    [self settleIntro:intro atStep:3];
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 11u);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+}
+
+- (void)testInvalidExplicitInputsAreRejectedInsteadOfShowingCanonicalExamples {
+    NSArray<NSArray *> *invalid = @[
+        @[@2, @8, @"+", @10, @3], @[@1, @9, @"+", @10, @3], @[@10, @1, @"+", @11, @3],
+        @[@9, @10, @"+", @19, @3], @[@8, @5, @"-", @3, @3], @[@8, @5, @"−", @3, @3],
+        @[@8, @5, @"×", @40, @3], @[@8, @5, @"+", @12, @3], @[@8, @5, @"+", @13, @0],
+        @[@10, @5, @"-", @5, @4], @[@19, @9, @"-", @10, @4], @[@18, @8, @"-", @10, @4],
+        @[@11, @0, @"-", @11, @4], @[@11, @10, @"-", @1, @4], @[@12, @5, @"+", @17, @4],
+        @[@12, @5, @"-", @8, @4], @[@12, @5, @"–", @7, @4], @[@(-1), @9, @"+", @8, @3],
+        @[@(NSIntegerMax), @9, @"+", @0, @3], @[@(NSIntegerMin), @9, @"-", @0, @4]
+    ];
+    for (NSArray *row in invalid) {
+        ArithmeticProblem *problem = [[ArithmeticProblem alloc] initWithNumber1:[row[0] integerValue]
+            number2:[row[1] integerValue] operator:row[2] answer:[row[3] integerValue]];
+        Lesson *lesson = [self lessonAtIndex:[row[4] unsignedIntegerValue]];
+        XCTAssertFalse([LessonIntroView supportsProblem:problem lesson:lesson]);
+        LessonIntroView *intro = [[LessonIntroView alloc] initWithProblem:problem lesson:lesson];
+        XCTAssertNil(intro);
+    }
+    ArithmeticProblem *multi = [self problemA:8 b:5 make:YES];
+    multi.isMultiStep = YES;
+    XCTAssertNil([[LessonIntroView alloc] initWithProblem:multi lesson:[self lessonAtIndex:3]]);
+    ArithmeticProblem *unicodeMinus = [self problemA:11 b:9 make:NO];
+    unicodeMinus.operatorSymbol = @"−";
+    XCTAssertNotNil([[LessonIntroView alloc] initWithProblem:unicodeMinus lesson:[self lessonAtIndex:4]]);
+}
+
+- (void)testBackRestoresTransferredAndCrossedOutStatesWithoutRevealingTheAnswer {
+    LessonIntroView *make = [self showProblemA:2 b:9 make:YES width:288];
+    [self settleIntro:make atStep:4];
+    [make goToPreviousStep];
+    [self assertEquationHidden:make a:2 b:9 make:YES];
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:make], 10);
+    [make goToPreviousStep];
+    XCTAssertEqual(make.currentStepIndex, 2);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:make], 2);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:make], 9);
+    LessonIntroView *subtract = [self showProblemA:18 b:9 make:NO width:288];
+    [self settleIntro:subtract atStep:2];
+    [subtract goToPreviousStep];
+    XCTAssertEqual([self visibleDotsInIntro:subtract].count, 18u);
+    XCTAssertEqual([self crossedCount:subtract], 9);
+    [subtract goToPreviousStep];
+    [subtract goToPreviousStep];
+    XCTAssertEqual(subtract.currentStepIndex, 0);
+    XCTAssertEqual([self crossedCount:subtract], 0);
+    [self assertEquationHidden:subtract a:18 b:9 make:NO];
+}
+
+- (void)testReplayReconstructsTheSelectedStepsOwnBeforeStateAndPreservesDotIdentity {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    [self hostIntro:intro width:288 height:500];
+    [self settleIntro:intro atStep:3];
+    NSArray *identities = [[intro valueForKey:@"dots"] copy];
+    [intro.renderedSteps removeAllObjects]; [intro.snapshots removeAllObjects]; [intro.viewportSnapshots removeAllObjects];
+    [intro replayCurrentStep];
+    XCTAssertEqualObjects(intro.renderedSteps, (@[@2, @3]));
+    UIView *second = [intro valueForKey:@"secondFrame"];
+    for (NSInteger i = 2; i < 11; i++) {
+        CGPoint before = [intro.snapshots.firstObject[i][@"center"] CGPointValue];
+        XCTAssertTrue(CGRectContainsPoint(second.frame, before));
+    }
+    XCTAssertEqual(intro.currentStepIndex, 3);
+    XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
     [intro stopPlayback];
-    [intro setValue:@0 forKey:@"step"];
-    [intro renderStepAnimated:NO];
-    NSArray<UIView *> *dots = [intro valueForKey:@"dots"];
-    CGPoint firstExtra = dots[10].center;
-    CGPoint secondExtra = dots[11].center;
-    [intro setValue:@3 forKey:@"step"];
-    [intro renderStepAnimated:NO];
-    XCTAssertEqual([self visibleDotsInIntro:intro].count, 7u);
-    XCTAssertTrue(CGPointEqualToPoint(dots[10].center, firstExtra));
-    XCTAssertTrue(CGPointEqualToPoint(dots[11].center, secondExtra));
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+    [self settleIntro:intro atStep:0];
+    [intro.renderedSteps removeAllObjects]; [intro.snapshots removeAllObjects]; [intro.viewportSnapshots removeAllObjects];
+    [intro replayCurrentStep];
+    XCTAssertEqualObjects(intro.renderedSteps, (@[@(-1), @0]));
+    for (NSDictionary *dot in intro.snapshots.firstObject) XCTAssertEqualWithAccuracy([dot[@"alpha"] doubleValue], 0, 0.001);
+    [intro stopPlayback];
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 2u);
 }
 
-- (void)testShortScreensScrollInsteadOfShrinkingTheDiagram {
-    LessonIntroView *intro = [self showLessonAtIndex:3 width:288 height:360];
+- (void)testBreakTenReplayRestoresCrossedDotsBeforeRemovingThemAgain {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:18 b:9 make:NO]
+        lesson:[self lessonAtIndex:4]];
+    [self hostIntro:intro width:288 height:500];
+    [self settleIntro:intro atStep:2];
+    [intro.renderedSteps removeAllObjects]; [intro.snapshots removeAllObjects]; [intro.viewportSnapshots removeAllObjects];
+    [intro replayCurrentStep];
+    XCTAssertEqualObjects(intro.renderedSteps, (@[@1, @2]));
+    NSArray<NSDictionary *> *before = intro.snapshots.firstObject;
+    for (NSInteger i = 1; i < 10; i++) {
+        XCTAssertTrue([before[i][@"crossed"] boolValue]);
+        XCTAssertEqualWithAccuracy([before[i][@"alpha"] doubleValue], 1, 0.001);
+    }
+    [intro stopPlayback];
+    XCTAssertEqual(intro.currentStepIndex, 2);
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 9u);
+}
+
+- (void)testCompactNextFramesBothTenFramesBeforeFirstPlayWithoutASetupScroll {
+    for (NSNumber *make in @[@YES, @NO]) {
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc]
+            initWithProblem:[self problemA:make.boolValue ? 2 : 18 b:9 make:make.boolValue]
+            lesson:[self lessonAtIndex:make.boolValue ? 3 : 4]];
+        [self hostIntro:intro width:288 height:500];
+        UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+        for (NSInteger step = 1; step < intro.numberOfSteps; step++) {
+            [intro goToNextStep];
+            [self assertLastTransitionIsFramedBeforeItsTargetIsApplied:intro];
+            UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
+            CGRect viewport = intro.viewportSnapshots.lastObject.CGRectValue;
+            XCTAssertTrue(CGRectContainsRect(viewport, CGRectUnion(first.frame, second.frame)));
+            for (UIView *label in @[[intro valueForKey:@"firstCountLabel"], [intro valueForKey:@"secondCountLabel"]]) {
+                XCTAssertTrue(CGRectContainsRect(viewport, label.frame));
+            }
+            XCTAssertGreaterThan(scroll.contentOffset.y, 0);
+            [self assertVisibleDotsFitWithoutOverlapping:intro];
+            [intro stopPlayback];
+        }
+    }
+}
+
+- (void)testWideShortNextFitsBothFullTenFramesBeforeItsFirstPlay {
+    for (NSNumber *width in @[@544, @736]) {
+        for (NSNumber *make in @[@YES, @NO]) {
+            CLRecordingIntroView *intro = [[CLRecordingIntroView alloc]
+                initWithProblem:[self problemA:make.boolValue ? 9 : 18 b:9 make:make.boolValue]
+                lesson:[self lessonAtIndex:make.boolValue ? 3 : 4]];
+            [self hostIntro:intro width:width.doubleValue height:260];
+            UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
+            XCTAssertEqualWithAccuracy(first.frame.origin.y, second.frame.origin.y, 0.001);
+            XCTAssertGreaterThanOrEqual(second.frame.origin.x - CGRectGetMaxX(first.frame), 24);
+            XCTAssertGreaterThanOrEqual(first.bounds.size.width, 240);
+            XCTAssertGreaterThanOrEqual(second.bounds.size.width, 240);
+            XCTAssertEqualWithAccuracy(first.bounds.size.height, 100, 0.001);
+            XCTAssertEqualWithAccuracy(second.bounds.size.height, 100, 0.001);
+            XCTAssertEqualObjects([first valueForKey:@"capacity"], @10);
+            XCTAssertEqualObjects([second valueForKey:@"capacity"], @10);
+            for (NSInteger step = 1; step < intro.numberOfSteps; step++) {
+                [intro goToNextStep];
+                [self assertLastTransitionIsFramedBeforeItsTargetIsApplied:intro];
+                CGRect viewport = intro.viewportSnapshots.lastObject.CGRectValue;
+                XCTAssertTrue(CGRectContainsRect(viewport, CGRectUnion(first.frame, second.frame)));
+                for (UIView *label in @[[intro valueForKey:@"firstCountLabel"], [intro valueForKey:@"secondCountLabel"]]) {
+                    XCTAssertTrue(CGRectContainsRect(viewport, label.frame));
+                }
+                for (UIView *dot in [intro valueForKey:@"dots"]) {
+                    XCTAssertEqualWithAccuracy(dot.bounds.size.width, 32, 0.001);
+                    XCTAssertEqualWithAccuracy(dot.bounds.size.height, 32, 0.001);
+                }
+                [self assertVisibleDotsFitWithoutOverlapping:intro];
+                [intro stopPlayback];
+            }
+        }
+    }
+}
+
+- (void)testShortCompactNextFramesTheWholeCounterTransformationWhenAnnotationsDoNotFit {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    [self hostIntro:intro width:288 height:420];
     UIScrollView *scroll = [intro valueForKey:@"scrollView"];
-    UIView *stage = [intro valueForKey:@"stage"];
-    [scroll layoutIfNeeded];
-    XCTAssertGreaterThan(scroll.contentSize.height, scroll.bounds.size.height);
-    XCTAssertEqualWithAccuracy(stage.bounds.size.height, 244, 0.5);
+    UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
+    XCTAssertGreaterThan(CGRectUnion(first.frame, second.frame).size.height, scroll.bounds.size.height);
+    for (NSInteger step = 1; step <= 3; step++) {
+        [intro goToNextStep];
+        [self assertLastTransitionIsFramedBeforeItsTargetIsApplied:intro];
+        [intro stopPlayback];
+    }
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+}
+
+- (void)testReplayAndBackPreserveAValidUserChosenOffsetInCompactAndWideLayouts {
+    for (NSValue *sizeValue in @[[NSValue valueWithCGSize:CGSizeMake(288, 500)],
+        [NSValue valueWithCGSize:CGSizeMake(736, 260)]]) {
+        CGSize size = sizeValue.CGSizeValue;
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+            lesson:[self lessonAtIndex:3]];
+        [self hostIntro:intro width:size.width height:size.height];
+        [self settleIntro:intro atStep:3];
+        [intro setNeedsLayout]; [intro layoutIfNeeded];
+        UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+        [scroll layoutIfNeeded];
+        CGFloat chosenOffset = 32;
+        XCTAssertGreaterThan(scroll.contentSize.height - scroll.bounds.size.height, chosenOffset);
+        [scroll setContentOffset:CGPointMake(0, chosenOffset) animated:NO];
+        [intro replayCurrentStep];
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
+        XCTAssertEqual(intro.framingCount, 0u);
+        [intro layoutIfNeeded];
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
+        [intro goToPreviousStep];
+        [intro layoutIfNeeded];
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
+        XCTAssertEqual(intro.currentStepIndex, 2);
+        XCTAssertEqual(intro.framingCount, 0u);
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
+}
+
+- (void)testTooShortViewportDoesNotJumpToOnlyOneEndOfTheTransformation {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+        lesson:[self lessonAtIndex:3]];
+    [self hostIntro:intro width:288 height:360];
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    [intro goToNextStep];
+    CGRect counters = [self counterBoundsInSnapshots:@[intro.snapshots.lastObject]];
+    XCTAssertGreaterThan(counters.size.height, scroll.bounds.size.height);
+    XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 11u);
     [self assertVisibleDotsFitWithoutOverlapping:intro];
 }
 
-- (void)testReplayReplacesTimerAndHiddenOrDetachedViewsCancelIt {
-    LessonIntroView *intro = [self showLessonAtIndex:3 width:288 height:420];
-    NSTimer *firstTimer = [intro valueForKey:@"stepTimer"];
-    XCTAssertTrue(firstTimer.valid);
-    [intro play];
-    NSTimer *replacement = [intro valueForKey:@"stepTimer"];
-    XCTAssertFalse(firstTimer.valid);
-    XCTAssertNotEqual(firstTimer, replacement);
-    XCTAssertTrue(replacement.valid);
-    intro.hidden = YES;
-    XCTAssertFalse(replacement.valid);
-    XCTAssertNil([intro valueForKey:@"stepTimer"]);
-    intro.hidden = NO;
-    [intro play];
-    NSTimer *detachedTimer = [intro valueForKey:@"stepTimer"];
-    [intro removeFromSuperview];
-    XCTAssertFalse(detachedTimer.valid);
-    XCTAssertNil([intro valueForKey:@"stepTimer"]);
+- (void)testIdleBeyondTheOldTimerIntervalNeverAdvances {
+    LessonIntroView *intro = [self showLessonAtIndex:3 width:288 height:500];
+    [intro goToNextStep];
+    NSPredicate *advanced = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        return [(LessonIntroView *)object currentStepIndex] != 1;
+    }];
+    XCTNSPredicateExpectation *unexpectedAdvance = [[XCTNSPredicateExpectation alloc] initWithPredicate:advanced object:intro];
+    unexpectedAdvance.inverted = YES;
+    [self waitForExpectations:@[unexpectedAdvance] timeout:3.7];
+    [self assertEquationHidden:intro a:8 b:5 make:YES];
 }
 
-- (void)testExplicitStopAndBackgroundCancelPendingWork {
-    LessonIntroView *intro = [self showLessonAtIndex:0 width:288 height:420];
-    NSTimer *timer = [intro valueForKey:@"stepTimer"];
-    [intro stopPlayback];
-    XCTAssertFalse(timer.valid);
-    XCTAssertNil([intro valueForKey:@"stepTimer"]);
-    XCTAssertFalse([[intro valueForKey:@"playing"] boolValue]);
-    [intro play];
-    timer = [intro valueForKey:@"stepTimer"];
-    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
-    XCTAssertFalse(timer.valid);
-    XCTAssertNil([intro valueForKey:@"stepTimer"]);
+- (void)testStopBackgroundDetachAndReduceMotionSettleOnlyTheSelectedState {
+    LessonIntroView *intro = [self showProblemA:2 b:9 make:YES width:288];
+    [self settleIntro:intro atStep:3];
+    for (NSString *interruption in @[@"stop", @"background", @"motion", @"hidden", @"alpha", @"detach"]) {
+        [intro replayCurrentStep];
+        if ([interruption isEqualToString:@"background"]) {
+            [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+        } else if ([interruption isEqualToString:@"motion"]) {
+            [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+        } else if ([interruption isEqualToString:@"hidden"]) intro.hidden = YES;
+        else if ([interruption isEqualToString:@"alpha"]) intro.alpha = 0;
+        else if ([interruption isEqualToString:@"detach"]) [intro removeFromSuperview];
+        else [intro stopPlayback];
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqual(intro.currentStepIndex, 3);
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+        intro.hidden = NO; intro.alpha = 1;
+    }
 }
 
-- (void)testStartingTwiceOnlyFinishesOnce {
-    LessonIntroView *intro = [self showLessonAtIndex:0 width:288 height:420];
+- (void)testResizeCancelsMotionWithoutAdvancingOrClippingAnyOfEightOriginalOnes {
+    LessonIntroView *intro = [self showProblemA:18 b:9 make:NO width:736];
+    [self settleIntro:intro atStep:2];
+    [intro replayCurrentStep];
+    // Height-only changes do not alter the fixed-height stage's dimensions.
+    // They must still settle the animation rather than relying on stage width.
+    intro.frame = CGRectMake(0, 0, 736, 420);
+    [intro setNeedsLayout]; [intro layoutIfNeeded];
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    XCTAssertEqual(intro.currentStepIndex, 2);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 8);
+    [intro replayCurrentStep];
+    intro.frame = CGRectMake(0, 0, 288, 420);
+    [intro setNeedsLayout]; [intro layoutIfNeeded];
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    XCTAssertEqual(intro.currentStepIndex, 2);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 8);
+    [self assertVisibleDotsFitWithoutOverlapping:intro];
+}
+
+- (void)testShortScreensScrollInsteadOfShrinkingEitherTenFrame {
+    LessonIntroView *intro = [self showProblemA:9 b:9 make:YES width:288];
+    intro.frame = CGRectMake(0, 0, 288, 360);
+    [intro setNeedsLayout]; [intro layoutIfNeeded];
+    [self settleIntro:intro atStep:1];
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    UIView *stage = [intro valueForKey:@"stage"];
+    UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
+    [scroll layoutIfNeeded];
+    XCTAssertGreaterThan(scroll.contentSize.height, scroll.bounds.size.height);
+    XCTAssertGreaterThanOrEqual(first.bounds.size.height, 90);
+    XCTAssertGreaterThanOrEqual(second.bounds.size.height, 90);
+    XCTAssertGreaterThanOrEqual(stage.bounds.size.height, CGRectGetMaxY(second.frame));
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 18u);
+    [self assertVisibleDotsFitWithoutOverlapping:intro];
+}
+
+- (void)testSkippingOrFinishingTwiceOnlyCallsCompletionOnce {
+    for (NSNumber *finishAtEnd in @[@NO, @YES]) {
+        LessonIntroView *intro = [self showProblemA:11 b:9 make:NO width:288];
+        CLIntroFinishObserver *observer = [[CLIntroFinishObserver alloc] init];
+        intro.delegate = observer;
+        if (finishAtEnd.boolValue) {
+            [self settleIntro:intro atStep:intro.numberOfSteps - 1];
+            [intro goToNextStep];
+        }
+        UIButton *start = [intro valueForKey:@"startButton"];
+        [start sendActionsForControlEvents:UIControlEventTouchUpInside];
+        [start sendActionsForControlEvents:UIControlEventTouchUpInside];
+        [intro play]; [intro goToNextStep]; [intro goToPreviousStep]; [intro replayCurrentStep];
+        XCTAssertEqual(observer.finishCount, 1);
+        XCTAssertFalse(start.enabled);
+        XCTAssertFalse([[intro valueForKey:@"previousButton"] isEnabled]);
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    }
+}
+
+- (void)testUnattachedPlayDoesNotScheduleWorkOrFinishTheLesson {
+    LessonIntroView *intro = [[LessonIntroView alloc] initWithLesson:[self lessonAtIndex:0]];
     CLIntroFinishObserver *observer = [[CLIntroFinishObserver alloc] init];
     intro.delegate = observer;
-    UIButton *start = [intro valueForKey:@"startButton"];
-    [start sendActionsForControlEvents:UIControlEventTouchUpInside];
-    [start sendActionsForControlEvents:UIControlEventTouchUpInside];
     [intro play];
-    XCTAssertEqual(observer.finishCount, 1);
-    XCTAssertNil([intro valueForKey:@"stepTimer"]);
-}
-
-- (void)testUnattachedPlayDoesNotScheduleLayoutPollingOrFinishTheLesson {
-    LessonIntroView *intro = [[LessonIntroView alloc] initWithLesson:[LessonCatalog addSubLessons].firstObject];
-    CLIntroFinishObserver *observer = [[CLIntroFinishObserver alloc] init];
-    intro.delegate = observer;
-    [intro play];
-    XCTAssertNil([intro valueForKey:@"stepTimer"]);
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    XCTAssertEqual(intro.currentStepIndex, 0);
     XCTAssertEqual(observer.finishCount, 0);
     [intro stopPlayback];
 }
 
-- (void)testTimerDoesNotKeepRemovedIntroAlive {
+- (void)testRemovedIntroIsNotKeptAliveByPlayback {
     __weak LessonIntroView *weakIntro;
     @autoreleasepool {
         LessonIntroView *intro = [self showLessonAtIndex:0 width:288 height:420];
+        [intro goToNextStep];
         weakIntro = intro;
         [intro removeFromSuperview];
         self.intro = nil;
@@ -231,7 +641,6 @@
 
 - (void)testGridAnnotationsStayReadableAndFullNarrationSupportsLargeText {
     LessonIntroView *intro = [self showLessonAtIndex:3 width:288 height:420];
-    [intro stopPlayback];
     for (NSString *key in @[@"firstCountLabel", @"secondCountLabel"]) {
         UILabel *label = [intro valueForKey:key];
         XCTAssertFalse(label.adjustsFontForContentSizeCategory);
@@ -242,10 +651,29 @@
     XCTAssertTrue(narration.adjustsFontForContentSizeCategory);
     XCTAssertEqual(narration.numberOfLines, 0);
     narration.font = [narration.font fontWithSize:40];
-    [intro setNeedsLayout];
-    [intro layoutIfNeeded];
+    [intro setNeedsLayout]; [intro layoutIfNeeded];
     XCTAssertGreaterThan(narration.bounds.size.height, 40);
+    XCTAssertEqualObjects(intro.currentNarration, narration.text);
     [self assertVisibleDotsFitWithoutOverlapping:intro];
+}
+
+- (void)testCurrentQuestionExplanationUsesTheFullSurfaceWithoutAnAnswerFooter {
+    ExplanationViewController *controller = [[ExplanationViewController alloc]
+        initWithArithmeticProblem:[self problemA:2 b:9 make:YES] wordProblem:nil lesson:[self lessonAtIndex:3]];
+    self.hostWindow = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 390, 844)];
+    self.hostWindow.rootViewController = controller;
+    self.hostWindow.hidden = NO;
+    controller.view.frame = self.hostWindow.bounds;
+    [controller.view setNeedsLayout]; [controller.view layoutIfNeeded];
+    LessonIntroView *intro = [controller valueForKey:@"tenFrameTeaching"];
+    self.intro = intro;
+    XCTAssertNotNil(intro);
+    XCTAssertGreaterThan(intro.bounds.size.height, 360);
+    XCTAssertNil([controller valueForKey:@"explanation"]);
+    XCTAssertNil([controller valueForKey:@"replayButton"]);
+    XCTAssertNil([controller valueForKey:@"visualHeight"]);
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
+    XCTAssertEqualObjects([[intro valueForKey:@"startButton"] titleForState:UIControlStateNormal], @"回到題目");
 }
 
 @end

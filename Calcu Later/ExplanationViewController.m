@@ -4,12 +4,12 @@
 #import "Lesson.h"
 #import "ChildUIKit.h"
 #import "AnimatedHintView.h"
-#import "MakeBreakTenHintView.h"
+#import "LessonIntroView.h"
 #import "MathConceptView.h"
 #import "SpeechManager.h"
 #import "VerticalTeachingViewController.h"
 
-@interface ExplanationViewController ()
+@interface ExplanationViewController () <LessonIntroViewDelegate>
 @property (nonatomic, strong) ArithmeticProblem *problem;
 @property (nonatomic, strong) WordProblem *wordProblem;
 @property (nonatomic, strong) Lesson *lesson;
@@ -18,6 +18,8 @@
 @property (nonatomic, strong) UIView *visual;
 @property (nonatomic, strong) NSLayoutConstraint *visualHeight;
 @property (nonatomic, strong) ChildButton *replayButton;
+@property (nonatomic, strong) LessonIntroView *tenFrameTeaching;
+@property (nonatomic) BOOL closing;
 @end
 
 @implementation ExplanationViewController
@@ -51,6 +53,16 @@
     self.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.largeDetent];
     self.sheetPresentationController.prefersGrabberVisible = YES;
     self.sheetPresentationController.preferredCornerRadius = 28;
+
+    // An ordinary strategy question uses the same countable, child-paced
+    // surface as its introduction. Do not append the old answer or replay.
+    if (!self.wordProblem && self.lesson) {
+        self.tenFrameTeaching = [[LessonIntroView alloc] initWithProblem:self.problem lesson:self.lesson];
+        if (self.tenFrameTeaching) {
+            [self setupTenFrameTeaching];
+            return;
+        }
+    }
 
     ChildButton *back = [ChildButton buttonWithTitle:@"回到題目" backgroundColor:ChildUI.mintGreen];
     back.accessibilityIdentifier = @"explanation.close";
@@ -128,6 +140,43 @@
     [stack addArrangedSubview:speak];
 }
 
+- (void)setupTenFrameTeaching {
+    self.tenFrameTeaching.delegate = self;
+    self.tenFrameTeaching.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.tenFrameTeaching];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    NSLayoutYAxisAnchor *top = safe.topAnchor;
+    CGFloat spacing = 12;
+    if ([VerticalTeachingViewController supportsProblem:self.problem wordProblem:nil]) {
+        ChildButton *vertical = [ChildButton buttonWithTitle:@"也可以一步一步看直式" backgroundColor:ChildUI.skyBlue];
+        vertical.accessibilityIdentifier = @"explanation.vertical";
+        vertical.translatesAutoresizingMaskIntoConstraints = NO;
+        vertical.titleLabel.font = [ChildUI scaledRoundedFontOfSize:18 weight:UIFontWeightSemibold
+            textStyle:UIFontTextStyleBody maximumPointSize:22];
+        vertical.titleLabel.adjustsFontForContentSizeCategory = YES;
+        [vertical addTarget:self action:@selector(showVerticalTeaching) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:vertical];
+        [NSLayoutConstraint activateConstraints:@[
+            [vertical.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12],
+            [vertical.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20],
+            [vertical.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20],
+            [vertical.heightAnchor constraintGreaterThanOrEqualToConstant:60],
+        ]];
+        top = vertical.bottomAnchor;
+        spacing = 8;
+    }
+    // A single full-height surface owns its own scrolling and persistent
+    // navigation. There is no fixed visual slot and no duplicate close footer.
+    [NSLayoutConstraint activateConstraints:@[
+        [self.tenFrameTeaching.topAnchor constraintEqualToAnchor:top constant:spacing],
+        [self.tenFrameTeaching.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+        [self.tenFrameTeaching.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+        [self.tenFrameTeaching.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-8],
+    ]];
+}
+
+- (void)lessonIntroDidFinish:(LessonIntroView *)introView { [self close]; }
+
 - (UIView *)makeVisual {
     WordProblem *word = self.wordProblem;
     if (word && (word.operator2 || word.missingAddend || word.missingSubtrahend || word.missingMinuend)) return nil;
@@ -135,10 +184,6 @@
     // Sharing among four children is NOT the same picture as four per bag.
     // Keep the exact worked text until templates explicitly supply that meaning.
     if (word && ([word.operatorSymbol isEqualToString:@"×"] || [word.operatorSymbol isEqualToString:@"÷"])) return nil;
-    if (self.lesson && (self.lesson.kind == LessonKindMakeTen || self.lesson.kind == LessonKindBreakTen)) {
-        return [[MakeBreakTenHintView alloc] initWithFrame:CGRectZero
-            mode:self.lesson.kind == LessonKindMakeTen ? MakeBreakTenModeMakeTen : MakeBreakTenModeBreakTen];
-    }
     MathConceptView *concept = [[MathConceptView alloc] initWithFrame:CGRectZero];
     BOOL configured = word.isFractionAnswer
         ? [concept configureWithNumerator:word.answerNumerator denominator:word.answerDenominator]
@@ -170,7 +215,8 @@
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    [self replay];
+    if (self.tenFrameTeaching) [self.tenFrameTeaching play];
+    else [self replay];
     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.heading);
 }
 - (void)viewDidLayoutSubviews {
@@ -184,10 +230,6 @@
     [self.view layoutIfNeeded];
     if ([self.visual isKindOfClass:AnimatedHintView.class]) {
         [(AnimatedHintView *)self.visual configureWithProblem:self.problem];
-    } else if ([self.visual isKindOfClass:MakeBreakTenHintView.class]) {
-        void (^configure)(void) = ^{ [(MakeBreakTenHintView *)self.visual configureWithProblem:self.problem]; };
-        if (UIAccessibilityIsReduceMotionEnabled()) [UIView performWithoutAnimation:configure];
-        else configure();
     } else {
         [self.visual setNeedsDisplay];
         UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.visual.accessibilityLabel);
@@ -196,6 +238,7 @@
 - (void)showVerticalTeaching {
     if (self.presentedViewController) return;
     [SpeechManager.sharedInstance stop];
+    [self.tenFrameTeaching stopPlayback];
     VerticalTeachingViewController *teaching = [[VerticalTeachingViewController alloc]
         initWithProblem:self.problem wordProblem:self.wordProblem];
     __weak typeof(self) weakSelf = self;
@@ -205,11 +248,17 @@
     };
     [self presentViewController:teaching animated:YES completion:nil];
 }
-- (void)speak { [SpeechManager.sharedInstance speak:self.explanation.text]; }
-- (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)speak { [SpeechManager.sharedInstance speak:self.tenFrameTeaching ? self.tenFrameTeaching.currentNarration : self.explanation.text]; }
+- (void)close {
+    if (self.closing) return;
+    self.closing = YES;
+    [self.tenFrameTeaching stopPlayback];
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [SpeechManager.sharedInstance stop];
+    [self.tenFrameTeaching stopPlayback];
     if ([self.visual isKindOfClass:AnimatedHintView.class]) [(AnimatedHintView *)self.visual cancelAnimations];
 }
 @end

@@ -9,6 +9,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly, nullable) ArithmeticTeachingSequence *sequence;
 @property (nonatomic, assign, readonly) NSInteger currentStepIndex;
 @property (nonatomic, strong, readonly, nullable) ArithmeticTeachingStep *currentStep;
+/// Actual laid-out regrouping regions, in board coordinates. CGRectNull on
+/// other steps. Prefer the complete grid+concrete exchange when it fits; the
+/// concrete region lets a compact-height owner prioritize countable motion.
+@property (nonatomic, assign, readonly) CGRect currentTransformationRect;
+@property (nonatomic, assign, readonly) CGRect currentConcreteTransformationRect;
 
 /// Invalid sequences or indices clear the entire board and return NO.
 /// Animated regrouping uses the step's own before/after counts, including replay.

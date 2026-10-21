@@ -30,6 +30,9 @@ jobs:
     strategy:
       # Keep each scenario's evidence even when another scenario fails.
       fail-fast: false
+      # Observed hosted arm64 acquisition failures with four queued requests.
+      # Reduce demand without changing runner cost, toolchain or test bounds.
+      max-parallel: 2
       matrix:
         include:
           - scenario: standard

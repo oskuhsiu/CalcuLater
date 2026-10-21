@@ -54,6 +54,51 @@ static void VABRecordPathStart(void *info, const CGPathElement *element) {
     [board layoutIfNeeded];
 }
 
+- (void)testRegroupingFocusUsesActualSelectedGeometryWithoutFutureAnswers {
+    NSArray<ArithmeticTeachingSequence *> *sequences = @[
+        [self sequence:27 second:15 operation:@"+"],
+        [self sequence:500 second:128 operation:@"-"]
+    ];
+    VerticalArithmeticBoardView *board = self.board;
+    XCTAssertTrue(CGRectIsNull(board.currentTransformationRect));
+    XCTAssertTrue(CGRectIsNull(board.currentConcreteTransformationRect));
+    NSUInteger regroupCases = 0;
+    for (ArithmeticTeachingSequence *sequence in sequences) {
+        XCTAssertTrue(sequence.isValid);
+        for (NSNumber *width in @[@288, @343, @680]) {
+            for (NSInteger index = 0; index < (NSInteger)sequence.steps.count; index++) {
+                [board configureWithSequence:sequence stepIndex:index animated:NO];
+                [self fitBoard:board width:width.doubleValue];
+                CGRect full = board.currentTransformationRect;
+                CGRect concrete = board.currentConcreteTransformationRect;
+                if (sequence.steps[index].kind != ArithmeticTeachingStepKindRegroup) {
+                    XCTAssertTrue(CGRectIsNull(full));
+                    XCTAssertTrue(CGRectIsNull(concrete));
+                    continue;
+                }
+                regroupCases++;
+                UIView *grid = [board valueForKey:@"gridView"];
+                UIView *illustration = [board valueForKey:@"illustrationView"];
+                CGRect actualGrid = [grid convertRect:grid.bounds toView:board];
+                CGRect actualConcrete = [illustration convertRect:illustration.bounds toView:board];
+                XCTAssertFalse(CGRectIsNull(full));
+                XCTAssertFalse(CGRectIsEmpty(concrete));
+                XCTAssertTrue(CGRectEqualToRect(concrete, actualConcrete));
+                XCTAssertTrue(CGRectEqualToRect(full, CGRectUnion(actualGrid, actualConcrete)));
+                XCTAssertTrue(CGRectContainsRect(full, actualGrid));
+                XCTAssertTrue(CGRectContainsRect(full, actualConcrete));
+                XCTAssertTrue(CGRectContainsRect(board.bounds, full));
+                XCTAssertEqual(board.currentStepIndex, index);
+                XCTAssertTrue([board.accessibilityValue containsString:@"答案還沒寫"]);
+            }
+        }
+    }
+    XCTAssertEqual(regroupCases, 9u);
+    [board configureWithSequence:nil stepIndex:0 animated:NO];
+    XCTAssertTrue(CGRectIsNull(board.currentTransformationRect));
+    XCTAssertTrue(CGRectIsNull(board.currentConcreteTransformationRect));
+}
+
 - (void)testOnlySnapshotAnswerDigitsAreRenderedIncludingBackAndReplay {
     ArithmeticTeachingSequence *sequence = [self sequence:500 second:128 operation:@"-"];
     VerticalArithmeticBoardView *board = self.board;

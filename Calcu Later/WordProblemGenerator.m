@@ -169,7 +169,9 @@
                                  intermediate:intermediate
                              isFractionAnswer:t.isFraction
                               answerNumerator:t.isFraction ? a : 0
-                            answerDenominator:t.isFraction ? b : 0];
+                            answerDenominator:t.isFraction ? b : 0
+                              groupingContext:t.groupingContext
+                                 strategyText:t.strategyPattern ? [self renderPattern:t.strategyPattern a:a b:b c:c] : nil];
 }
 
 + (NSString *)normalizeOp:(NSString *)op {
