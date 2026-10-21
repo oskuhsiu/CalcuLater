@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import selectors
 import signal
 import subprocess
 import sys
@@ -243,6 +244,95 @@ def build_arguments():
             "-derivedDataPath", "build/DerivedData", "-parallel-testing-enabled", "NO"]
 
 
+def inventory_diagnostic(name, command, timeout):
+    """Bound both collection time and live output; keep only a 16 KiB tail."""
+    started = time.monotonic()
+    result = {"command": command, "timeoutSeconds": timeout,
+              "sourceSHA": os.environ.get("GITHUB_SHA"), "readOnly": True,
+              "automaticRetryAllowed": False, "status": "unavailable"}
+    process = None
+    tail = b""
+    total_bytes = 0
+    stream_closed = False
+    try:
+        process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        os.set_blocking(process.stdout.fileno(), False)
+        deadline = started + timeout
+        with selectors.DefaultSelector() as ready:
+            ready.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not ready.select(timeout=remaining):
+                    raise subprocess.TimeoutExpired(command, timeout)
+                chunk = os.read(process.stdout.fileno(), 16384)
+                if not chunk:
+                    stream_closed = True
+                    process.wait(timeout=max(0, deadline - time.monotonic()))
+                    break
+                total_bytes += len(chunk)
+                tail = (tail + chunk)[-16384:]
+        result["status"] = "collected" if process.returncode == 0 else "failed"
+    except subprocess.TimeoutExpired:
+        result["status"] = "timed-out"
+    except (KeyboardInterrupt, SystemExit):
+        result["status"] = "cancelled"
+        raise
+    except Exception as error:
+        result["error"] = str(error)
+    finally:
+        if process is not None:
+            if not stream_closed or process.poll() is None:
+                # A second cancellation cannot interrupt owned-child cleanup.
+                previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+                try:
+                    for sig in previous:
+                        signal.signal(sig, signal.SIG_IGN)
+                    signal_owned_process(process, signal.SIGKILL)
+                    process.wait(timeout=5)
+                except Exception as error:
+                    result["cleanupError"] = str(error)
+                finally:
+                    for sig, handler in previous.items():
+                        signal.signal(sig, handler)
+            result["exitCode"] = process.poll()
+            process.stdout.close()
+        result["outputTruncated"] = total_bytes > 16384
+        result["elapsedSeconds"] = round(time.monotonic() - started, 2)
+        try:
+            (EVIDENCE / f"{name}.log").write_bytes(tail)
+            (EVIDENCE / f"{name}.json").write_text(json.dumps(result, indent=2))
+        except Exception as error:
+            # Evidence failure must not replace inventory failure or cancellation.
+            print(f"::warning::Could not save {name}: {error}", flush=True)
+
+
+def inventory_diagnostics():
+    """Read-only host evidence; never retry inventory or reset services."""
+    commands = [
+        ("diagnostic-simctl-location", ["xcrun", "--find", "simctl"], 10),
+        # comm intentionally excludes process arguments, which may contain secrets.
+        ("diagnostic-process-states", ["/bin/ps", "-axo", "pid,ppid,state,etime,comm"], 10),
+        ("diagnostic-disk", ["/bin/df", "-h", "/"], 10),
+        ("diagnostic-coresimulator-log", ["/usr/bin/log", "show", "--last", "3m",
+            "--style", "compact", "--info", "--predicate",
+            'process == "CoreSimulatorService" OR subsystem BEGINSWITH "com.apple.CoreSimulator"'], 15),
+    ]
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    def cancel(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    try:
+        for sig in previous:
+            signal.signal(sig, cancel)
+        for name, command, timeout in commands:
+            inventory_diagnostic(name, command, timeout)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def prepare():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     fingerprint = {
@@ -258,7 +348,18 @@ def prepare():
     (EVIDENCE / "environment.json").write_text(json.dumps(fingerprint, indent=2))
     if fingerprint["xcode"] != "Xcode 16.4\nBuild version 16F6" or fingerprint["sdk"] != "18.5":
         raise SystemExit("Environment drift: review the selected Xcode/SDK before running tests.")
-    inventory = json.loads(run("simulator-inventory", ["xcrun", "simctl", "list", "--json"]))
+    try:
+        inventory = json.loads(run("simulator-inventory", ["xcrun", "simctl", "list", "--json"]))
+    except (Exception, SystemExit) as error:
+        if isinstance(error, SystemExit) and error.code in (130, 143):
+            raise  # Honor cancellation rather than starting extra diagnostic work.
+        print("::warning::Simulator inventory failed before device creation. "
+              "Collecting bounded read-only host evidence; inventory will not be retried.", flush=True)
+        try:
+            inventory_diagnostics()
+        except Exception as diagnostic_error:
+            print(f"::warning::Could not retain all inventory diagnostics: {diagnostic_error}", flush=True)
+        raise  # The original inventory failure remains authoritative.
     runtime = os.environ["SIM_RUNTIME"]
     device_type = os.environ["SIM_DEVICE_TYPE"]
     if not any(item["identifier"] == runtime and item.get("isAvailable")
