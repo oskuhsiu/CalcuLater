@@ -56,6 +56,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/// Multiline text inside a width-constrained scrolling stack. Refreshes its
+/// fitting width after layout, so long stories wrap instead of clipping.
+@interface ChildWrappingLabel : UILabel
+@end
+
 
 #pragma mark - ChildButton
 

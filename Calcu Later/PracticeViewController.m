@@ -12,6 +12,7 @@
 #import "DistractorGenerator.h"
 #import "DrawingCanvasView.h"
 #import "ExplanationViewController.h"
+#import "VerticalTeachingViewController.h"
 #import "ChildUIKit.h"
 #import "DecorativeBackgroundView.h"
 #import "MascotView.h"
@@ -99,7 +100,7 @@
 }
 
 - (UILabel *)labelWithSize:(CGFloat)size weight:(UIFontWeight)weight {
-    UILabel *label = [[UILabel alloc] init];
+    UILabel *label = [[ChildWrappingLabel alloc] init];
     label.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
         scaledFontForFont:[ChildUI roundedFontOfSize:size weight:weight] maximumPointSize:size * 1.5];
     label.adjustsFontForContentSizeCategory = YES;
@@ -177,18 +178,20 @@
     if (self.writingMode) self.scroll.panGestureRecognizer.minimumNumberOfTouches = 2;
     self.scroll.translatesAutoresizingMaskIntoConstraints = NO;
     self.scroll.alwaysBounceVertical = YES;
+    self.scroll.accessibilityIdentifier = @"practice.content";
     [self.view addSubview:self.scroll];
     self.questionStack = [self verticalStack];
     self.questionStack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.scroll addSubview:self.questionStack];
     NSLayoutConstraint *columnWidth = [self.questionStack.widthAnchor constraintEqualToAnchor:self.scroll.frameLayoutGuide.widthAnchor constant:-8];
-    columnWidth.priority = UILayoutPriorityDefaultHigh;
+    columnWidth.priority = 999;
     [NSLayoutConstraint activateConstraints:@[
         [self.scroll.contentLayoutGuide.widthAnchor constraintEqualToAnchor:self.scroll.frameLayoutGuide.widthAnchor],
         [self.questionStack.topAnchor constraintEqualToAnchor:self.scroll.contentLayoutGuide.topAnchor constant:8],
         [self.questionStack.bottomAnchor constraintEqualToAnchor:self.scroll.contentLayoutGuide.bottomAnchor constant:-16],
         [self.questionStack.centerXAnchor constraintEqualToAnchor:self.scroll.frameLayoutGuide.centerXAnchor],
         [self.questionStack.widthAnchor constraintLessThanOrEqualToConstant:680], columnWidth,
+        [self.questionStack.widthAnchor constraintLessThanOrEqualToAnchor:self.scroll.frameLayoutGuide.widthAnchor constant:-8],
     ]];
     self.progressLabel = [self labelWithSize:17 weight:UIFontWeightSemibold];
     self.progressLabel.accessibilityIdentifier = @"session.progress";
@@ -402,6 +405,9 @@
             missingAddend:NO missingSubtrahend:NO missingMinuend:NO remainder:0
             number3:0 operator2:nil intermediate:0 isFractionAnswer:YES answerNumerator:1 answerDenominator:4]];
     }
+    if (self.kind == PracticeKindDrill && [scenario isEqualToString:@"carry"]) {
+        return @[[[ArithmeticProblem alloc] initWithNumber1:27 number2:15 operator:@"+" answer:42]];
+    }
     if (self.kind == PracticeKindDrill && [scenario isEqualToString:@"borrow"]) {
         return @[[[ArithmeticProblem alloc] initWithNumber1:500 number2:128 operator:@"-" answer:372]];
     }
@@ -564,8 +570,18 @@
     if (!self.session.currentQuestion || self.presentedViewController || self.showingSummary) return;
     [self.session markHelpUsed];
     [SpeechManager.sharedInstance stop];
-    ExplanationViewController *explanation = [[ExplanationViewController alloc]
-        initWithArithmeticProblem:self.arithmeticProblem wordProblem:self.wordProblem lesson:self.lesson];
+    ArithmeticProblem *problem = self.arithmeticProblem;
+    BOOL strategyLesson = self.lesson && (self.lesson.kind == LessonKindMakeTen || self.lesson.kind == LessonKindBreakTen);
+    BOOL needsPlaceValue = MAX(problem.number1, MAX(problem.number2, problem.answer)) > 20;
+    UIViewController *explanation;
+    if (needsPlaceValue && !strategyLesson && [VerticalTeachingViewController supportsProblem:problem wordProblem:self.wordProblem]) {
+        explanation = [[VerticalTeachingViewController alloc] initWithProblem:problem wordProblem:self.wordProblem];
+    } else {
+        // Count small sets and retain the lesson's make-ten/break-ten strategy.
+        // A secondary entry lets learners connect those pictures to the columns.
+        explanation = [[ExplanationViewController alloc]
+            initWithArithmeticProblem:problem wordProblem:self.wordProblem lesson:self.lesson];
+    }
     [self presentViewController:explanation animated:YES completion:nil];
 }
 - (void)revealEquation {
@@ -626,7 +642,7 @@
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.summaryScroll addSubview:stack];
     NSLayoutConstraint *width = [stack.widthAnchor constraintEqualToAnchor:self.summaryScroll.frameLayoutGuide.widthAnchor constant:-40];
-    width.priority = UILayoutPriorityDefaultHigh;
+    width.priority = 999;
     [NSLayoutConstraint activateConstraints:@[
         [self.summaryScroll.topAnchor constraintEqualToAnchor:self.toolbar.bottomAnchor constant:16],
         [self.summaryScroll.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
@@ -637,6 +653,7 @@
         [stack.bottomAnchor constraintEqualToAnchor:self.summaryScroll.contentLayoutGuide.bottomAnchor constant:-24],
         [stack.centerXAnchor constraintEqualToAnchor:self.summaryScroll.frameLayoutGuide.centerXAnchor],
         [stack.widthAnchor constraintLessThanOrEqualToConstant:600], width,
+        [stack.widthAnchor constraintLessThanOrEqualToAnchor:self.summaryScroll.frameLayoutGuide.widthAnchor constant:-40],
     ]];
     UILabel *heading = [self labelWithSize:32 weight:UIFontWeightBold];
     heading.text = self.reviewRun ? @"再練一次，又進步了！" : @"今天又多會了一點！";

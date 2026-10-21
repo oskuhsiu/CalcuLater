@@ -7,6 +7,7 @@
 #import "MakeBreakTenHintView.h"
 #import "MathConceptView.h"
 #import "SpeechManager.h"
+#import "VerticalTeachingViewController.h"
 
 @interface ExplanationViewController ()
 @property (nonatomic, strong) ArithmeticProblem *problem;
@@ -33,7 +34,7 @@
 }
 
 - (UILabel *)label:(NSString *)text size:(CGFloat)size weight:(UIFontWeight)weight {
-    UILabel *label = [[UILabel alloc] init];
+    UILabel *label = [[ChildWrappingLabel alloc] init];
     label.text = text;
     label.textColor = ChildUI.brownText;
     label.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
@@ -67,7 +68,7 @@
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [scroll addSubview:stack];
     NSLayoutConstraint *preferredWidth = [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-32];
-    preferredWidth.priority = UILayoutPriorityDefaultHigh;
+    preferredWidth.priority = 999;
     [NSLayoutConstraint activateConstraints:@[
         [back.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:20],
         [back.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
@@ -81,6 +82,7 @@
         [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-24],
         [stack.centerXAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.centerXAnchor],
         [stack.widthAnchor constraintLessThanOrEqualToConstant:680],
+        [stack.widthAnchor constraintLessThanOrEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-32],
         preferredWidth,
         [scroll.contentLayoutGuide.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
     ]];
@@ -93,6 +95,13 @@
         [stack addArrangedSubview:[self label:self.wordProblem.storyText size:21 weight:UIFontWeightMedium]];
     }
 
+    if ([VerticalTeachingViewController supportsProblem:self.problem wordProblem:self.wordProblem]) {
+        ChildButton *vertical = [ChildButton buttonWithTitle:@"一步一步看直式" backgroundColor:ChildUI.skyBlue];
+        vertical.accessibilityIdentifier = @"explanation.vertical";
+        [vertical.heightAnchor constraintGreaterThanOrEqualToConstant:60].active = YES;
+        [vertical addTarget:self action:@selector(showVerticalTeaching) forControlEvents:UIControlEventTouchUpInside];
+        [stack addArrangedSubview:vertical];
+    }
     self.visual = [self makeVisual];
     if (self.visual) {
         [stack addArrangedSubview:self.visual];
@@ -182,6 +191,18 @@
         [self.visual setNeedsDisplay];
         UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.visual.accessibilityLabel);
     }
+}
+- (void)showVerticalTeaching {
+    if (self.presentedViewController) return;
+    [SpeechManager.sharedInstance stop];
+    VerticalTeachingViewController *teaching = [[VerticalTeachingViewController alloc]
+        initWithProblem:self.problem wordProblem:self.wordProblem];
+    __weak typeof(self) weakSelf = self;
+    teaching.returnToQuestion = ^{
+        // The button promises the question, not another layer of help.
+        [weakSelf.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+    };
+    [self presentViewController:teaching animated:YES completion:nil];
 }
 - (void)speak { [SpeechManager.sharedInstance speak:self.explanation.text]; }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }

@@ -1,6 +1,6 @@
 # Child-paced practice checkpoint
 
-## Changes under native validation
+## Changes
 
 - Shared practice state for lessons, ten-question drills, five-story rounds and
   five-question scratchpad rounds. Correct answers and worked solutions remain
@@ -43,6 +43,31 @@ persistence, completion/retry, equal fourths, and landscape 500 − 128 borrowin
 Fixtures use the same app views and answer state as generated content and are
 absent from Release builds.
 
-Native build, screenshots, compact-device/iPad layouts, VoiceOver traversal and
-real drawing interaction are still pending for this checkpoint. No visual or
-accessibility pass is claimed from source review alone.
+## Native result and visual review
+
+Source: `c0ba31bcc2fced10bfcee9a2e262b73332296097`.
+[Native run 39626853839](https://github.com/oskuhsiu/CalcuLater/actions/runs/39626853839)
+passed environment, build, Simulator boot, test, evidence export and cleanup.
+Xcode 16.4 (16F6), iOS 18.5 (22F77), iPhone 16, arm64 macOS 15.7.9 (24G830),
+runner image 20260907.0337.1. All 139 model/component tests and 6 native tap flows
+passed, with no skipped tests. The test stage took about 148 seconds, inside the
+unchanged 900-second bound. The earlier animation-idle stalls were absent.
+
+[Evidence artifact 12358371502](https://github.com/oskuhsiu/CalcuLater/actions/runs/39626853839/artifacts/12358371502)
+contains result bundles, logs, 19 actual Simulator screenshots and accessibility
+hierarchies. The downloaded archive SHA-256 is
+`244578529451a927c6cd16d8a6909a690f5d0e6e0d79785e504058e3f5403eb6`.
+Artifacts have a seven-day retention window, so keep a downloaded archive.
+
+Actual image inspection confirmed readable four-choice drill controls, deliberate
+answer persistence, honest guided-result/retry controls, equal fourths and the
+correct `5 × 4 + 3 = 23` remainder check. It also found defects that green tap
+assertions missed: the long remainder story truncated to one line, and a story
+question stack grew to 435 points inside a 361-point viewport. A landscape legacy
+borrow hint showed only the top of a long view. These are not visual passes;
+the next checkpoint adds explicit wrapping/bounds checks and replaces the large
+addition/subtraction hint with inspectable vertical teaching.
+
+Compact-device/iPad layouts, maximum Dynamic Type, full VoiceOver traversal,
+actual multi-finger drawing and the new teaching animations remain pending.
+Passing source/model tests is not evidence that these interactions look right.

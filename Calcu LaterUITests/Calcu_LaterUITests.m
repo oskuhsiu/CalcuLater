@@ -60,7 +60,14 @@
     [self capture:@"05-lesson-question"];
     [self.app.buttons[@"看怎麼算"] tap];
     [self capture:@"06-lesson-hint"];
-    [self.app.buttons[@"explanation.close"] tap];
+    XCUIElement *vertical = self.app.buttons[@"explanation.vertical"];
+    XCTAssertTrue(vertical.hittable);
+    [vertical tap];
+    XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
+    XCUIElement *teaching = [self.app descendantsMatchingType:XCUIElementTypeAny][@"teaching.screen"];
+    XCTAssertTrue(teaching.exists);
+    [teaching.buttons[@"explanation.close"] tap];
+    XCTAssertTrue(self.app.buttons[@"answer.0"].hittable, @"Return from nested teaching goes back to the question.");
     [self leavePractice:@"lesson.close"];
     XCTAssertTrue([self.app.collectionViews.firstMatch waitForExistenceWithTimeout:5]);
     [self.app.buttons[@"navigation.home"] tap];
@@ -75,7 +82,8 @@
 
 - (void)relaunchScenario:(NSString *)scenario {
     [self.app terminate];
-    self.app.launchArguments = [self.app.launchArguments arrayByAddingObjectsFromArray:@[@"-CalcuLaterScenario", scenario]];
+    self.app.launchArguments = [self.app.launchArguments arrayByAddingObjectsFromArray:@[@"-CalcuLaterScenario", scenario,
+        @"-drillTier", [scenario isEqualToString:@"borrow"] ? @"3" : @"2"]];
     [self.app launch];
     XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:10]);
 }
@@ -86,6 +94,11 @@
     [self.app.buttons[@"stories.grade.3"] tap];
     XCTAssertTrue([self.app.staticTexts[@"story.text"] waitForExistenceWithTimeout:5]);
     NSString *story = self.app.staticTexts[@"story.text"].label;
+    CGRect storyFrame = self.app.staticTexts[@"story.text"].frame;
+    CGRect contentFrame = self.app.scrollViews[@"practice.content"].frame;
+    XCTAssertGreaterThanOrEqual(CGRectGetMinX(storyFrame), CGRectGetMinX(contentFrame));
+    XCTAssertLessThanOrEqual(CGRectGetMaxX(storyFrame), CGRectGetMaxX(contentFrame));
+    XCTAssertGreaterThan(storyFrame.size.height, 40.0, @"The full fixture story must wrap, not truncate to one line.");
     [self.app.buttons[@"看怎麼算"] tap];
     XCUIElement *steps = self.app.staticTexts[@"explanation.steps"];
     XCTAssertTrue([steps waitForExistenceWithTimeout:5]);
@@ -126,7 +139,7 @@
     [self.app.buttons[@"navigation.home"] tap];
     [self.app terminate];
     self.app.launchArguments = @[@"-AppleLanguages", @"(zh-Hant)", @"-AppleLocale", @"zh_TW",
-        @"-soundEffectsEnabled", @"NO", @"-CalcuLaterScenario", @"borrow"];
+        @"-soundEffectsEnabled", @"NO", @"-drillTier", @"3", @"-CalcuLaterScenario", @"borrow"];
     [self.app launch];
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationLandscapeLeft;
     [self tapHomeCard:@"home.practice"];
@@ -215,6 +228,107 @@
     XCTAssertTrue([self.app.buttons[@"stories.grade.1"] waitForExistenceWithTimeout:5]);
     [self.app.buttons[@"navigation.home"] tap];
     XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:5]);
+}
+
+- (void)openTeachingScenario:(NSString *)scenario {
+    [self relaunchScenario:scenario];
+    [self tapHomeCard:@"home.practice"];
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
+    XCTAssertTrue(self.app.buttons[@"teaching.previous"].hittable);
+    XCTAssertTrue(self.app.buttons[@"teaching.replay"].hittable);
+}
+
+- (NSString *)teachingBoardValue {
+    XCUIElement *board = [self.app descendantsMatchingType:XCUIElementTypeAny][@"verticalTeachingBoard"];
+    XCTAssertTrue([board waitForExistenceWithTimeout:5]);
+    return [board.value description];
+}
+
+- (void)testCarryTeachingPredictionReplayAndReturn {
+    [self openTeachingScenario:@"carry"];
+    XCTAssertFalse(self.app.buttons[@"teaching.previous"].enabled);
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"答案還沒寫"]);
+    [self capture:@"20-carry-aligned-place-values"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.prompt"].label containsString:@"7 + 5"]);
+    NSString *predictionProgress = self.app.staticTexts[@"teaching.progress"].label;
+    XCUIElement *wrong = self.app.buttons[@"teaching.choice.11"];
+    XCUIElement *correct = self.app.buttons[@"teaching.choice.12"];
+    XCTAssertTrue(wrong.hittable);
+    XCTAssertTrue(correct.hittable);
+    [wrong tap];
+    XCTAssertFalse(wrong.enabled);
+    XCTAssertTrue([self.app.staticTexts[@"teaching.feedback"].label containsString:@"不計分"]);
+    [correct tap];
+    XCTAssertFalse(correct.enabled);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, predictionProgress,
+        @"Prediction never advances the teaching step without the learner.");
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"答案還沒寫"]);
+    [self capture:@"21-carry-child-prediction"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"explanation.steps"].label containsString:@"7 + 5 = 12"]);
+    [self capture:@"22-carry-twelve-ones-before-exchange"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"個位 12 → 2"]);
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"十位 2 → 3"]);
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"答案還沒寫"]);
+    [self capture:@"23-carry-ten-ones-become-one-ten"];
+    NSString *regroupProgress = self.app.staticTexts[@"teaching.progress"].label;
+    NSString *regroupValue = [self teachingBoardValue];
+    [self.app.buttons[@"teaching.replay"] tap];
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, regroupProgress);
+    XCTAssertEqualObjects([self teachingBoardValue], regroupValue);
+    [self.app.buttons[@"teaching.previous"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"explanation.steps"].label containsString:@"7 + 5 = 12"]);
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertEqualObjects([self teachingBoardValue], regroupValue);
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"個位寫 2"]);
+    XCTAssertFalse([[self teachingBoardValue] containsString:@"十位寫 4"]);
+    [self capture:@"24-carry-only-ones-written"];
+    for (NSUInteger i = 0; i < 4; i++) [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"explanation.steps"].label containsString:@"27 + 15 = 42"]);
+    [self capture:@"25-carry-complete"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertEqualObjects(self.app.staticTexts[@"practice.problem"].label, @"27 + 15 = ?");
+    XCTAssertFalse(self.app.buttons[@"session.next"].exists);
+    XCTAssertTrue(self.app.buttons[@"answer.0"].hittable);
+}
+
+- (void)testBorrowAcrossZeroUsesTwoInspectableExchanges {
+    [self openTeachingScenario:@"borrow"];
+    [self capture:@"26-borrow-five-hundreds-before-exchange"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.prompt"].label containsString:@"1 個百"]);
+    [self.app.buttons[@"teaching.choice.10"] tap];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"百位 5 → 4"]);
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"十位 0 → 10"]);
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"答案還沒寫"]);
+    [self capture:@"27-borrow-one-hundred-becomes-ten-tens"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.prompt"].label containsString:@"1 個十"]);
+    [self.app.buttons[@"teaching.next"] tap]; // Optional participation: choosing demonstration is valid.
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"十位 10 → 9"]);
+    XCTAssertTrue([[self teachingBoardValue] containsString:@"個位 0 → 10"]);
+    [self capture:@"28-borrow-one-ten-becomes-ten-ones"];
+    NSString *value = [self teachingBoardValue];
+    [self.app.buttons[@"teaching.replay"] tap];
+    XCTAssertEqualObjects([self teachingBoardValue], value);
+    [[XCUIDevice sharedDevice] pressButton:XCUIDeviceButtonHome];
+    [self.app activate];
+    XCTAssertEqualObjects([self teachingBoardValue], value);
+    XCTAssertTrue(self.app.buttons[@"teaching.next"].hittable);
+    [self.app.buttons[@"teaching.previous"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.prompt"].label containsString:@"1 個十"]);
+    [self.app.buttons[@"teaching.next"] tap];
+    for (NSUInteger i = 0; i < 10; i++) [self.app.buttons[@"teaching.next"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"explanation.steps"].label containsString:@"500 − 128 = 372"]);
+    [self capture:@"29-borrow-complete-with-conserved-place-value"];
+    [self.app.buttons[@"explanation.close"] tap];
+    XCTAssertEqualObjects(self.app.staticTexts[@"practice.problem"].label, @"500 − 128 = ?");
+    XCTAssertTrue(self.app.buttons[@"answer.0"].hittable);
 }
 
 @end

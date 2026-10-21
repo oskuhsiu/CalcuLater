@@ -1,4 +1,26 @@
 #import "ChildUIKit.h"
+#import <math.h>
+
+@implementation ChildWrappingLabel
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.numberOfLines = 0;
+        self.lineBreakMode = NSLineBreakByWordWrapping;
+        [self setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+        [self setContentCompressionResistancePriority:999 forAxis:UILayoutConstraintAxisVertical];
+    }
+    return self;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (self.numberOfLines == 0 && self.bounds.size.width > 0
+        && fabs(self.preferredMaxLayoutWidth - self.bounds.size.width) > 0.5) {
+        self.preferredMaxLayoutWidth = self.bounds.size.width;
+        [self invalidateIntrinsicContentSize];
+    }
+}
+@end
 
 @implementation ChildUI
 
