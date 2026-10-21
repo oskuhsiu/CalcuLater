@@ -324,6 +324,7 @@
     [self.feedback addArrangedSubview:self.nextButton];
     [self.feedback addArrangedSubview:self.reviewButton];
     self.feedbackScroll = [[UIScrollView alloc] init];
+    self.feedbackScroll.accessibilityIdentifier = @"practice.feedback";
     self.feedbackScroll.translatesAutoresizingMaskIntoConstraints = NO;
     self.feedbackScroll.alwaysBounceVertical = YES;
     [self.tray addSubview:self.feedbackScroll];

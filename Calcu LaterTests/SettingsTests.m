@@ -173,25 +173,36 @@
     return [table.dataSource tableView:table cellForRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:section]];
 }
 
+- (UILabel *)label:(NSString *)identifier inView:(UIView *)view {
+    if ([view isKindOfClass:UILabel.class] && [view.accessibilityIdentifier isEqualToString:identifier]) return (UILabel *)view;
+    for (UIView *child in view.subviews) {
+        UILabel *match = [self label:identifier inView:child];
+        if (match) return match;
+    }
+    return nil;
+}
+- (UILabel *)titleInCell:(UITableViewCell *)cell { return [self label:@"settings.row.title" inView:cell.contentView]; }
+- (UILabel *)detailInCell:(UITableViewCell *)cell { return [self label:@"settings.row.detail" inView:cell.contentView]; }
+
 - (void)testAnswerModeAndDifficultyPersistBeforeSheetDismissal {
     SettingsViewController *controller = [[SettingsViewController alloc] initWithSettingsManager:[self freshManager]];
     UITableView *table = [self tableForController:controller];
     [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:AnswerModeWriting inSection:0]];
     XCTAssertEqual([self freshManager].answerMode, AnswerModeWriting);
     XCTAssertEqual([self cellInTable:table section:0 row:1].accessoryType, UITableViewCellAccessoryCheckmark);
-    XCTAssertTrue([[self cellInTable:table section:0 row:1].detailTextLabel.text containsString:@"不會辨識手寫"]);
+    XCTAssertTrue([[self detailInCell:[self cellInTable:table section:0 row:1]].text containsString:@"不會辨識手寫"]);
     for (DrillTier tier = DrillTierD1; tier <= DrillTierMixed; tier++) {
         [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:tier - 1 inSection:1]];
         XCTAssertEqual([self freshManager].drillTier, tier);
         UITableViewCell *cell = [self cellInTable:table section:1 row:tier - 1];
-        XCTAssertEqualObjects(cell.textLabel.text, [ProblemGenerator titleForTier:tier]);
-        XCTAssertEqualObjects(cell.detailTextLabel.text, [ProblemGenerator detailForTier:tier]);
+        XCTAssertEqualObjects([self titleInCell:cell].text, [ProblemGenerator titleForTier:tier]);
+        XCTAssertEqualObjects([self detailInCell:cell].text, [ProblemGenerator detailForTier:tier]);
         XCTAssertEqual(cell.accessoryType, UITableViewCellAccessoryCheckmark);
     }
     UITableViewCell *help = [self cellInTable:table section:3 row:0];
     XCTAssertNil(help.accessoryView);
     XCTAssertEqual(help.selectionStyle, UITableViewCellSelectionStyleNone);
-    XCTAssertTrue([help.detailTextLabel.text containsString:@"不需要另外開啟"]);
+    XCTAssertTrue([[self detailInCell:help].text containsString:@"不需要另外開啟"]);
 }
 
 - (void)testSwitchesSaveImmediatelyAndLastOperationExplainsRejection {
@@ -205,12 +216,12 @@
     [addition sendActionsForControlEvents:UIControlEventValueChanged];
     XCTAssertTrue(addition.isOn);
     XCTAssertTrue([self freshManager].operationAddition);
-    XCTAssertTrue([[self cellInTable:table section:2 row:0].detailTextLabel.text containsString:@"至少需要一種運算"]);
+    XCTAssertTrue([[self detailInCell:[self cellInTable:table section:2 row:0]].text containsString:@"至少需要一種運算"]);
     UISwitch *multiplication = (UISwitch *)[self cellInTable:table section:2 row:2].accessoryView;
     multiplication.on = YES;
     [multiplication sendActionsForControlEvents:UIControlEventValueChanged];
     XCTAssertTrue([self freshManager].operationMultiplication);
-    XCTAssertFalse([[self cellInTable:table section:2 row:0].detailTextLabel.text containsString:@"至少需要一種運算"]);
+    XCTAssertFalse([[self detailInCell:[self cellInTable:table section:2 row:0]].text containsString:@"至少需要一種運算"]);
     for (NSInteger row = 0; row < 2; row++) {
         UISwitch *toggle = (UISwitch *)[self cellInTable:table section:4 row:row].accessoryView;
         toggle.on = NO;
@@ -218,6 +229,56 @@
     }
     XCTAssertFalse([self freshManager].soundEffectsEnabled);
     XCTAssertFalse([self freshManager].mascotEnabled);
+}
+
+- (NSUInteger)labelsContainingText:(NSString *)text inView:(UIView *)view {
+    NSUInteger count = [view isKindOfClass:UILabel.class] && [((UILabel *)view).text isEqualToString:text] ? 1 : 0;
+    for (UIView *child in view.subviews) count += [self labelsContainingText:text inView:child];
+    return count;
+}
+
+- (void)testCustomSectionsUseOneTextSourceRatherThanPopulatingStockLabelsToo {
+    SettingsViewController *controller = [[SettingsViewController alloc] initWithSettingsManager:[self freshManager]];
+    UITableView *table = [self tableForController:controller];
+    XCTAssertFalse([table.dataSource respondsToSelector:@selector(tableView:titleForHeaderInSection:)]);
+    XCTAssertFalse([table.dataSource respondsToSelector:@selector(tableView:titleForFooterInSection:)]);
+    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)[table.delegate tableView:table viewForHeaderInSection:0];
+    XCTAssertEqual([self labelsContainingText:@"答題方式" inView:header], 1u);
+    UITableViewHeaderFooterView *footer = (UITableViewHeaderFooterView *)[table.delegate tableView:table viewForFooterInSection:4];
+    XCTAssertEqual([self labelsContainingText:@"變更會自動儲存，不必按「完成」也不會遺失。" inView:footer], 1u);
+    XCTAssertEqual(table.sectionHeaderHeight, UITableViewAutomaticDimension);
+    XCTAssertEqual(table.sectionFooterHeight, UITableViewAutomaticDimension);
+}
+
+- (void)testLongSettingsRowsFitTheirWholeTextChainAtNarrowAndLargeTypeSizes {
+    SettingsViewController *controller = [[SettingsViewController alloc] initWithSettingsManager:[self freshManager]];
+    UITableView *table = [self tableForController:controller];
+    // Component sizing check only. The UI matrix separately sets real system
+    // Dynamic Type and inspects the table's actual on-screen rows.
+    for (NSNumber *pointSize in @[@20, @64]) {
+        UITableViewCell *cell = [self cellInTable:table section:1 row:2];
+        UILabel *title = [self titleInCell:cell];
+        UILabel *detail = [self detailInCell:cell];
+        XCTAssertNotNil(title);
+        XCTAssertNotNil(detail);
+        title.font = [UIFont systemFontOfSize:pointSize.doubleValue];
+        detail.font = [UIFont systemFontOfSize:pointSize.doubleValue * 0.85];
+        for (NSNumber *width in @[@260, @353]) {
+            cell.contentView.bounds = CGRectMake(0, 0, width.doubleValue, 1000);
+            [cell.contentView setNeedsLayout];
+            [cell.contentView layoutIfNeeded];
+            CGSize fitted = [cell.contentView systemLayoutSizeFittingSize:CGSizeMake(width.doubleValue, 0)
+                withHorizontalFittingPriority:UILayoutPriorityRequired
+                verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+            CGFloat textWidth = width.doubleValue - 40;
+            CGFloat fullTextHeight = [title sizeThatFits:CGSizeMake(textWidth, CGFLOAT_MAX)].height
+                + [detail sizeThatFits:CGSizeMake(textWidth, CGFLOAT_MAX)].height;
+            XCTAssertGreaterThan(fitted.height, 64.0);
+            XCTAssertGreaterThanOrEqual(fitted.height + 1, fullTextHeight + 34);
+            XCTAssertFalse(title.translatesAutoresizingMaskIntoConstraints);
+            XCTAssertFalse(detail.translatesAutoresizingMaskIntoConstraints);
+        }
+    }
 }
 
 @end

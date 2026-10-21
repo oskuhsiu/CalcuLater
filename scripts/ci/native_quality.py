@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import selectors
 import signal
@@ -27,6 +28,35 @@ TEST_TIMEOUT = 900
 VIDEO_START_TIMEOUT = 10
 VIDEO_STOP_TIMEOUT = 15
 VIDEO_KILL_TIMEOUT = 5
+SCENARIOS = {
+    "standard": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "large",
+        "onlyTesting": ["Calcu LaterTests", "Calcu LaterUITests/Calcu_LaterUITests"],
+    },
+    "compact": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+        "contentSize": "large",
+        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterLayoutUITests"],
+    },
+    "tablet": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPad-10th-generation",
+        "contentSize": "large",
+        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterLayoutUITests"],
+    },
+    "maximumAccessibilityText": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "accessibility-extra-extra-extra-large",
+        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterLayoutUITests"],
+    },
+}
+
+
+def scenario():
+    name = os.environ.get("NATIVE_SCENARIO", "standard")
+    if name not in SCENARIOS:
+        raise SystemExit(f"Unknown native scenario: {name}; no fallback tests will run.")
+    return name, SCENARIOS[name]
 
 
 def signal_owned_process(process, signum):
@@ -93,6 +123,7 @@ def run(name, command, timeout=120, check=True):
         "command": command, "exitCode": code,
         "elapsedSeconds": round(time.monotonic() - started, 2),
         "sourceSHA": os.environ.get("GITHUB_SHA"),
+        "scenario": os.environ.get("NATIVE_SCENARIO", "standard"),
         "automaticRetryAllowed": False,
     }, indent=2))
     print(output, flush=True)
@@ -123,6 +154,7 @@ class NativeVideo:
                         "--codec", "h264", str(self.path)],
             "ownedSimulatorUDID": udid,
             "sourceSHA": os.environ.get("GITHUB_SHA"),
+            "scenario": os.environ.get("NATIVE_SCENARIO", "standard"),
             "automaticRetryAllowed": False,
             "startupAcknowledged": False,
             "forcedKill": False,
@@ -335,7 +367,21 @@ def inventory_diagnostics():
 
 def prepare():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
+    scenario_name, selected = scenario()
+    runtime = os.environ["SIM_RUNTIME"]
+    device_type = os.environ["SIM_DEVICE_TYPE"]
     fingerprint = {
+        "scenario": scenario_name,
+        "requestedRuntime": runtime,
+        "requestedDeviceType": device_type,
+        "requestedContentSize": selected["contentSize"],
+        "onlyTesting": selected["onlyTesting"],
+        "triggerSHA": os.environ.get("GITHUB_SHA"),
+        "workflowSHA": os.environ.get("GITHUB_WORKFLOW_SHA"),
+        "workflowRef": os.environ.get("GITHUB_WORKFLOW_REF"),
+        "runID": os.environ.get("GITHUB_RUN_ID"),
+        "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "job": os.environ.get("GITHUB_JOB"),
         "sourceSHA": run("source-sha", ["git", "rev-parse", "HEAD"]).strip(),
         "architecture": platform.machine(),
         "runnerImage": os.environ.get("ImageOS"),
@@ -346,8 +392,19 @@ def prepare():
         "sdk": run("sdk-version", ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"]).strip(),
     }
     (EVIDENCE / "environment.json").write_text(json.dumps(fingerprint, indent=2))
+    (EVIDENCE / "test-selection.json").write_text(json.dumps({
+        "scenario": scenario_name,
+        "onlyTesting": selected["onlyTesting"],
+        "arguments": [f"-only-testing:{identifier}" for identifier in selected["onlyTesting"]],
+        "sourceSHA": fingerprint["sourceSHA"],
+        "selectionIsNotExecutionEvidence": True,
+    }, indent=2))
     if fingerprint["xcode"] != "Xcode 16.4\nBuild version 16F6" or fingerprint["sdk"] != "18.5":
         raise SystemExit("Environment drift: review the selected Xcode/SDK before running tests.")
+    if runtime != "com.apple.CoreSimulator.SimRuntime.iOS-18-5":
+        raise SystemExit("Environment drift: this matrix requires the installed iOS 18.5 runtime.")
+    if device_type != selected["deviceType"]:
+        raise SystemExit(f"Scenario/device mismatch: {scenario_name} requires {selected['deviceType']}.")
     try:
         inventory = json.loads(run("simulator-inventory", ["xcrun", "simctl", "list", "--json"]))
     except (Exception, SystemExit) as error:
@@ -360,18 +417,24 @@ def prepare():
         except Exception as diagnostic_error:
             print(f"::warning::Could not retain all inventory diagnostics: {diagnostic_error}", flush=True)
         raise  # The original inventory failure remains authoritative.
-    runtime = os.environ["SIM_RUNTIME"]
-    device_type = os.environ["SIM_DEVICE_TYPE"]
-    if not any(item["identifier"] == runtime and item.get("isAvailable")
-               for item in inventory["runtimes"]):
+    selected_runtime = next((item for item in inventory["runtimes"]
+                             if item["identifier"] == runtime and item.get("isAvailable")), None)
+    if selected_runtime is None:
         raise SystemExit(f"Required installed runtime is not available: {runtime}")
-    if not any(item["identifier"] == device_type for item in inventory["devicetypes"]):
+    selected_device = next((item for item in inventory["devicetypes"]
+                           if item["identifier"] == device_type), None)
+    if selected_device is None:
         raise SystemExit(f"Required device type is not available: {device_type}")
-    name = "CalcuLater-quality-" + os.environ.get("GITHUB_RUN_ID", str(os.getpid()))
+    fingerprint.update({"runtime": selected_runtime, "deviceType": selected_device})
+    (EVIDENCE / "environment.json").write_text(json.dumps(fingerprint, indent=2))
+    name = ("CalcuLater-quality-" + os.environ.get("GITHUB_RUN_ID", str(os.getpid()))
+            + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "local") + "-" + scenario_name)
     udid = run("create-simulator", ["xcrun", "simctl", "create", name, device_type, runtime]).strip()
     STATE.write_text(json.dumps({"udid": udid, "name": name, "runtime": runtime,
-                                 "deviceType": device_type}, indent=2))
+                                 "deviceType": device_type, "scenario": scenario_name}, indent=2))
     shutil.copy2(STATE, EVIDENCE / STATE.name)
+    fingerprint["ownedSimulatorUDID"] = udid
+    (EVIDENCE / "environment.json").write_text(json.dumps(fingerprint, indent=2))
 
 
 def build():
@@ -385,14 +448,88 @@ def boot():
     run("readiness", ["xcrun", "simctl", "bootstatus", udid, "-b"], timeout=180)
 
 
+def configure():
+    """Require the selected tool's help and actual Simulator setting readback.
+
+    Never substitute an app launch argument, defaults write, or source override
+    for real system Dynamic Type. The selected Xcode's help is the CLI contract.
+    """
+    scenario_name, selected = scenario()
+    owned = state()
+    if owned["scenario"] != scenario_name:
+        raise SystemExit("Owned Simulator belongs to another scenario; refusing to configure it.")
+    query = ["xcrun", "simctl", "ui", owned["udid"], "content_size"]
+    result = {"scenario": scenario_name, "ownedSimulatorUDID": owned["udid"],
+              "sourceSHA": os.environ.get("GITHUB_SHA"), "status": "unverified",
+              "requestedContentSize": selected["contentSize"],
+              "helpCommand": ["xcrun", "simctl", "help", "ui"],
+              "setCommand": query + [selected["contentSize"]], "queryCommand": query,
+              "automaticRetryAllowed": False}
+    phase = "tool-help"
+    try:
+        help_text = run("simctl-ui-help", result["helpCommand"])
+        tokens = set(re.findall(r"[a-z]+(?:[_-][a-z]+)*", help_text))
+        if not {"content_size", selected["contentSize"]}.issubset(tokens):
+            raise SystemExit("Unsupported Dynamic Type setting in selected simctl help; "
+                             "see simctl-ui-help.log. No text-size override was attempted.")
+        # Query successfully before mutation, then require exact setting readback.
+        phase = "query-before"
+        result["before"] = run("content-size-before", query).strip()
+        if not re.fullmatch(r"(?:accessibility-)?(?:extra-)*[a-z]+", result["before"]):
+            raise SystemExit("Unsupported content_size query output; see content-size-before.log.")
+        phase = "set"
+        run("content-size-set", result["setCommand"])
+        phase = "query-after"
+        result["observedContentSize"] = run("content-size-after", query).strip()
+        if result["observedContentSize"] != selected["contentSize"]:
+            raise SystemExit("Dynamic Type readback did not match the requested setting; "
+                             "see content-size-after.log. Native tests will not run.")
+        result["status"] = "verified"
+    except (Exception, SystemExit) as error:
+        result.update({"status": "failed", "failedPhase": phase, "error": str(error)})
+        print(f"::error::Scenario configuration failed at {phase}; "
+              "no accessibility-size pass is claimed. See scenario-configuration.json.", flush=True)
+        raise
+    finally:
+        (EVIDENCE / "scenario-configuration.json").write_text(json.dumps(result, indent=2))
+        environment_path = EVIDENCE / "environment.json"
+        fingerprint = json.loads(environment_path.read_text())
+        fingerprint["contentSizeConfiguration"] = result
+        environment_path.write_text(json.dumps(fingerprint, indent=2))
+
+
 def test():
+    scenario_name, selected = scenario()
+    owned = state()
+    configuration = json.loads((EVIDENCE / "scenario-configuration.json").read_text())
+    if (configuration["status"] != "verified" or configuration["scenario"] != scenario_name
+            or configuration["ownedSimulatorUDID"] != owned["udid"]
+            or configuration["observedContentSize"] != selected["contentSize"]):
+        raise SystemExit("Selected scenario was not verified on this owned Simulator; tests blocked.")
     # No separate replay, new Simulator, disabled animations, or automatic rerun.
-    with record_native_video(state()["udid"]):
-        run("test", build_arguments() + ["-resultBundlePath", "build/Tests.xcresult",
-                                        "-maximum-concurrent-test-simulator-destinations", "1",
-                                        "-only-testing:Calcu LaterTests",
-                                        "-only-testing:Calcu LaterUITests/Calcu_LaterUITests",
-                                        "test-without-building"], timeout=TEST_TIMEOUT)
+    with record_native_video(owned["udid"]):
+        output = run("test", build_arguments() + ["-resultBundlePath", "build/Tests.xcresult",
+                                                 "-maximum-concurrent-test-simulator-destinations", "1"]
+                     + [f"-only-testing:{identifier}" for identifier in selected["onlyTesting"]]
+                     + ["test-without-building"], timeout=TEST_TIMEOUT)
+    # This exact Objective-C XCTest line format was observed in the retained
+    # Xcode 16.4 baseline. Missing/changed evidence must not turn an empty class
+    # selection into a green layout job. Never overwrite xcodebuild's own exit.
+    passed = re.findall(r"^Test Case '-\[([^\] ]+) ([^\]]+)\]' passed \(", output, re.MULTILINE)
+    required_class = selected["onlyTesting"][-1].split("/")[-1]
+    verified = any(class_name == required_class for class_name, _ in passed)
+    if scenario_name == "standard":
+        verified = verified and "Test Suite 'Calcu LaterTests.xctest' passed" in output
+    (EVIDENCE / "test-execution.json").write_text(json.dumps({
+        "scenario": scenario_name, "ownedSimulatorUDID": owned["udid"],
+        "sourceSHA": os.environ.get("GITHUB_SHA"), "requiredUIClass": required_class,
+        "observedPassedTests": [f"{class_name}/{method}" for class_name, method in passed],
+        "status": "verified" if verified else "missing-execution-evidence",
+        "evidenceSource": "test.log", "automaticRetryAllowed": False,
+    }, indent=2))
+    if not verified:
+        raise SystemExit("xcodebuild exited successfully but selected test execution was not observed. "
+                         "See test-execution.json and the xcresult; a missing test is not a pass.")
 
 
 def export():
@@ -417,17 +554,26 @@ def export():
                 "screenshot", str(EVIDENCE / "final-device-screen.png")], check=False)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
+        scenario_name, selected = scenario()
         with open(summary, "a") as output:
-            output.write("## Native evidence\n\nSource: " + os.environ.get("GITHUB_SHA", "local")
-                         + "\n\nDownload the native-evidence artifact for the environment fingerprint, "
+            output.write("## Native evidence: " + scenario_name + "\n\nSource: "
+                         + os.environ.get("GITHUB_SHA", "local")
+                         + "\n\nSelected device: " + selected["deviceType"]
+                         + "\n\nRequested content size: " + selected["contentSize"]
+                         + "\n\nExact test selection:\n"
+                         + "".join("- " + identifier + "\n" for identifier in selected["onlyTesting"])
+                         + "\nSelection is not proof of execution. Check test.json, test-execution.json, test-summary.log "
+                         "and the xcresult for actual results. Check scenario-configuration.json for "
+                         "the retained tool help, setter and exact content-size readback. "
+                         "Download this scenario's native-evidence artifact for the environment fingerprint, "
                          "per-stage logs, original xcresults, screenshot/hierarchy attachments and "
                          "native-flows.mp4 when capture succeeds. This records the unchanged acceptance stage; "
                          "record-video.json/log report startup, termination and evidence gaps separately "
                          "from test.json. A nonempty video is not a visual or animation pass: inspect "
                          "the actual teaching exchanges before claiming motion validation. "
-                         "A missing test result is not a pass. This acceptance run selects the model/component "
-                         "test target plus Calcu_LaterUITests native flows; boilerplate repeated launch "
-                         "configurations are not included.\n")
+                         "A missing test result is not a pass. Standard retains the model/component target "
+                         "plus Calcu_LaterUITests; the three layout variants select only "
+                         "Calcu_LaterLayoutUITests. Boilerplate repeated launch configurations are excluded.\n")
 
 
 def cleanup():
@@ -439,8 +585,8 @@ def cleanup():
 
 
 if __name__ == "__main__":
-    operations = {"prepare": prepare, "build": build, "boot": boot,
+    operations = {"prepare": prepare, "build": build, "boot": boot, "configure": configure,
                   "test": test, "export": export, "cleanup": cleanup}
     if len(sys.argv) != 2 or sys.argv[1] not in operations:
-        raise SystemExit("Usage: native_quality.py prepare|build|boot|test|export|cleanup")
+        raise SystemExit("Usage: native_quality.py prepare|build|boot|configure|test|export|cleanup")
     operations[sys.argv[1]]()

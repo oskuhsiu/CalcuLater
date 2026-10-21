@@ -59,6 +59,7 @@
     [self.view addSubview:back];
 
     UIScrollView *scroll = [[UIScrollView alloc] init];
+    scroll.accessibilityIdentifier = @"explanation.content";
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
     scroll.alwaysBounceVertical = YES;
     [self.view addSubview:scroll];

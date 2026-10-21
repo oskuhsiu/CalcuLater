@@ -12,8 +12,8 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SettingsSectionCount,
 };
 
-// Configure the label before UITableView measures the header/footer. Styling a
-// stock footer only in willDisplay can clip large Dynamic Type text.
+// Custom content has one complete Auto Layout chain before the table measures
+// it. Do not also supply titleForHeader/Footer: UIKit would add a second label.
 @interface SettingsSectionView : UITableViewHeaderFooterView
 @property (nonatomic, strong) UILabel *label;
 @end
@@ -24,7 +24,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     if (self) {
         self.backgroundView = [[UIView alloc] init];
         self.backgroundView.backgroundColor = UIColor.clearColor;
-        _label = [[UILabel alloc] init];
+        _label = [[ChildWrappingLabel alloc] init];
         _label.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentView addSubview:_label];
         [NSLayoutConstraint activateConstraints:@[
@@ -32,6 +32,45 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
             [_label.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
             [_label.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
             [_label.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-12],
+        ]];
+    }
+    return self;
+}
+@end
+
+// Legacy subtitle cells lay out their own labels with frames. Adding only a
+// minimum contentView height made every automatic row fit to that minimum,
+// even when the subtitle needed three or more lines. These labels instead
+// constrain both edges and the full top-to-bottom text chain.
+@interface SettingsChoiceCell : UITableViewCell
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *detailLabel;
+@end
+
+@implementation SettingsChoiceCell
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseIdentifier];
+    if (self) {
+        _titleLabel = [[ChildWrappingLabel alloc] init];
+        _detailLabel = [[ChildWrappingLabel alloc] init];
+        _titleLabel.accessibilityIdentifier = @"settings.row.title";
+        _detailLabel.accessibilityIdentifier = @"settings.row.detail";
+        for (UILabel *label in @[_titleLabel, _detailLabel]) {
+            label.translatesAutoresizingMaskIntoConstraints = NO;
+            label.isAccessibilityElement = NO;
+            [self.contentView addSubview:label];
+        }
+        NSLayoutConstraint *minimum = [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:64];
+        minimum.priority = UILayoutPriorityRequired - 1;
+        [NSLayoutConstraint activateConstraints:@[
+            [_titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:14],
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:20],
+            [_titleLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-20],
+            [_detailLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:6],
+            [_detailLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
+            [_detailLabel.trailingAnchor constraintEqualToAnchor:_titleLabel.trailingAnchor],
+            [_detailLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-14],
+            minimum,
         ]];
     }
     return self;
@@ -136,11 +175,11 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     return 0;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+- (NSString *)headerTextForSection:(NSInteger)section {
     return @[@"答題方式", @"練一練：題目範圍", @"練一練：運算類型", @"練習小幫手", @"陪伴與音效"][section];
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+- (NSString *)footerTextForSection:(NSInteger)section {
     switch (section) {
         case SettingsSectionAnswerMode:
             return @"變更會自動儲存，下次進入練習時套用。「練一練」和「想一想」使用這裡的答題方式；「學一學」固定使用選擇題。";
@@ -166,36 +205,31 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    return [self sectionViewWithText:[self tableView:tableView titleForHeaderInSection:section] header:YES];
+    return [self sectionViewWithText:[self headerTextForSection:section] header:YES];
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
-    return [self sectionViewWithText:[self tableView:tableView titleForFooterInSection:section] header:NO];
+    return [self sectionViewWithText:[self footerTextForSection:section] header:NO];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SettingsCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"SettingsCell"];
-        NSLayoutConstraint *minimumHeight = [cell.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:64];
-        minimumHeight.priority = UILayoutPriorityRequired - 1;
-        minimumHeight.active = YES;
-    }
+    SettingsChoiceCell *cell = (SettingsChoiceCell *)[tableView dequeueReusableCellWithIdentifier:@"SettingsCell"];
+    if (!cell) cell = [[SettingsChoiceCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"SettingsCell"];
     cell.backgroundColor = UIColor.whiteColor;
     cell.tintColor = ChildUI.brownText;
-    cell.textLabel.textColor = ChildUI.brownText;
-    cell.detailTextLabel.textColor = ChildUI.brownText;
-    cell.textLabel.font = [self scaledFontOfSize:20 weight:UIFontWeightSemibold style:UIFontTextStyleBody];
-    cell.detailTextLabel.font = [self scaledFontOfSize:17 weight:UIFontWeightRegular style:UIFontTextStyleSubheadline];
-    cell.textLabel.numberOfLines = 0;
-    cell.detailTextLabel.numberOfLines = 0;
-    cell.textLabel.adjustsFontForContentSizeCategory = YES;
-    cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+    cell.titleLabel.textColor = ChildUI.brownText;
+    cell.detailLabel.textColor = ChildUI.brownText;
+    cell.titleLabel.font = [self scaledFontOfSize:20 weight:UIFontWeightSemibold style:UIFontTextStyleBody];
+    cell.detailLabel.font = [self scaledFontOfSize:17 weight:UIFontWeightRegular style:UIFontTextStyleSubheadline];
+    cell.titleLabel.numberOfLines = 0;
+    cell.detailLabel.numberOfLines = 0;
+    cell.titleLabel.adjustsFontForContentSizeCategory = YES;
+    cell.detailLabel.adjustsFontForContentSizeCategory = YES;
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.textLabel.isAccessibilityElement = NO;
-    cell.detailTextLabel.isAccessibilityElement = NO;
+    cell.titleLabel.isAccessibilityElement = NO;
+    cell.detailLabel.isAccessibilityElement = NO;
     cell.isAccessibilityElement = YES;
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     cell.accessibilityIdentifier = nil;
@@ -206,39 +240,39 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     BOOL selected = NO;
     if (indexPath.section == SettingsSectionAnswerMode) {
         BOOL writing = indexPath.row == AnswerModeWriting;
-        cell.textLabel.text = writing ? @"手寫草稿" : @"選擇題";
-        cell.detailTextLabel.text = writing ? @"寫下計算過程，再顯示答案自行核對。不會辨識手寫，也不會自動判分。"
+        cell.titleLabel.text = writing ? @"手寫草稿" : @"選擇題";
+        cell.detailLabel.text = writing ? @"寫下計算過程，再顯示答案自行核對。不會辨識手寫，也不會自動判分。"
                                            : @"從選項中點選答案，遊戲會判斷對錯。";
         selected = self.settingsManager.answerMode == indexPath.row;
         cell.accessibilityIdentifier = [NSString stringWithFormat:@"settings.answerMode.%ld", (long)indexPath.row];
         cell.accessibilityHint = @"點兩下選擇，立即儲存";
     } else if (indexPath.section == SettingsSectionDifficulty) {
         DrillTier tier = (DrillTier)(indexPath.row + 1);
-        cell.textLabel.text = [ProblemGenerator titleForTier:tier];
-        cell.detailTextLabel.text = [ProblemGenerator detailForTier:tier];
+        cell.titleLabel.text = [ProblemGenerator titleForTier:tier];
+        cell.detailLabel.text = [ProblemGenerator detailForTier:tier];
         selected = self.settingsManager.drillTier == tier;
         cell.accessibilityIdentifier = [NSString stringWithFormat:@"settings.tier.%ld", (long)tier];
         cell.accessibilityHint = @"點兩下選擇，立即儲存";
     } else if (indexPath.section == SettingsSectionOperations) {
-        cell.textLabel.text = [self operationNames][indexPath.row];
-        cell.detailTextLabel.text = [self operationDetailAtRow:indexPath.row];
+        cell.titleLabel.text = [self operationNames][indexPath.row];
+        cell.detailLabel.text = [self operationDetailAtRow:indexPath.row];
         UISwitch *toggle = [self toggleForCell:cell identifier:
             [NSString stringWithFormat:@"settings.operation.%ld", (long)indexPath.row]];
         toggle.on = [self.settingsManager isOperationEnabled:(SettingsOperation)indexPath.row];
         toggle.tag = indexPath.row;
-        toggle.accessibilityLabel = [@"練一練，" stringByAppendingString:cell.textLabel.text];
+        toggle.accessibilityLabel = [@"練一練，" stringByAppendingString:cell.titleLabel.text];
         toggle.accessibilityHint = [self operationAccessibilityHintAtRow:indexPath.row];
         [toggle addTarget:self action:@selector(operationToggled:) forControlEvents:UIControlEventValueChanged];
     } else if (indexPath.section == SettingsSectionHelp) {
-        cell.textLabel.text = @"需要幫忙，隨時看怎麼算";
-        cell.detailTextLabel.text = @"練習時都可以按「看怎麼算」，查看這一題的做法。選擇題和手寫草稿都能使用，不需要另外開啟。";
+        cell.titleLabel.text = @"需要幫忙，隨時看怎麼算";
+        cell.detailLabel.text = @"練習時都可以按「看怎麼算」，查看這一題的做法。選擇題和手寫草稿都能使用，不需要另外開啟。";
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.accessibilityTraits = UIAccessibilityTraitStaticText;
         cell.accessibilityIdentifier = @"settings.help";
     } else {
         BOOL sound = indexPath.row == 0;
-        cell.textLabel.text = sound ? @"音效" : @"梅西老師";
-        cell.detailTextLabel.text = sound ? @"答題與操作的提示音" : @"在練習畫面陪你一起學習";
+        cell.titleLabel.text = sound ? @"音效" : @"梅西老師";
+        cell.detailLabel.text = sound ? @"答題與操作的提示音" : @"在練習畫面陪你一起學習";
         UISwitch *toggle = [self toggleForCell:cell identifier:sound ? @"settings.sound" : @"settings.mascot"];
         toggle.on = sound ? self.settingsManager.soundEffectsEnabled : self.settingsManager.mascotEnabled;
         toggle.tag = indexPath.row;
@@ -251,16 +285,16 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
         cell.accessibilityValue = @"目前使用";
     }
     if (cell.isAccessibilityElement) {
-        cell.accessibilityLabel = [NSString stringWithFormat:@"%@。%@", cell.textLabel.text, cell.detailTextLabel.text];
+        cell.accessibilityLabel = [NSString stringWithFormat:@"%@。%@", cell.titleLabel.text, cell.detailLabel.text];
     }
     return cell;
 }
 
-- (UISwitch *)toggleForCell:(UITableViewCell *)cell identifier:(NSString *)identifier {
+- (UISwitch *)toggleForCell:(SettingsChoiceCell *)cell identifier:(NSString *)identifier {
     UISwitch *toggle = [[UISwitch alloc] init];
     toggle.onTintColor = ChildUI.calmGreen;
     toggle.accessibilityIdentifier = identifier;
-    toggle.accessibilityLabel = cell.textLabel.text;
+    toggle.accessibilityLabel = cell.titleLabel.text;
     // VoiceOver gets one named native switch, not duplicate label elements.
     // Sighted users can tap the whole 64+ point row, not only the switch thumb.
     cell.isAccessibilityElement = NO;
@@ -295,6 +329,12 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
         cell.accessibilityTraits = UIAccessibilityTraitButton | (selected ? UIAccessibilityTraitSelected : 0);
         cell.accessibilityValue = selected ? @"目前使用" : nil;
     }
+    // A native checkmark changes the available content width. Remeasure the
+    // existing cells rather than replacing them or leaving wrapped text clipped.
+    [UIView performWithoutAnimation:^{
+        [tableView beginUpdates];
+        [tableView endUpdates];
+    }];
 }
 
 - (void)operationToggled:(UISwitch *)sender {
@@ -314,8 +354,8 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     if (hadNotice || self.operationNotice) {
         for (NSInteger row = 0; row < 4; row++) {
             NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:SettingsSectionOperations];
-            UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:path];
-            cell.detailTextLabel.text = [self operationDetailAtRow:row];
+            SettingsChoiceCell *cell = (SettingsChoiceCell *)[self.tableView cellForRowAtIndexPath:path];
+            cell.detailLabel.text = [self operationDetailAtRow:row];
             cell.accessoryView.accessibilityHint = [self operationAccessibilityHintAtRow:row];
         }
         [UIView performWithoutAnimation:^{
