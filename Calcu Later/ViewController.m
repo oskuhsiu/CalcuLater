@@ -79,6 +79,8 @@
     self.closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.closeButton setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
     self.closeButton.tintColor = ChildUI.brownText;
+    self.closeButton.accessibilityLabel = @"離開練習";
+    self.closeButton.accessibilityIdentifier = @"practice.close";
     self.closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.closeButton];
@@ -90,6 +92,7 @@
 
     // streak
     self.streakLabel = [[UILabel alloc] init];
+    self.streakLabel.accessibilityIdentifier = @"practice.streak";
     self.streakLabel.font = [ChildUI roundedFontOfSize:18.0 weight:UIFontWeightSemibold];
     self.streakLabel.textColor = ChildUI.eggYolk;
     self.streakLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -97,6 +100,7 @@
 
     // 題目
     self.problemLabel = [[UILabel alloc] init];
+    self.problemLabel.accessibilityIdentifier = @"practice.problem";
     self.problemLabel.font = [ChildUI roundedMonoFontOfSize:60.0 weight:UIFontWeightBold];
     self.problemLabel.textColor = ChildUI.brownText;
     self.problemLabel.textAlignment = NSTextAlignmentCenter;

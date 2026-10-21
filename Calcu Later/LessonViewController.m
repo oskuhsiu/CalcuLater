@@ -108,6 +108,8 @@
     self.closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.closeButton setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
     self.closeButton.tintColor = ChildUI.brownText;
+    self.closeButton.accessibilityLabel = @"離開練習";
+    self.closeButton.accessibilityIdentifier = @"lesson.close";
     self.closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.closeButton];
@@ -137,6 +139,7 @@
     [self.view addSubview:self.progressLabel];
 
     self.problemLabel = [[UILabel alloc] init];
+    self.problemLabel.accessibilityIdentifier = @"lesson.problem";
     self.problemLabel.font = [ChildUI roundedMonoFontOfSize:64.0 weight:UIFontWeightBold];
     self.problemLabel.textColor = ChildUI.brownText;
     self.problemLabel.textAlignment = NSTextAlignmentCenter;

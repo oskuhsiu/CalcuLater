@@ -26,6 +26,7 @@
     self.settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.settingsButton addTarget:self action:@selector(settingsTapped) forControlEvents:UIControlEventTouchUpInside];
     self.settingsButton.accessibilityLabel = @"設定";
+    self.settingsButton.accessibilityIdentifier = @"home.settings";
     [self.view addSubview:self.settingsButton];
 
     // 用 UIScrollView 包主要內容，iPhone SE 等小螢幕能滾，大螢幕仍以 contentView 撐起。
@@ -79,6 +80,9 @@
                                         subtitle:@"應用題（1~3 年級）"
                                      background:ChildUI.lavender
                                           action:@selector(wordProblemsTapped)];
+    lessonCard.accessibilityIdentifier = @"home.lessons";
+    drillCard.accessibilityIdentifier = @"home.practice";
+    wordCard.accessibilityIdentifier = @"home.stories";
     lessonCard.translatesAutoresizingMaskIntoConstraints = NO;
     drillCard.translatesAutoresizingMaskIntoConstraints = NO;
     wordCard.translatesAutoresizingMaskIntoConstraints = NO;
@@ -149,6 +153,8 @@
                      background:(UIColor *)bg action:(SEL)action {
     UIButton *card = [UIButton buttonWithType:UIButtonTypeCustom];
     card.backgroundColor = bg;
+    card.accessibilityLabel = title;
+    card.accessibilityHint = subtitle;
     card.layer.cornerRadius = 28.0;
     [ChildUI applySoftShadowOnLayer:card.layer];
     [card addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
@@ -197,6 +203,8 @@
                                                               style:UIBarButtonItemStylePlain
                                                              target:self
                                                              action:@selector(dismissPresented)];
+    close.accessibilityLabel = @"回到首頁";
+    close.accessibilityIdentifier = @"navigation.home";
     vc.navigationItem.leftBarButtonItem = close;
     [self presentViewController:nav animated:YES completion:nil];
 }
@@ -219,6 +227,8 @@
                                                               style:UIBarButtonItemStylePlain
                                                              target:self
                                                              action:@selector(dismissPresented)];
+    close.accessibilityLabel = @"回到首頁";
+    close.accessibilityIdentifier = @"navigation.home";
     vc.navigationItem.leftBarButtonItem = close;
     [self presentViewController:nav animated:YES completion:nil];
 }

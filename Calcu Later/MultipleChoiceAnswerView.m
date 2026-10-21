@@ -32,6 +32,7 @@
             [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
             b.titleLabel.font = [ChildUI roundedMonoFontOfSize:42.0 weight:UIFontWeightBold];
             b.tag = i;
+            b.accessibilityIdentifier = [NSString stringWithFormat:@"answer.%ld", (long)i];
             [ChildUI applySoftShadowOnLayer:b.layer];
             [b addTarget:self action:@selector(_choiceTapped:) forControlEvents:UIControlEventTouchUpInside];
             [b addTarget:self action:@selector(_touchDown:) forControlEvents:UIControlEventTouchDown];

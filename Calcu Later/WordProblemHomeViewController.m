@@ -79,6 +79,9 @@
     card.backgroundColor = color;
     card.layer.cornerRadius = 24.0;
     card.tag = grade;
+    card.accessibilityIdentifier = [NSString stringWithFormat:@"stories.grade.%ld", (long)grade];
+    card.accessibilityLabel = title;
+    card.accessibilityHint = subtitle;
     [ChildUI applySoftShadowOnLayer:card.layer];
     card.translatesAutoresizingMaskIntoConstraints = NO;
     [card addTarget:self action:@selector(gradeTapped:) forControlEvents:UIControlEventTouchUpInside];

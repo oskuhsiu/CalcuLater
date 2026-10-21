@@ -89,6 +89,8 @@
     self.closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.closeButton setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
     self.closeButton.tintColor = ChildUI.brownText;
+    self.closeButton.accessibilityLabel = @"離開練習";
+    self.closeButton.accessibilityIdentifier = @"story.close";
     self.closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.closeButton];
@@ -123,6 +125,7 @@
     [self.view addSubview:self.storyCard];
 
     self.storyLabel = [[UILabel alloc] init];
+    self.storyLabel.accessibilityIdentifier = @"story.text";
     self.storyLabel.font = [ChildUI roundedFontOfSize:22.0 weight:UIFontWeightMedium];
     self.storyLabel.textColor = ChildUI.brownText;
     self.storyLabel.numberOfLines = 0;
@@ -147,6 +150,7 @@
     [self.storyCard addGestureRecognizer:cardTap];
 
     self.equationLabel = [[UILabel alloc] init];
+    self.equationLabel.accessibilityIdentifier = @"story.equation";
     self.equationLabel.font = [ChildUI roundedMonoFontOfSize:30.0 weight:UIFontWeightBold];
     self.equationLabel.textColor = [ChildUI.brownText colorWithAlphaComponent:0.85];
     self.equationLabel.textAlignment = NSTextAlignmentCenter;
