@@ -178,14 +178,33 @@
     // this intersection proves that counters are visible; review native video.
 }
 - (void)dragGroupingContentBy:(CGFloat)distance {
+    XCUIElement *board = [self element:@"groupingTeachingBoard"];
     XCUIElement *content = self.app.scrollViews[@"grouping.content"];
-    CGFloat height = [self checkedFrame:content].size.height;
+    CGRect before = [self checkedFrame:board];
+    CGRect viewport = [self checkedFrame:content];
+    CGFloat height = viewport.size.height;
+    XCTAssertTrue(isfinite(distance));
     CGFloat travel = MIN(fabs(distance), height * 0.55);
     CGFloat startY = distance > 0 ? 0.8 : 0.2;
     CGFloat endY = startY + (distance > 0 ? -1 : 1) * travel / height;
     XCUICoordinate *start = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, startY)];
     XCUICoordinate *end = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, endY)];
-    [start pressForDuration:0.05 thenDragToCoordinate:end];
+    CGPoint startPoint = start.screenPoint, endPoint = end.screenPoint;
+    // A bounded finger path alone is not a bounded scroll: the old zero-hold
+    // gesture kept moving after release. Hold at the endpoint before lifting.
+    [start pressForDuration:0.05 thenDragToCoordinate:end
+        withVelocity:XCUIGestureVelocitySlow thenHoldForDuration:0.2];
+    CGRect after = [self checkedFrame:board];
+    NSString *measurement = [NSString stringWithFormat:
+        @"requestedScroll=%.2f; boundedScroll=%.2f; measuredScroll=%.2f; "
+         "before=%@; after=%@; viewportBefore=%@; viewportAfter=%@; touchStart=%@; touchEnd=%@",
+        distance, copysign(travel, distance), CGRectGetMinY(before) - CGRectGetMinY(after),
+        NSStringFromCGRect(before), NSStringFromCGRect(after), NSStringFromCGRect(viewport),
+        NSStringFromCGRect(content.frame), NSStringFromCGPoint(startPoint), NSStringFromCGPoint(endPoint)];
+    XCTAttachment *trace = [XCTAttachment attachmentWithString:measurement];
+    trace.name = @"grouping-board-inspection-scroll";
+    trace.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:trace];
 }
 - (void)captureGroupingBoardSlices:(NSString *)name {
     XCUIElement *board = [self element:@"groupingTeachingBoard"];

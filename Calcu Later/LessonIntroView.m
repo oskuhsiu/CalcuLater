@@ -122,6 +122,7 @@
 @property (nonatomic, strong) NSMutableArray<CLIntroDotView *> *dots;
 @property (nonatomic, strong, nullable) UIViewPropertyAnimator *stepAnimator;
 @property (nonatomic) BOOL finished;
+@property (nonatomic) BOOL hasPresentedInitialScene;
 @property (nonatomic) NSInteger step;
 @property (nonatomic) CGSize lastStageSize;
 @property (nonatomic) CGSize lastBoundsSize;
@@ -394,6 +395,19 @@
     [self layoutIfNeeded];
     if (self.lessonKind == LessonKindMultiplication && [self isEffectivelyVisible]) { [self startTapped]; return; }
     [self stopPlayback];
+    if (!self.hasPresentedInitialScene && [self isTenStrategy] && [self isEffectivelyVisible]
+        && !CGRectIsEmpty(self.stage.bounds) && !CGRectIsEmpty(self.scrollView.bounds)) {
+        // A hidden/unattached preparation is not a presentation. Consume this
+        // once even if the full scene cannot fit, so later appearances or
+        // resizing never replace the child's inspection position.
+        self.hasPresentedInitialScene = YES;
+        if (self.step == 0) {
+            [self.scrollView layoutIfNeeded];
+            [self frameNewStepScene:[self visibleDiagramBoundsWithFrames:YES annotations:YES]
+                frames:[self visibleDiagramBoundsWithFrames:YES annotations:NO]
+                counters:[self visibleDiagramBoundsWithFrames:NO annotations:NO]];
+        }
+    }
 }
 - (void)goToPreviousStep {
     if (self.finished || self.step == 0) return;

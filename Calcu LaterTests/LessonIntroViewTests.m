@@ -409,6 +409,137 @@
     XCTAssertEqual([self visibleDotsInIntro:intro].count, 9u);
 }
 
+- (void)testFirstPresentationFramesInitialTenQuantitiesWithoutAdvancingOrRevealingFutureDots {
+    for (NSValue *sizeValue in @[[NSValue valueWithCGSize:CGSizeMake(288, 500)],
+        [NSValue valueWithCGSize:CGSizeMake(359, 539)], [NSValue valueWithCGSize:CGSizeMake(736, 260)]]) {
+        CGSize size = sizeValue.CGSizeValue;
+        for (NSNumber *make in @[@YES, @NO]) {
+            for (NSNumber *current in @[@YES, @NO]) {
+                NSInteger a = make.boolValue ? (current.boolValue ? 2 : 8) : (current.boolValue ? 18 : 12);
+                NSInteger b = current.boolValue ? 9 : 5;
+                Lesson *lesson = [self lessonAtIndex:make.boolValue ? 3 : 4];
+                CLRecordingIntroView *intro = current.boolValue
+                    ? [[CLRecordingIntroView alloc] initWithProblem:[self problemA:a b:b make:make.boolValue] lesson:lesson]
+                    : [[CLRecordingIntroView alloc] initWithLesson:lesson];
+                [self hostIntro:intro width:size.width height:size.height];
+                UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+                UIView *stage = [intro valueForKey:@"stage"];
+                CGRect viewport = [scroll convertRect:scroll.bounds toView:stage];
+                for (NSString *key in @[@"firstFrame", @"secondFrame", @"firstCountLabel", @"secondCountLabel"]) {
+                    UIView *part = [intro valueForKey:key];
+                    if (part.alpha > 0.01) XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -0.5, -0.5), part.frame));
+                }
+                XCTAssertEqual(intro.framingCount, 1u);
+                XCTAssertFalse(intro.animatorExistedAtFraming);
+                XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+                XCTAssertEqual(intro.currentStepIndex, 0);
+                XCTAssertEqual([self visibleDotsInIntro:intro].count, (NSUInteger)a);
+                XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], make.boolValue ? a : 10);
+                XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], make.boolValue ? 0 : a % 10);
+                XCTAssertEqual([self crossedCount:intro], 0);
+                [self assertEquationHidden:intro a:a b:b make:make.boolValue];
+                for (NSString *key in @[@"firstFrame", @"secondFrame"]) {
+                    UIView *frame = [intro valueForKey:key];
+                    XCTAssertEqualWithAccuracy(frame.bounds.size.height, 100, 0.001);
+                    XCTAssertEqualObjects([frame valueForKey:@"capacity"], @10);
+                }
+                [self assertVisibleDotsFitWithoutOverlapping:intro];
+            }
+        }
+    }
+}
+
+- (void)testUnattachedAndHiddenPreparationDoNotConsumeInitialPresentationFraming {
+    for (NSNumber *hidden in @[@NO, @YES]) {
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:18 b:9 make:NO]
+            lesson:[self lessonAtIndex:4]];
+        intro.frame = CGRectMake(0, 0, 359, 539);
+        [intro play];
+        XCTAssertEqual(intro.framingCount, 0u);
+        intro.hidden = hidden.boolValue;
+        [self hostIntro:intro width:359 height:539];
+        XCTAssertEqual(intro.framingCount, hidden.boolValue ? 0u : 1u);
+        intro.hidden = NO;
+        [intro play];
+        XCTAssertEqual(intro.framingCount, 1u);
+        UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+        UIView *stage = [intro valueForKey:@"stage"];
+        UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
+        CGRect viewport = [scroll convertRect:scroll.bounds toView:stage];
+        XCTAssertTrue(CGRectContainsRect(viewport, CGRectUnion(first.frame, second.frame)));
+    }
+}
+
+- (void)testRepeatedPresentationAndLifecycleChangesPreserveInitialSceneInspectionOffset {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:18 b:9 make:NO]
+        lesson:[self lessonAtIndex:4]];
+    [self hostIntro:intro width:359 height:539];
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    NSArray *identities = [[intro valueForKey:@"dots"] copy];
+    CGFloat chosenOffset = 32;
+    [scroll setContentOffset:CGPointMake(0, chosenOffset) animated:NO];
+    for (NSString *interruption in @[@"play", @"background", @"hidden", @"alpha", @"detach", @"resize", @"replay", @"back"]) {
+        NSUInteger expectedFramingCount = intro.framingCount;
+        if ([interruption isEqualToString:@"background"]) {
+            [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+        } else if ([interruption isEqualToString:@"hidden"]) {
+            intro.hidden = YES; intro.hidden = NO;
+        } else if ([interruption isEqualToString:@"alpha"]) {
+            intro.alpha = 0; intro.alpha = 1;
+        } else if ([interruption isEqualToString:@"detach"]) {
+            UIView *host = intro.superview;
+            [intro removeFromSuperview]; [host addSubview:intro];
+        } else if ([interruption isEqualToString:@"resize"]) {
+            intro.frame = CGRectMake(0, 0, 736, 260);
+        } else if ([interruption isEqualToString:@"replay"]) {
+            [intro replayCurrentStep];
+        } else if ([interruption isEqualToString:@"back"]) {
+            [intro goToNextStep];
+            expectedFramingCount++;
+            [scroll setContentOffset:CGPointMake(0, chosenOffset) animated:NO];
+            [intro goToPreviousStep];
+        }
+        [intro play];
+        XCTAssertGreaterThan(scroll.contentSize.height - scroll.bounds.size.height, chosenOffset);
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
+        XCTAssertEqual(intro.framingCount, expectedFramingCount);
+        XCTAssertEqual(intro.currentStepIndex, 0);
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 8);
+        [self assertEquationHidden:intro a:18 b:9 make:NO];
+    }
+}
+
+- (void)testTooShortInitialPresentationDoesNotRetryFramingAfterResize {
+    CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:18 b:9 make:NO]
+        lesson:[self lessonAtIndex:4]];
+    [self hostIntro:intro width:288 height:360];
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    CGRect counters = [self counterBoundsInSnapshots:@[intro.snapshots.lastObject]];
+    XCTAssertGreaterThan(counters.size.height, scroll.bounds.size.height);
+    XCTAssertEqual(intro.framingCount, 1u);
+    XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+    intro.frame = CGRectMake(0, 0, 288, 500);
+    [intro play];
+    XCTAssertEqual(intro.framingCount, 1u);
+    XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+    XCTAssertEqual(intro.currentStepIndex, 0);
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 18u);
+}
+
+- (void)testSimpleLessonsKeepTheirOriginalPresentationViewport {
+    for (NSUInteger index = 0; index < 3; index++) {
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithLesson:[self lessonAtIndex:index]];
+        [self hostIntro:intro width:288 height:500];
+        [intro play];
+        UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+        XCTAssertEqual(intro.framingCount, 0u);
+        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+        XCTAssertEqual(intro.currentStepIndex, 0);
+    }
+}
+
 - (void)testCompactNextFramesBothTenFramesBeforeFirstPlayWithoutASetupScroll {
     for (NSNumber *make in @[@YES, @NO]) {
         CLRecordingIntroView *intro = [[CLRecordingIntroView alloc]
@@ -416,9 +547,10 @@
             lesson:[self lessonAtIndex:make.boolValue ? 3 : 4]];
         [self hostIntro:intro width:288 height:500];
         UIScrollView *scroll = [intro valueForKey:@"scrollView"];
-        XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+        XCTAssertEqual(intro.framingCount, 1u);
         for (NSInteger step = 1; step < intro.numberOfSteps; step++) {
             [intro goToNextStep];
+            XCTAssertEqual(intro.framingCount, (NSUInteger)step + 1);
             [self assertLastTransitionIsFramedBeforeItsTargetIsApplied:intro];
             UIView *first = [intro valueForKey:@"firstFrame"], *second = [intro valueForKey:@"secondFrame"];
             CGRect viewport = intro.viewportSnapshots.lastObject.CGRectValue;
@@ -498,16 +630,17 @@
         CGFloat chosenOffset = 32;
         XCTAssertGreaterThan(scroll.contentSize.height - scroll.bounds.size.height, chosenOffset);
         [scroll setContentOffset:CGPointMake(0, chosenOffset) animated:NO];
+        NSUInteger framingBeforeInspection = intro.framingCount;
         [intro replayCurrentStep];
         XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
-        XCTAssertEqual(intro.framingCount, 0u);
+        XCTAssertEqual(intro.framingCount, framingBeforeInspection);
         [intro layoutIfNeeded];
         XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
         [intro goToPreviousStep];
         [intro layoutIfNeeded];
         XCTAssertEqualWithAccuracy(scroll.contentOffset.y, chosenOffset, 0.001);
         XCTAssertEqual(intro.currentStepIndex, 2);
-        XCTAssertEqual(intro.framingCount, 0u);
+        XCTAssertEqual(intro.framingCount, framingBeforeInspection);
         [self assertEquationHidden:intro a:2 b:9 make:YES];
     }
 }
@@ -517,10 +650,11 @@
         lesson:[self lessonAtIndex:3]];
     [self hostIntro:intro width:288 height:360];
     UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    CGFloat offsetBeforeNext = scroll.contentOffset.y;
     [intro goToNextStep];
     CGRect counters = [self counterBoundsInSnapshots:@[intro.snapshots.lastObject]];
     XCTAssertGreaterThan(counters.size.height, scroll.bounds.size.height);
-    XCTAssertEqualWithAccuracy(scroll.contentOffset.y, 0, 0.001);
+    XCTAssertEqualWithAccuracy(scroll.contentOffset.y, offsetBeforeNext, 0.001);
     XCTAssertEqual([self visibleDotsInIntro:intro].count, 11u);
     [self assertVisibleDotsFitWithoutOverlapping:intro];
 }

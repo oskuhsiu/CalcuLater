@@ -12,16 +12,35 @@
 
 @interface GBTTestBoard : GroupingTeachingBoardView
 @property (nonatomic) BOOL allowMotion;
-@property (nonatomic, strong) UITraitCollection *testTraits;
 @end
 @implementation GBTTestBoard
 - (BOOL)canAnimate { return self.allowMotion; }
-- (UITraitCollection *)traitCollection { return self.testTraits ?: super.traitCollection; }
 @end
 
 @interface GroupingTeachingBoardViewTests : XCTestCase
+@property (nonatomic, strong) NSMutableArray<GBTTestBoard *> *fixtureBoards;
+@property (nonatomic, strong) UIWindow *hostWindow;
 @end
 @implementation GroupingTeachingBoardViewTests
+
+- (void)setUp {
+    [super setUp];
+    self.fixtureBoards = [NSMutableArray array];
+}
+- (void)tearDown {
+    // XCTest also runs teardown after an assertion/exception. Do not leave a
+    // board's display link or its trait-hosting window alive for the next test.
+    for (GBTTestBoard *board in self.fixtureBoards) {
+        [board cancelAnimations];
+        [board.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+        [board removeFromSuperview];
+    }
+    self.fixtureBoards = nil;
+    self.hostWindow.hidden = YES;
+    self.hostWindow.rootViewController = nil;
+    self.hostWindow = nil;
+    [super tearDown];
+}
 
 - (GroupingTeachingSequence *)storySequence:(NSInteger)a second:(NSInteger)b meaning:(GroupingStoryMeaning)meaning {
     BOOL build = meaning == GroupingStoryMeaningBuildEqualGroups;
@@ -39,9 +58,25 @@
     return NSNotFound;
 }
 - (GBTTestBoard *)board {
-    GBTTestBoard *board = [[GBTTestBoard alloc] initWithFrame:CGRectMake(0, 0, 288, 600)];
+    return [self boardWithFrame:CGRectMake(0, 0, 288, 600)];
+}
+- (GBTTestBoard *)boardWithFrame:(CGRect)frame {
+    GBTTestBoard *board = [[GBTTestBoard alloc] initWithFrame:frame];
     board.allowMotion = NO;
+    [self.fixtureBoards addObject:board];
     return board;
+}
+- (void)hostBoard:(GBTTestBoard *)board {
+    self.hostWindow = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 680, 600)];
+    self.hostWindow.rootViewController = [[UIViewController alloc] init];
+    self.hostWindow.hidden = NO;
+    // Keep the app's key window unchanged. The board's explicit test frame is
+    // independent of any screen-sized frame UIKit gives the hosting controller.
+    board.autoresizingMask = UIViewAutoresizingNone;
+    [self.hostWindow.rootViewController.view addSubview:board];
+    [self.hostWindow setNeedsLayout];
+    [self.hostWindow layoutIfNeeded];
+    XCTAssertEqual(board.window, self.hostWindow);
 }
 - (void)fit:(GroupingTeachingBoardView *)board width:(CGFloat)width {
     CGSize fitted = [board sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
@@ -175,21 +210,39 @@
 
 - (void)testAllCounterAndLabelFramesFitCompactWideAndLargeTextWidths {
     GBTTestBoard *board = self.board;
+    [self hostBoard:board];
     GroupingTeachingSequence *sequence = [self storySequence:90 second:9 meaning:GroupingStoryMeaningShareEqually];
     NSArray<NSNumber *> *steps = @[@0, @(sequence.steps.count - 1)];
     NSArray<NSString *> *categories = @[UIContentSizeCategoryLarge, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge];
     for (NSString *category in categories) {
-        board.testTraits = [UITraitCollection traitCollectionWithPreferredContentSizeCategory:category];
+        // Override just Dynamic Type through UIKit. Replacing traitCollection
+        // with a partial collection discards required inherited display traits.
+        board.traitOverrides.preferredContentSizeCategory = category;
+        [board setNeedsLayout];
+        [board layoutIfNeeded];
+        XCTAssertEqualObjects(board.traitCollection.preferredContentSizeCategory, category);
+        UITraitCollection *hostTraits = self.hostWindow.rootViewController.view.traitCollection;
+        XCTAssertGreaterThan(board.traitCollection.displayScale, 0);
+        XCTAssertNotEqual(board.traitCollection.userInterfaceIdiom, UIUserInterfaceIdiomUnspecified);
+        XCTAssertEqual(board.traitCollection.displayScale, hostTraits.displayScale);
+        XCTAssertEqual(board.traitCollection.userInterfaceIdiom, hostTraits.userInterfaceIdiom);
+        XCTAssertEqual(board.traitCollection.userInterfaceStyle, hostTraits.userInterfaceStyle);
         for (NSNumber *step in steps) for (NSNumber *width in @[@288, @320, @680]) {
             [board configureWithSequence:sequence stepIndex:step.integerValue animated:NO];
             [self fit:board width:width.doubleValue];
             XCTAssertEqualWithAccuracy(CGRectGetWidth(board.bounds), width.doubleValue, 0.1);
             UIView *content = [board valueForKey:@"contentView"];
+            XCTAssertEqualObjects(content.traitCollection.preferredContentSizeCategory, category);
             XCTAssertLessThanOrEqual(CGRectGetHeight(content.bounds), CGRectGetHeight(board.bounds) + 0.1);
             [self assertSubviewWidths:content];
             XCTAssertEqual([self stationaryCounterCount:board], 90u);
         }
     }
+    [board.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+    [board setNeedsLayout];
+    [board layoutIfNeeded];
+    XCTAssertEqualObjects(board.traitCollection.preferredContentSizeCategory,
+        self.hostWindow.rootViewController.view.traitCollection.preferredContentSizeCategory);
 }
 
 - (void)testEstablishedGroupGeometryDoesNotJumpWhenAnotherGroupIsPrepared {
@@ -307,7 +360,7 @@
 }
 
 - (void)testDisabledMotionInvalidIndicesAndZeroWidthAreSafe {
-    GBTTestBoard *board = [[GBTTestBoard alloc] initWithFrame:CGRectZero];
+    GBTTestBoard *board = [self boardWithFrame:CGRectZero];
     GroupingTeachingSequence *sequence = [self storySequence:23 second:4 meaning:GroupingStoryMeaningMakeGroupsOf];
     NSInteger index = [self firstIndex:GroupingTeachingStepKindPackGroup inSequence:sequence];
     XCTAssertTrue([board configureWithSequence:sequence stepIndex:index animated:YES]);

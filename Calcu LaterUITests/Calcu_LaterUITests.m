@@ -369,6 +369,50 @@
     XCTestExpectation *ready = [self expectationForPredicate:settled evaluatedWithObject:board handler:nil];
     [self waitForExpectations:@[ready] timeout:3];
 }
+- (void)frameBoardForInspection:(XCUIElement *)board in:(XCUIElement *)content {
+    for (NSUInteger attempt = 0; attempt < 8; attempt++) {
+        CGRect before = board.frame, viewport = content.frame;
+        XCTAssertTrue(isfinite(before.origin.y) && isfinite(before.size.height)
+            && isfinite(viewport.origin.y) && isfinite(viewport.size.height));
+        XCTAssertGreaterThan(viewport.size.height, 44);
+        // Do not disturb a complete first-play diagram just to align its top.
+        if (CGRectContainsRect(viewport, before)) break;
+        CGFloat delta;
+        if (before.size.height <= viewport.size.height) {
+            // Correct only the clipped edge of a board that can fit in full.
+            delta = CGRectGetMinY(before) < CGRectGetMinY(viewport)
+                ? CGRectGetMinY(before) - CGRectGetMinY(viewport)
+                : MAX(0, CGRectGetMaxY(before) - CGRectGetMaxY(viewport));
+            if (fabs(delta) < 1) break;
+        } else {
+            // Tall boards need their top framed, not merely a hittable legend.
+            delta = CGRectGetMinY(before) - CGRectGetMinY(viewport) - 8;
+            if (fabs(delta) < 12) break;
+        }
+        CGFloat distance = MIN(fabs(delta), viewport.size.height * 0.35);
+        CGFloat startY = delta > 0 ? 0.7 : 0.3;
+        CGFloat endY = startY + (delta > 0 ? -1 : 1) * distance / viewport.size.height;
+        XCUICoordinate *start = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, startY)];
+        XCUICoordinate *end = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, endY)];
+        CGPoint startPoint = start.screenPoint, endPoint = end.screenPoint;
+        // The old default-velocity, zero-hold drag overshot and oscillated.
+        // This hold is part of the touch gesture, not a post-action sleep.
+        [start pressForDuration:0.05 thenDragToCoordinate:end
+            withVelocity:XCUIGestureVelocitySlow thenHoldForDuration:0.2];
+        CGRect after = board.frame;
+        CGFloat measured = CGRectGetMinY(before) - CGRectGetMinY(after);
+        NSString *measurement = [NSString stringWithFormat:
+            @"attempt=%lu; requestedScroll=%.2f; boundedScroll=%.2f; measuredScroll=%.2f; "
+             "before=%@; after=%@; viewportBefore=%@; viewportAfter=%@; touchStart=%@; touchEnd=%@",
+            (unsigned long)(attempt + 1), delta, copysign(distance, delta), measured,
+            NSStringFromCGRect(before), NSStringFromCGRect(after), NSStringFromCGRect(viewport),
+            NSStringFromCGRect(content.frame), NSStringFromCGPoint(startPoint), NSStringFromCGPoint(endPoint)];
+        XCTAttachment *trace = [XCTAttachment attachmentWithString:measurement];
+        trace.name = [board.identifier stringByAppendingString:@"-inspection-scroll"];
+        trace.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:trace];
+    }
+}
 - (void)inspectGroupingBoard {
     XCUIElement *board = [self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"];
     XCUIElement *content = self.app.scrollViews[@"grouping.content"];
@@ -384,19 +428,7 @@
     XCTAssertGreaterThan(viewport.size.height, 44);
     XCTAssertGreaterThan(boardFrame.size.width, 44);
     XCTAssertGreaterThan(boardFrame.size.height, 44);
-    // A tall accessible board can be hittable with only its legend visible.
-    // Deliberately frame its top; retained video still verifies the moving tokens.
-    for (NSUInteger attempt = 0; attempt < 8; attempt++) {
-        CGFloat delta = CGRectGetMinY(board.frame) - CGRectGetMinY(content.frame) - 8;
-        if (fabs(delta) < 12) break;
-        CGFloat height = content.frame.size.height;
-        CGFloat distance = MIN(fabs(delta), height * 0.35);
-        CGFloat startY = delta > 0 ? 0.7 : 0.3;
-        CGFloat endY = startY + (delta > 0 ? -1 : 1) * distance / height;
-        XCUICoordinate *start = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, startY)];
-        XCUICoordinate *end = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, endY)];
-        [start pressForDuration:0.05 thenDragToCoordinate:end];
-    }
+    [self frameBoardForInspection:board in:content];
     XCTAssertTrue(board.hittable);
     CGRect visible = CGRectIntersection(board.frame, content.frame);
     XCTAssertFalse(CGRectIsNull(visible));
@@ -568,17 +600,7 @@
     // Both the stacked and side-by-side layouts retain two full ten-frame rows.
     XCTAssertGreaterThan(board.size.height, 100);
     XCTAssertGreaterThan(board.size.width, 160);
-    for (NSUInteger attempt = 0; attempt < 8; attempt++) {
-        CGFloat delta = CGRectGetMinY(stage.frame) - CGRectGetMinY(scroll.frame) - 8;
-        if (fabs(delta) < 12) break;
-        CGFloat height = scroll.frame.size.height;
-        CGFloat distance = MIN(fabs(delta), height * 0.35);
-        CGFloat startY = delta > 0 ? 0.7 : 0.3;
-        CGFloat endY = startY + (delta > 0 ? -1 : 1) * distance / height;
-        XCUICoordinate *start = [scroll coordinateWithNormalizedOffset:CGVectorMake(0.5, startY)];
-        XCUICoordinate *end = [scroll coordinateWithNormalizedOffset:CGVectorMake(0.5, endY)];
-        [start pressForDuration:0.05 thenDragToCoordinate:end];
-    }
+    [self frameBoardForInspection:stage in:scroll];
     CGRect visible = CGRectIntersection(stage.frame, scroll.frame);
     XCTAssertFalse(CGRectIsNull(visible));
     XCTAssertGreaterThan(visible.size.height, 0);
@@ -672,6 +694,9 @@
     XCTAssertEqualObjects(question, @"18 − 9 = ?");
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
     [self capture:@"45a-break-ten-initial-before-inspection"];
+    // Initial presentation, not only Next, must show both original quantities
+    // when the complete stage fits. Inspect/Replay may not repair this assertion.
+    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
     [self inspectTenFrameStage];
     [self capture:@"45-break-ten-ten-and-eight-original-ones"];
     [self.app.buttons[@"lessonIntro.next"] tap];
