@@ -19,6 +19,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 開始播放（在 addSubview 之後呼叫）。
 - (void)play;
 
+/// 離開課程時停止示範，取消尚未執行的步驟和後續音效；不會觸發完成回呼。
+/// 移出 window、隱藏或 app 進入背景時，也會自動停止。
+- (void)stopPlayback;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -73,11 +73,11 @@
                                        background:ChildUI.mintGreen
                                             action:@selector(lessonsTapped)];
     UIView *drillCard = [self largeCardWithTitle:@"✏️ 練一練"
-                                         subtitle:@"進位 / 退位 / 直式"
+                                         subtitle:@"10 題小挑戰，慢慢練習"
                                       background:ChildUI.pumpkinOrange
                                            action:@selector(drillsTapped)];
     UIView *wordCard = [self largeCardWithTitle:@"📝 想一想"
-                                        subtitle:@"應用題（1~3 年級）"
+                                        subtitle:@"5 個生活故事（1～3 年級）"
                                      background:ChildUI.lavender
                                           action:@selector(wordProblemsTapped)];
     lessonCard.accessibilityIdentifier = @"home.lessons";
@@ -96,8 +96,8 @@
     [NSLayoutConstraint activateConstraints:@[
         [self.settingsButton.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12],
         [self.settingsButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
-        [self.settingsButton.widthAnchor constraintEqualToConstant:40],
-        [self.settingsButton.heightAnchor constraintEqualToConstant:40],
+        [self.settingsButton.widthAnchor constraintEqualToConstant:56],
+        [self.settingsButton.heightAnchor constraintEqualToConstant:56],
 
         [scrollView.topAnchor constraintEqualToAnchor:safe.topAnchor],
         [scrollView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
@@ -165,14 +165,14 @@
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text = title;
     titleLabel.font = [ChildUI roundedFontOfSize:28.0 weight:UIFontWeightBold];
-    titleLabel.textColor = [UIColor whiteColor];
+    titleLabel.textColor = ChildUI.brownText;
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:titleLabel];
 
     UILabel *subLabel = [[UILabel alloc] init];
     subLabel.text = subtitle;
     subLabel.font = [ChildUI roundedFontOfSize:17.0 weight:UIFontWeightMedium];
-    subLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.92];
+    subLabel.textColor = [ChildUI.brownText colorWithAlphaComponent:0.85];
     subLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:subLabel];
 

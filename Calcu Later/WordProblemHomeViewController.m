@@ -34,15 +34,15 @@
     // 三張年級卡（直向）
     UIView *card1 = [self cardForGrade:1
                                  title:@"1 年級"
-                              subtitle:@"20 以內 加 / 減 故事題"
+                              subtitle:@"100 以內加減・找出未知數"
                                  color:ChildUI.mintGreen];
     UIView *card2 = [self cardForGrade:2
                                  title:@"2 年級"
-                              subtitle:@"100 以內 加減 + 九九乘法"
+                              subtitle:@"1000 以內加減・九九乘法"
                                  color:ChildUI.pumpkinOrange];
     UIView *card3 = [self cardForGrade:3
                                  title:@"3 年級"
-                              subtitle:@"大數加減 + 乘 / 除"
+                              subtitle:@"大數・乘除・分數與單位"
                                  color:ChildUI.lavender];
 
     [self.view addSubview:card1];
@@ -92,14 +92,14 @@
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text = title;
     titleLabel.font = [ChildUI roundedFontOfSize:30.0 weight:UIFontWeightBold];
-    titleLabel.textColor = [UIColor whiteColor];
+    titleLabel.textColor = ChildUI.brownText;
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:titleLabel];
 
     UILabel *subLabel = [[UILabel alloc] init];
     subLabel.text = subtitle;
     subLabel.font = [ChildUI roundedFontOfSize:17.0 weight:UIFontWeightMedium];
-    subLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.92];
+    subLabel.textColor = [ChildUI.brownText colorWithAlphaComponent:0.85];
     subLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:subLabel];
 

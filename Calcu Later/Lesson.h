@@ -29,7 +29,13 @@ typedef NS_ENUM(NSInteger, LessonKind) {
              questionCount:(NSInteger)count
        multiplicationFactor:(NSInteger)factor;
 
-/// 產生一題該課的題目。
+/// 產生一整堂課的練習，題數為 questionCount。
+/// 內建課程不重複出題；乘法課將 1…9 的每個乘數各練一次。
+/// 加減課平均輪流抽取不同總數／被減數，避免 +0 或簡單題佔滿整堂課。
+/// 重開同一 Lesson 的課程時，第一題不會接著重複上堂最後一題。
+- (NSArray<ArithmeticProblem *> *)generateSessionProblems;
+
+/// 相容舊呼叫端：依序取出同一份平衡題組，用完才產生下一份。
 - (ArithmeticProblem *)generateProblem;
 
 @end

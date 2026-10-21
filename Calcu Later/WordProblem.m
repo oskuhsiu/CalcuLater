@@ -62,6 +62,117 @@
               isFractionAnswer:NO answerNumerator:0 answerDenominator:0];
 }
 
+- (NSString *)displayOperator:(NSString *)symbol {
+    return [symbol isEqualToString:@"-"] ? @"−" : symbol;
+}
+
+- (NSString *)answerTextWithUnit {
+    return self.unit.length > 0
+        ? [NSString stringWithFormat:@"%ld %@", (long)self.answer, self.unit]
+        : [NSString stringWithFormat:@"%ld", (long)self.answer];
+}
+
+- (NSString *)equationTextRevealingAnswer:(BOOL)reveal {
+    if (self.isFractionAnswer) {
+        return reveal ? [NSString stringWithFormat:@"答案：%ld/%ld",
+                         (long)self.answerNumerator, (long)self.answerDenominator] : @"答案：?";
+    }
+    NSString *op = [self displayOperator:self.operatorSymbol];
+    NSString *answer = reveal ? [self answerTextWithUnit] : @"?";
+    if (self.operator2) {
+        return [NSString stringWithFormat:@"%ld %@ %ld %@ %ld = %@",
+                (long)self.number1, op, (long)self.number2,
+                [self displayOperator:self.operator2], (long)self.number3, answer];
+    }
+
+    NSString *unknown = reveal ? [NSString stringWithFormat:@"%ld", (long)self.answer] : @"?";
+    NSString *inverseEquation = nil;
+    if (self.missingAddend) {
+        inverseEquation = [NSString stringWithFormat:@"%@ + %ld = %ld",
+                           unknown, (long)self.number2, (long)self.number1];
+    } else if (self.missingSubtrahend) {
+        inverseEquation = [NSString stringWithFormat:@"%ld − %@ = %ld",
+                           (long)self.number1, unknown, (long)self.number2];
+    } else if (self.missingMinuend) {
+        inverseEquation = [NSString stringWithFormat:@"%@ − %ld = %ld",
+                           unknown, (long)self.number1, (long)self.number2];
+    }
+    if (inverseEquation) {
+        return reveal ? [NSString stringWithFormat:@"%@\n答案：%@", inverseEquation, answer] : inverseEquation;
+    }
+    if (reveal && self.remainder > 0 && [self.operatorSymbol isEqualToString:@"÷"]) {
+        return [NSString stringWithFormat:@"%ld ÷ %ld = %ld 餘 %ld",
+                (long)self.number1, (long)self.number2, (long)self.answer, (long)self.remainder];
+    }
+    return [NSString stringWithFormat:@"%ld %@ %ld = %@",
+            (long)self.number1, op, (long)self.number2, answer];
+}
+
+- (NSString *)workedExplanationText {
+    if (self.isFractionAnswer) {
+        return [NSString stringWithFormat:
+                @"把整個平均分成 %ld 等份\n取其中 %ld 份，就是 %ld/%ld",
+                (long)self.answerDenominator, (long)self.answerNumerator,
+                (long)self.answerNumerator, (long)self.answerDenominator];
+    }
+
+    NSString *answerText = [self answerTextWithUnit];
+    NSString *answerLine = [@"答案：" stringByAppendingString:answerText];
+    NSString *op = [self displayOperator:self.operatorSymbol];
+
+    if (self.operator2) {
+        return [NSString stringWithFormat:
+                @"第一步：%ld %@ %ld = %ld\n第二步：%ld %@ %ld = %ld\n%@",
+                (long)self.number1, op, (long)self.number2, (long)self.intermediate,
+                (long)self.intermediate, [self displayOperator:self.operator2],
+                (long)self.number3, (long)self.answer, answerLine];
+    }
+    if (self.missingAddend) {
+        return [NSString stringWithFormat:
+                @"總數減去已知的部分：%ld − %ld = %ld\n驗算：%ld + %ld = %ld\n%@",
+                (long)self.number1, (long)self.number2, (long)self.answer,
+                (long)self.answer, (long)self.number2, (long)self.number1, answerLine];
+    }
+    if (self.missingSubtrahend) {
+        return [NSString stringWithFormat:
+                @"原來的數量減去剩下的：%ld − %ld = %ld\n驗算：%ld − %ld = %ld\n%@",
+                (long)self.number1, (long)self.number2, (long)self.answer,
+                (long)self.number1, (long)self.answer, (long)self.number2, answerLine];
+    }
+    if (self.missingMinuend) {
+        return [NSString stringWithFormat:
+                @"拿走的和剩下的合起來：%ld + %ld = %ld\n驗算：%ld − %ld = %ld\n%@",
+                (long)self.number1, (long)self.number2, (long)self.answer,
+                (long)self.answer, (long)self.number1, (long)self.number2, answerLine];
+    }
+    if ([self.operatorSymbol isEqualToString:@"÷"]) {
+        if (self.remainder > 0) {
+            // 包、盤、隊等是商的單位，不等於剩下的糖果、球員等單位。
+            // 運算列保持純數字，只在本題所問的商旁標註 unit，絕不猜餘數單位。
+            return [NSString stringWithFormat:
+                    @"%ld ÷ %ld = %ld 餘 %ld\n驗算：%ld × %ld + %ld = %ld\n這題只答商：%@",
+                    (long)self.number1, (long)self.number2, (long)self.answer, (long)self.remainder,
+                    (long)self.answer, (long)self.number2, (long)self.remainder, (long)self.number1,
+                    answerText];
+        }
+        return [NSString stringWithFormat:
+                @"%ld ÷ %ld = %ld\n驗算：%ld × %ld = %ld\n%@",
+                (long)self.number1, (long)self.number2, (long)self.answer,
+                (long)self.answer, (long)self.number2, (long)self.number1, answerLine];
+    }
+    if ([self.operatorSymbol isEqualToString:@"×"] && self.number2 >= 1 && self.number2 <= 6) {
+        NSMutableArray<NSString *> *parts = [NSMutableArray array];
+        for (NSInteger i = 0; i < self.number2; i++) {
+            [parts addObject:[NSString stringWithFormat:@"%ld", (long)self.number1]];
+        }
+        return [NSString stringWithFormat:@"%ld × %ld\n= %@\n%@",
+                (long)self.number1, (long)self.number2,
+                [parts componentsJoinedByString:@" + "], answerLine];
+    }
+    return [NSString stringWithFormat:@"%ld %@ %ld = %ld\n%@",
+            (long)self.number1, op, (long)self.number2, (long)self.answer, answerLine];
+}
+
 - (ArithmeticProblem *)toArithmeticProblem {
     ArithmeticProblem *p = [[ArithmeticProblem alloc] initWithNumber1:self.number1
                                                               number2:self.number2

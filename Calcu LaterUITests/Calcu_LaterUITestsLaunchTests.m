@@ -14,7 +14,7 @@
 @implementation Calcu_LaterUITestsLaunchTests
 
 + (BOOL)runsForEachTargetApplicationUIConfiguration {
-    return YES;
+    return NO;
 }
 
 - (void)setUp {

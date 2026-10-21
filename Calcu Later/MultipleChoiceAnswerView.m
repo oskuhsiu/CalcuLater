@@ -4,179 +4,306 @@
 #import "ChildUIKit.h"
 #import "SoundManager.h"
 
+static const NSTimeInterval MCQWrongFeedbackDuration = 0.35;
+
 @interface MultipleChoiceAnswerView ()
-@property (nonatomic, strong) NSArray<UIButton *> *choiceButtons;
-@property (nonatomic, strong) ArithmeticProblem *problem;
-@property (nonatomic, strong) NSArray<NSNumber *> *currentChoices;
-/// 字串模式：configureWithChoiceTitles: 設定。NSNotFound 表示走 problem.answer 比對的整數模式。
-@property (nonatomic, assign) NSInteger explicitCorrectIndex;
+@property (nonatomic, copy) NSArray<UIButton *> *choiceButtons;
+@property (nonatomic, copy) NSArray<UILabel *> *feedbackLabels;
+@property (nonatomic, copy) NSArray<NSString *> *choiceTitles;
+@property (nonatomic, copy, nullable) NSArray<NSNumber *> *currentChoices;
+@property (nonatomic, strong) NSMutableIndexSet *attemptedWrongIndexes;
+@property (nonatomic, assign) NSInteger correctChoiceIndex;
+@property (nonatomic, assign) BOOL configured;
+@property (nonatomic, assign) BOOL choicesLocked;
+@property (nonatomic, assign) BOOL feedbackInProgress;
+@property (nonatomic, assign) BOOL correctAnswerChosen;
+@property (nonatomic, assign) BOOL answerRevealed;
+@property (nonatomic, assign) NSUInteger feedbackGeneration;
+@property (nonatomic, copy, nullable) dispatch_block_t feedbackRelease;
 @end
 
 @implementation MultipleChoiceAnswerView
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
-    if (self) {
-        self.backgroundColor = [UIColor clearColor];
-        // 整數模式的 sentinel。Zero-init (= 0) 會被誤判為「字串模式 correctIndex=0」，
-        // 導致 configure 之前任何點擊都把按鈕 0 當正解。
-        _explicitCorrectIndex = NSNotFound;
-        NSMutableArray *btns = [NSMutableArray array];
-        UIColor *cycle[4] = {
-            ChildUI.pinkAccent, ChildUI.skyBlue, ChildUI.mintGreen, ChildUI.eggYolk
-        };
-        for (NSInteger i = 0; i < 4; i++) {
-            UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-            b.backgroundColor = cycle[i];
-            b.layer.cornerRadius = 24.0;
-            [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-            b.titleLabel.font = [ChildUI roundedMonoFontOfSize:42.0 weight:UIFontWeightBold];
-            b.tag = i;
-            b.accessibilityIdentifier = [NSString stringWithFormat:@"answer.%ld", (long)i];
-            [ChildUI applySoftShadowOnLayer:b.layer];
-            [b addTarget:self action:@selector(_choiceTapped:) forControlEvents:UIControlEventTouchUpInside];
-            [b addTarget:self action:@selector(_touchDown:) forControlEvents:UIControlEventTouchDown];
-            // 不在 TouchUpInside 還原 transform：_choiceTapped 會用 _correctFeedback 接手放大彈跳，
-            // 否則兩個動畫同時跑 _touchUp 會覆蓋 _correctFeedback，孩子看不到放大效果。
-            [b addTarget:self action:@selector(_touchUp:) forControlEvents:UIControlEventTouchUpOutside | UIControlEventTouchCancel];
-            [self addSubview:b];
-            [btns addObject:b];
-        }
-        self.choiceButtons = [btns copy];
-    }
+    if (self) [self commonInit];
     return self;
+}
+
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    self = [super initWithCoder:coder];
+    if (self) [self commonInit];
+    return self;
+}
+
+- (void)commonInit {
+    self.backgroundColor = UIColor.clearColor;
+    self.isAccessibilityElement = NO;
+    self.shouldGroupAccessibilityChildren = YES;
+    self.correctChoiceIndex = NSNotFound;
+    self.choiceTitles = @[];
+    self.attemptedWrongIndexes = [NSMutableIndexSet indexSet];
+    NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    for (NSInteger i = 0; i < 4; i++) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        button.layer.cornerRadius = 24.0;
+        button.layer.borderColor = ChildUI.brownText.CGColor;
+        [button setTitleColor:ChildUI.brownText forState:UIControlStateNormal];
+        [button setTitleColor:ChildUI.brownText forState:UIControlStateHighlighted];
+        [button setTitleColor:ChildUI.brownText forState:UIControlStateDisabled];
+        button.titleLabel.font = [ChildUI scaledRoundedMonoFontOfSize:42.0 weight:UIFontWeightBold
+                                                         textStyle:UIFontTextStyleLargeTitle maximumPointSize:52.0];
+        button.titleLabel.adjustsFontForContentSizeCategory = YES;
+        button.titleLabel.adjustsFontSizeToFitWidth = YES;
+        button.titleLabel.minimumScaleFactor = 0.55;
+        button.contentEdgeInsets = UIEdgeInsetsMake(8, 12, 26, 12);
+        button.tag = i;
+        button.accessibilityIdentifier = [NSString stringWithFormat:@"answer.%ld", (long)i];
+        button.accessibilityLanguage = @"zh-TW";
+        [ChildUI applySoftShadowOnLayer:button.layer];
+        [button addTarget:self action:@selector(choiceTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [button addTarget:self action:@selector(touchDown:) forControlEvents:UIControlEventTouchDown];
+        [button addTarget:self action:@selector(touchCancelled:)
+          forControlEvents:UIControlEventTouchUpOutside | UIControlEventTouchCancel | UIControlEventTouchDragExit];
+
+        UILabel *feedback = [[UILabel alloc] init];
+        feedback.font = [ChildUI scaledRoundedFontOfSize:14.0 weight:UIFontWeightSemibold
+                                              textStyle:UIFontTextStyleCaption1 maximumPointSize:18.0];
+        feedback.adjustsFontForContentSizeCategory = YES;
+        feedback.adjustsFontSizeToFitWidth = YES;
+        feedback.minimumScaleFactor = 0.8;
+        feedback.textColor = ChildUI.brownText;
+        feedback.textAlignment = NSTextAlignmentCenter;
+        feedback.isAccessibilityElement = NO;
+        feedback.userInteractionEnabled = NO;
+        [button addSubview:feedback];
+        [self addSubview:button];
+        [buttons addObject:button];
+        [labels addObject:feedback];
+    }
+    self.choiceButtons = buttons;
+    self.feedbackLabels = labels;
+    [self updateChoiceAppearance];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(motionPreferenceChanged:)
+                                                 name:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+}
+
+- (void)dealloc {
+    if (_feedbackRelease) dispatch_block_cancel(_feedbackRelease);
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (BOOL)isAcceptingAnswers {
+    return self.configured && !self.choicesLocked && !self.feedbackInProgress;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat gap = 16.0;
-    CGFloat w = (CGRectGetWidth(self.bounds) - gap) * 0.5;
-    CGFloat h = (CGRectGetHeight(self.bounds) - gap) * 0.5;
+    CGFloat gap = MIN(16.0, MAX(0.0, CGRectGetWidth(self.bounds) * 0.04));
+    CGFloat width = MAX(0.0, (CGRectGetWidth(self.bounds) - gap) * 0.5);
+    CGFloat height = MAX(0.0, (CGRectGetHeight(self.bounds) - gap) * 0.5);
     for (NSInteger i = 0; i < 4; i++) {
-        NSInteger r = i / 2;
-        NSInteger c = i % 2;
-        UIButton *b = self.choiceButtons[i];
-        b.frame = CGRectMake(c * (w + gap), r * (h + gap), w, h);
+        UIButton *button = self.choiceButtons[i];
+        // Bounds/center remain well-defined if the press animation is in flight.
+        button.bounds = CGRectMake(0, 0, width, height);
+        button.center = CGPointMake((i % 2) * (width + gap) + width * 0.5,
+                                    (i / 2) * (height + gap) + height * 0.5);
+        self.feedbackLabels[i].frame = CGRectMake(8, MAX(0.0, height - 27), MAX(0.0, width - 16), 22);
+        button.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:button.bounds cornerRadius:24.0].CGPath;
     }
 }
 
 - (void)configureWithProblem:(ArithmeticProblem *)problem {
-    self.problem = problem;
-    self.explicitCorrectIndex = NSNotFound;  // 整數模式：用 problem.answer 比對
-    self.currentChoices = [DistractorGenerator choicesForProblem:problem];
-    for (NSInteger i = 0; i < 4; i++) {
-        NSString *s = [NSString stringWithFormat:@"%ld", (long)self.currentChoices[i].integerValue];
-        [self.choiceButtons[i] setTitle:s forState:UIControlStateNormal];
-        self.choiceButtons[i].enabled = YES;
-        self.choiceButtons[i].alpha = 1.0;
+    NSArray<NSNumber *> *choices = problem ? [DistractorGenerator choicesForProblem:problem] : @[];
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSInteger correctIndex = NSNotFound;
+    for (NSUInteger i = 0; i < MIN(choices.count, 4); i++) {
+        [titles addObject:choices[i].stringValue];
+        if (choices[i].integerValue == problem.answer) correctIndex = (NSInteger)i;
     }
+    [self configureWithChoiceTitles:titles correctIndex:correctIndex];
+    self.currentChoices = [choices subarrayWithRange:NSMakeRange(0, MIN(choices.count, 4))];
 }
 
 - (void)configureWithChoiceTitles:(NSArray<NSString *> *)titles correctIndex:(NSInteger)correctIndex {
-    self.problem = nil;
-    self.currentChoices = nil;
-    // 防呆：correctIndex 必須落在 [0, titles.count) 內。
-    // - NSNotFound 會讓 _choiceTapped 走進整數模式分支，因 currentChoices/problem 已被 nil 掉，
-    //   nil-messaging 讓 result=(0==0)=Correct，每一格都被當成正解 → 答題失效。
-    // - 超出範圍 (e.g. == titles.count) 會讓 idx 永不等於 correctIndex → 每一格都判錯。
-    // 兩種情境都讓 MCQ 不可用；clamp 到 0 + assert 留下訊號（debug build 噴錯，release 還能玩）。
-    if (correctIndex == (NSInteger)NSNotFound
-        || correctIndex < 0
-        || correctIndex >= (NSInteger)titles.count) {
-        NSAssert(NO, @"MCQ configureWithChoiceTitles: invalid correctIndex %ld for %lu titles",
-                 (long)correctIndex, (unsigned long)titles.count);
-        correctIndex = 0;
-    }
-    self.explicitCorrectIndex = correctIndex;
-    NSInteger n = MIN((NSInteger)titles.count, 4);
-    for (NSInteger i = 0; i < 4; i++) {
-        NSString *s = (i < n) ? titles[i] : @"";
-        [self.choiceButtons[i] setTitle:s forState:UIControlStateNormal];
-        // titles 少於 4 的剩餘按鈕直接 disable，避免空白按鈕被點到（一定判錯，孩子困惑）。
-        BOOL hasTitle = (i < n) && (s.length > 0);
-        self.choiceButtons[i].enabled = hasTitle;
-        self.choiceButtons[i].alpha = hasTitle ? 1.0 : 0.0;
-    }
+    self.currentChoices = nil; // String-mode delegates receive the selected index, as before.
+    self.choiceTitles = [titles subarrayWithRange:NSMakeRange(0, MIN(titles.count, 4))];
+    BOOL validIndex = correctIndex >= 0 && correctIndex < (NSInteger)self.choiceTitles.count;
+    self.configured = validIndex && self.choiceTitles[correctIndex].length > 0;
+    self.correctChoiceIndex = self.configured ? correctIndex : NSNotFound;
+    [self reset];
 }
 
 - (void)reset {
-    for (UIButton *b in self.choiceButtons) {
-        b.enabled = YES;
-        b.alpha = 1.0;
-        b.transform = CGAffineTransformIdentity;
-    }
+    [self invalidateFeedbackRelease];
+    self.choicesLocked = NO;
+    self.correctAnswerChosen = NO;
+    self.answerRevealed = NO;
+    [self.attemptedWrongIndexes removeAllIndexes];
+    [self restoreButtonTransforms];
+    [self updateChoiceAppearance];
 }
 
 - (void)disableAllChoices {
-    for (UIButton *b in self.choiceButtons) {
-        b.enabled = NO;
+    [self invalidateFeedbackRelease];
+    self.choicesLocked = YES;
+    if (!self.correctAnswerChosen) [self restoreButtonTransforms];
+    [self updateChoiceAppearance];
+}
+
+- (void)revealCorrectChoice {
+    if (!self.configured) return;
+    [self disableAllChoices];
+    self.answerRevealed = !self.correctAnswerChosen;
+    [self updateChoiceAppearance];
+}
+
+- (void)updateChoiceAppearance {
+    NSArray<UIColor *> *colors = @[ChildUI.pinkAccent, ChildUI.skyBlue, ChildUI.mintGreen, ChildUI.eggYolk];
+    for (NSUInteger i = 0; i < self.choiceButtons.count; i++) {
+        UIButton *button = self.choiceButtons[i];
+        NSString *title = i < self.choiceTitles.count ? self.choiceTitles[i] : @"";
+        BOOL populated = title.length > 0;
+        BOOL wrong = [self.attemptedWrongIndexes containsIndex:i];
+        BOOL correct = (NSInteger)i == self.correctChoiceIndex && (self.correctAnswerChosen || self.answerRevealed);
+        button.hidden = !populated;
+        button.alpha = 1.0; // Disabled does not mean unreadable.
+        button.enabled = populated && self.isAcceptingAnswers && !wrong;
+        button.selected = correct;
+        [button setTitle:title forState:UIControlStateNormal];
+        button.backgroundColor = correct ? ChildUI.correctGreen : (wrong ? ChildUI.wrongPink : colors[i]);
+        button.layer.borderWidth = (correct || wrong) ? 2.5 : 0.0;
+        NSString *feedback = @"";
+        NSString *value = self.choicesLocked ? @"未選擇" : @"尚未作答";
+        if (wrong) {
+            feedback = @"↻ 再想一想";
+            value = @"已試過，還不是答案";
+        } else if (correct) {
+            feedback = self.answerRevealed ? @"✓ 正確答案" : @"✓ 答對了！";
+            value = self.answerRevealed ? @"正確答案" : @"答對了";
+        }
+        self.feedbackLabels[i].text = feedback;
+        button.isAccessibilityElement = populated;
+        button.accessibilityLabel = [NSString stringWithFormat:@"選項 %lu，%@", (unsigned long)i + 1,
+                                     [self spokenChoiceTitle:title]];
+        button.accessibilityValue = value;
+        button.accessibilityHint = button.enabled ? @"點兩下選擇這個答案" : nil;
+        button.accessibilityTraits = UIAccessibilityTraitButton
+                                   | (button.enabled ? 0 : UIAccessibilityTraitNotEnabled)
+                                   | (correct ? UIAccessibilityTraitSelected : 0);
     }
 }
 
-#pragma mark - Tap
+- (NSString *)spokenChoiceTitle:(NSString *)title {
+    NSArray<NSString *> *parts = [title componentsSeparatedByString:@"/"];
+    NSCharacterSet *nonDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+    if (parts.count == 2 && parts[0].length > 0 && parts[1].length > 0
+        && [parts[0] rangeOfCharacterFromSet:nonDigits].location == NSNotFound
+        && [parts[1] rangeOfCharacterFromSet:nonDigits].location == NSNotFound) {
+        return [NSString stringWithFormat:@"%@ 分之 %@", parts[1], parts[0]];
+    }
+    return title;
+}
 
-- (void)_choiceTapped:(UIButton *)btn {
-    NSInteger idx = btn.tag;
-    MCQResult result;
-    NSInteger value;
-    if (self.explicitCorrectIndex != NSNotFound) {
-        // 字串模式（分數等）：用 index 比對。value 對 delegate 無意義，傳 idx 占位。
-        result = (idx == self.explicitCorrectIndex) ? MCQResultCorrect : MCQResultWrong;
-        value = idx;
+#pragma mark - Accepted input and feedback
+
+- (void)choiceTapped:(UIButton *)button {
+    NSInteger index = button.tag;
+    // Gate BEFORE mutating cards or invoking the delegate. sendActionsForControlEvents:
+    // can bypass UIKit hit testing, so enabled alone is not a sufficient guard.
+    if (!self.isAcceptingAnswers || !button.enabled || self.hidden || !self.userInteractionEnabled
+        || index < 0 || index >= (NSInteger)self.choiceButtons.count || self.choiceButtons[index] != button) return;
+
+    [self restoreButtonTransforms];
+    BOOL correct = index == self.correctChoiceIndex;
+    NSInteger value = self.currentChoices ? self.currentChoices[index].integerValue : index;
+    if (correct) {
+        self.correctAnswerChosen = YES;
+        self.choicesLocked = YES; // A reentrant/double tap cannot award a second answer.
     } else {
-        value = self.currentChoices[idx].integerValue;
-        result = (value == self.problem.answer) ? MCQResultCorrect : MCQResultWrong;
+        [self.attemptedWrongIndexes addIndex:(NSUInteger)index];
+        self.feedbackInProgress = YES;
+        [self scheduleFeedbackRelease];
     }
-
-    if (result == MCQResultCorrect) {
-        [self _correctFeedback:btn];
-    } else {
-        [self _wrongFeedback:btn];
-    }
-
-    [self.delegate mcqView:self didChoose:value result:result];
+    [self updateChoiceAppearance];
+    [self animateFeedbackForButton:button correct:correct];
+    [self.delegate mcqView:self didChoose:value result:correct ? MCQResultCorrect : MCQResultWrong];
+    // No work after the delegate: it is allowed to configure a new question synchronously.
 }
 
-- (void)_correctFeedback:(UIButton *)btn {
-    // 先取消任何 in-flight 動畫（例如 _touchDown 的 0.92 縮小），確保彈跳從 1.0 起跳。
-    [btn.layer removeAllAnimations];
-    btn.transform = CGAffineTransformIdentity;
-    [UIView animateWithDuration:0.30 delay:0 usingSpringWithDamping:0.45 initialSpringVelocity:0.8
-                        options:UIViewAnimationOptionAllowUserInteraction animations:^{
-        btn.transform = CGAffineTransformMakeScale(1.18, 1.18);
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.25 animations:^{
-            btn.transform = CGAffineTransformIdentity;
-        }];
-    }];
+- (void)scheduleFeedbackRelease {
+    NSUInteger generation = self.feedbackGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_block_t release = dispatch_block_create(0, ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || self.feedbackGeneration != generation || self.choicesLocked) return;
+        self.feedbackRelease = nil;
+        self.feedbackInProgress = NO;
+        [self updateChoiceAppearance];
+    });
+    self.feedbackRelease = release;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MCQWrongFeedbackDuration * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), release);
 }
 
-- (void)_wrongFeedback:(UIButton *)btn {
-    btn.enabled = NO;
-    [UIView animateWithDuration:0.50 animations:^{
-        btn.alpha = 0.4;
-    }];
-    // 柔和搖頭
-    CAKeyframeAnimation *shake = [CAKeyframeAnimation animationWithKeyPath:@"position.x"];
-    shake.values = @[ @(btn.center.x), @(btn.center.x - 8), @(btn.center.x + 8),
-                      @(btn.center.x - 5), @(btn.center.x + 5), @(btn.center.x) ];
-    shake.keyTimes = @[ @0, @0.2, @0.4, @0.6, @0.8, @1.0 ];
-    shake.duration = 0.45;
-    [btn.layer addAnimation:shake forKey:@"shake"];
+- (void)invalidateFeedbackRelease {
+    self.feedbackGeneration++;
+    if (self.feedbackRelease) dispatch_block_cancel(self.feedbackRelease);
+    self.feedbackRelease = nil;
+    self.feedbackInProgress = NO;
 }
 
-- (void)_touchDown:(UIButton *)b {
+- (void)animateFeedbackForButton:(UIButton *)button correct:(BOOL)correct {
+    if (!ChildUI.motionEnabled || !self.window) return;
+    // Core Animation affects presentation only: no stale completion can resize a reused card.
+    CAKeyframeAnimation *animation = [CAKeyframeAnimation animationWithKeyPath:correct ? @"transform.scale" : @"transform.translation.x"];
+    animation.values = correct ? @[@1.0, @1.08, @0.99, @1.0] : @[@0, @-7, @7, @-4, @4, @0];
+    animation.duration = correct ? 0.42 : MCQWrongFeedbackDuration;
+    [button.layer addAnimation:animation forKey:@"answerFeedback"];
+}
+
+- (void)touchDown:(UIButton *)button {
+    if (!self.isAcceptingAnswers || !button.enabled) return;
     [[SoundManager sharedInstance] play:SoundEffectTap];
-    [UIView animateWithDuration:0.10 animations:^{
-        b.transform = CGAffineTransformMakeScale(0.92, 0.92);
-    }];
+    if (!ChildUI.motionEnabled) return;
+    [UIView animateWithDuration:0.10 delay:0
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        button.transform = CGAffineTransformMakeScale(0.96, 0.96);
+    } completion:nil];
 }
 
-- (void)_touchUp:(UIButton *)b {
-    [UIView animateWithDuration:0.20 delay:0 usingSpringWithDamping:0.5 initialSpringVelocity:0.5
-                        options:0 animations:^{
-        b.transform = CGAffineTransformIdentity;
-    } completion:nil];
+- (void)touchCancelled:(UIButton *)button {
+    [button.layer removeAllAnimations];
+    button.transform = CGAffineTransformIdentity;
+}
+
+- (void)restoreButtonTransforms {
+    for (UIButton *button in self.choiceButtons) {
+        [button.layer removeAllAnimations];
+        button.transform = CGAffineTransformIdentity;
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    [super setHidden:hidden];
+    if (hidden) [self stopTransientFeedback];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (!self.window) [self stopTransientFeedback];
+}
+
+- (void)stopTransientFeedback {
+    [self invalidateFeedbackRelease];
+    [self restoreButtonTransforms];
+    [self updateChoiceAppearance];
+}
+
+- (void)motionPreferenceChanged:(NSNotification *)notification {
+    if (!ChildUI.motionEnabled) [self restoreButtonTransforms];
 }
 
 @end

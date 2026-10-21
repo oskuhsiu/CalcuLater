@@ -24,7 +24,7 @@ typedef NS_ENUM(NSInteger, MascotVariant) {
 
 @property (nonatomic, assign) MascotVariant variant;
 
-/// 切換情緒。會清掉先前的情緒動畫，但 idle 浮動繼續。
+/// 切換情緒。保留可讀的情緒描述；隱藏、離開畫面或「減少動態效果」時不播放動畫。
 - (void)setEmotion:(MascotEmotion)emotion;
 
 - (void)startIdleAnimation;

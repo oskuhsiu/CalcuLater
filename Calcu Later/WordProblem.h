@@ -32,8 +32,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 與其他 missing* 三者互斥。
 @property (nonatomic, assign, readonly) BOOL missingMinuend;
 
-/// 有餘數除法的餘數；整除題為 0。等式渲染為「a ÷ b = q⋯r」（r > 0 時）。
-/// 目前題目只問商（answer = q），餘數僅供等式顯示。
+/// 有餘數除法的餘數；整除題為 0。等式渲染為「a ÷ b = q 餘 r」（r > 0 時）。
+/// 題目只問商（answer = q）；完整解釋仍需保留餘數與 a = q × b + r 的驗算。
 @property (nonatomic, assign, readonly) NSInteger remainder;
 
 /// 二步驟混合題：number3 與 operator2。operator2 為 nil 表示單步驟。
@@ -80,7 +80,18 @@ NS_ASSUME_NONNULL_BEGIN
                        answer:(NSInteger)answer
                          unit:(NSString *)unit;
 
-/// 轉成 ArithmeticProblem，便於餵給 DistractorGenerator / AnimatedHintView。
+/// 完整的解題說明，會揭示答案，並保留特殊題型的語意與答案單位。
+/// 有餘除法以 q × b + r = a 驗算，unit 只標在商的答案旁，不冒充餘數單位。
+/// 可用於文字提示／答後解釋；若只想給策略而不揭答，請使用獨立的策略提示。
+- (NSString *)workedExplanationText;
+
+/// 題目面板的算式；reveal=NO 保留未知數，YES 才顯示答案。
+/// 反推題的單位獨立放在「答案」句，不誤標到等號右邊的已知數。
+/// 有餘除法顯示純數字 q 餘 r；商的答案單位另見 workedExplanationText。
+- (NSString *)equationTextRevealingAnswer:(BOOL)reveal;
+
+/// 轉成 ArithmeticProblem，供 DistractorGenerator 使用；answer 仍是商或最終答案。
+/// 此橋接不攜帶餘數、單位與分數，特殊題型的提示請使用 workedExplanationText。
 - (ArithmeticProblem *)toArithmeticProblem;
 
 @end

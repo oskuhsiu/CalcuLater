@@ -8,6 +8,24 @@
 
 @implementation DecorativeBackgroundView
 
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) [self excludeDecorationFromInteraction];
+    return self;
+}
+
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    self = [super initWithCoder:coder];
+    if (self) [self excludeDecorationFromInteraction];
+    return self;
+}
+
+- (void)excludeDecorationFromInteraction {
+    self.userInteractionEnabled = NO;
+    self.isAccessibilityElement = NO;
+    self.accessibilityElementsHidden = YES;
+}
+
 + (instancetype)backgroundWithTheme:(BackgroundTheme)theme {
     DecorativeBackgroundView *v = [[self alloc] initWithFrame:CGRectZero];
     v.theme = theme;
@@ -89,6 +107,7 @@
               cyRel:(CGFloat)cyRel
             rotate:(CGFloat)rotate {
     UILabel *l = [[UILabel alloc] init];
+    l.isAccessibilityElement = NO;
     l.text = text;
     l.font = [ChildUI roundedMonoFontOfSize:fontSize weight:UIFontWeightBold];
     l.textColor = color;
@@ -151,6 +170,7 @@
 /// 加一顆五角星（簡化版：使用 ★ 字元）。
 - (void)addStarAt:(CGFloat)cxRel cyRel:(CGFloat)cyRel size:(CGFloat)size color:(UIColor *)color alpha:(CGFloat)alpha {
     UILabel *l = [[UILabel alloc] init];
+    l.isAccessibilityElement = NO;
     l.text = @"★";
     l.font = [UIFont systemFontOfSize:size weight:UIFontWeightBold];
     l.textColor = color;

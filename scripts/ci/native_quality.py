@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -22,22 +23,27 @@ PROJECT = "Calcu Later.xcodeproj"
 SCHEME = "Calcu Later"
 
 
-def run(name, command, timeout=120):
+def run(name, command, timeout=120, check=True):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     print("+", " ".join(str(arg) for arg in command), flush=True)
     code = 0
     output = ""
+    process = subprocess.Popen(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, start_new_session=True)
     try:
-        result = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, timeout=timeout)
-        output = result.stdout
-        code = result.returncode
-    except subprocess.TimeoutExpired as error:
-        output = error.stdout or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", "replace")
-        output += f"\nCOMMAND TIMEOUT after {timeout} seconds\n"
+        output, _ = process.communicate(timeout=timeout)
+        code = process.returncode
+    except subprocess.TimeoutExpired:
+        # Keep the original failure bound. This grace is only for xcodebuild to
+        # close its result bundle, not extra test time or an automatic retry.
+        os.killpg(process.pid, signal.SIGINT)
+        try:
+            output, _ = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
+        output += f"\nCOMMAND TIMEOUT after {timeout} seconds; interrupted owned process group\n"
         code = 124
     (EVIDENCE / f"{name}.log").write_text(output)
     (EVIDENCE / f"{name}.json").write_text(json.dumps({
@@ -47,7 +53,7 @@ def run(name, command, timeout=120):
         "automaticRetryAllowed": False,
     }, indent=2))
     print(output, flush=True)
-    if code:
+    if code and check:
         raise SystemExit(code)
     return output
 
@@ -106,29 +112,40 @@ def boot():
 def test():
     run("test", build_arguments() + ["-resultBundlePath", "build/Tests.xcresult",
                                     "-maximum-concurrent-test-simulator-destinations", "1",
+                                    "-only-testing:Calcu LaterTests",
+                                    "-only-testing:Calcu LaterUITests/Calcu_LaterUITests",
                                     "test-without-building"], timeout=900)
 
 
 def export():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    result = BUILD / "Tests.xcresult"
-    if result.exists():
-        run("export-attachments", ["xcrun", "xcresulttool", "export", "attachments",
-                                  "--path", str(result), "--output-path",
-                                  str(EVIDENCE / "attachments")], timeout=120)
-        run("test-summary", ["xcrun", "xcresulttool", "get", "test-results", "summary",
-                             "--path", str(result)], timeout=120)
+    # Retain raw bundles even when a timed-out test left incomplete metadata.
+    # A failed attachment export must never prevent the other evidence saving.
     for name in ("Build", "Tests"):
         bundle = BUILD / f"{name}.xcresult"
         if bundle.exists():
             shutil.make_archive(str(EVIDENCE / name), "zip", BUILD, bundle.name)
+    result = BUILD / "Tests.xcresult"
+    if result.exists():
+        run("export-attachments", ["xcrun", "xcresulttool", "export", "attachments",
+                                  "--path", str(result), "--output-path",
+                                  str(EVIDENCE / "attachments")], timeout=120, check=False)
+        run("test-summary", ["xcrun", "xcresulttool", "get", "test-results", "summary",
+                             "--path", str(result)], timeout=120, check=False)
+    if STATE.exists():
+        run("final-device-state", ["xcrun", "simctl", "list", "devices", "--json"], check=False)
+        if (EVIDENCE / "readiness.json").exists():
+            run("final-device-screen", ["xcrun", "simctl", "io", state()["udid"],
+                "screenshot", str(EVIDENCE / "final-device-screen.png")], check=False)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as output:
             output.write("## Native evidence\n\nSource: " + os.environ.get("GITHUB_SHA", "local")
                          + "\n\nDownload the native-evidence artifact for the environment fingerprint, "
                          "per-stage logs, original xcresults and screenshot/hierarchy attachments. "
-                         "A missing test result is not a pass.\n")
+                         "A missing test result is not a pass. This acceptance run selects the model/component "
+                         "test target plus Calcu_LaterUITests native flows; boilerplate repeated launch "
+                         "configurations are not included.\n")
 
 
 def cleanup():

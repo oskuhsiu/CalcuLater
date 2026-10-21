@@ -60,10 +60,84 @@
     [self capture:@"05-lesson-question"];
     [self.app.buttons[@"看怎麼算"] tap];
     [self capture:@"06-lesson-hint"];
-    [self.app.buttons[@"lesson.close"] tap];
+    [self.app.buttons[@"explanation.close"] tap];
+    [self leavePractice:@"lesson.close"];
     XCTAssertTrue([self.app.collectionViews.firstMatch waitForExistenceWithTimeout:5]);
     [self.app.buttons[@"navigation.home"] tap];
     XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:5]);
+}
+
+- (void)leavePractice:(NSString *)identifier {
+    [self.app.buttons[identifier] tap];
+    XCUIElement *pause = self.app.alerts.buttons[@"先休息"];
+    if ([pause waitForExistenceWithTimeout:2]) [pause tap];
+}
+
+- (void)relaunchScenario:(NSString *)scenario {
+    [self.app terminate];
+    self.app.launchArguments = [self.app.launchArguments arrayByAddingObjectsFromArray:@[@"-CalcuLaterScenario", scenario]];
+    [self.app launch];
+    XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:10]);
+}
+
+- (void)testRemainderExplanationAndChildPacedCompletion {
+    [self relaunchScenario:@"remainder"];
+    [self tapHomeCard:@"home.stories"];
+    [self.app.buttons[@"stories.grade.3"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"story.text"] waitForExistenceWithTimeout:5]);
+    NSString *story = self.app.staticTexts[@"story.text"].label;
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCUIElement *steps = self.app.staticTexts[@"explanation.steps"];
+    XCTAssertTrue([steps waitForExistenceWithTimeout:5]);
+    XCTAssertTrue([steps.label containsString:@"5 × 4 + 3 = 23"]);
+    XCTAssertFalse([steps.label containsString:@"5 × 4 = 23"]);
+    [self capture:@"13-remainder-teaching"];
+    [self.app.buttons[@"explanation.close"] tap];
+    XCUIElement *answer = [self.app.buttons matchingPredicate:[NSPredicate predicateWithFormat:
+        @"identifier BEGINSWITH %@ AND label ENDSWITH %@", @"answer.", @"，5"]].firstMatch;
+    XCTAssertTrue(answer.hittable);
+    [answer tap];
+    XCTAssertTrue([self.app.buttons[@"session.next"] waitForExistenceWithTimeout:5]);
+    [[XCUIDevice sharedDevice] pressButton:XCUIDeviceButtonHome];
+    [self.app activate];
+    XCTAssertEqualObjects(self.app.staticTexts[@"story.text"].label, story);
+    XCTAssertTrue(self.app.buttons[@"session.next"].hittable);
+    [self capture:@"14-remainder-persistent-answer"];
+    [self.app.buttons[@"session.next"] tap];
+    XCTAssertTrue([self.app.scrollViews[@"session.summary"] waitForExistenceWithTimeout:5]);
+    XCTAssertTrue([self.app.staticTexts[@"session.results"].label containsString:@"一起學會  1 題"]);
+    XCTAssertTrue(self.app.buttons[@"session.review"].exists);
+    [self capture:@"15-session-summary"];
+    [self.app.buttons[@"session.review"] tap];
+    XCTAssertEqualObjects(self.app.staticTexts[@"story.text"].label, story);
+    XCTAssertTrue([self.app.staticTexts[@"session.progress"].label containsString:@"再練一次"]);
+}
+
+- (void)testFractionDiagramAndLandscapeBorrowing {
+    [self relaunchScenario:@"fraction"];
+    [self tapHomeCard:@"home.stories"];
+    [self.app.buttons[@"stories.grade.3"] tap];
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue([self.app.staticTexts[@"explanation.steps"] waitForExistenceWithTimeout:5]);
+    XCTAssertTrue([self.app.staticTexts[@"explanation.steps"].label containsString:@"4 等份"]);
+    [self capture:@"16-equal-parts-fraction"];
+    [self.app.buttons[@"explanation.close"] tap];
+    [self leavePractice:@"story.close"];
+    [self.app.buttons[@"navigation.home"] tap];
+    [self.app terminate];
+    self.app.launchArguments = @[@"-AppleLanguages", @"(zh-Hant)", @"-AppleLocale", @"zh_TW",
+        @"-soundEffectsEnabled", @"NO", @"-CalcuLaterScenario", @"borrow"];
+    [self.app launch];
+    [XCUIDevice sharedDevice].orientation = UIDeviceOrientationLandscapeLeft;
+    [self tapHomeCard:@"home.practice"];
+    XCTAssertTrue([self.app.staticTexts[@"practice.problem"] waitForExistenceWithTimeout:5]);
+    XCTAssertTrue(self.app.buttons[@"answer.0"].hittable);
+    [self capture:@"17-landscape-practice"];
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue([self.app.buttons[@"explanation.close"] waitForExistenceWithTimeout:5]);
+    [self capture:@"18-borrow-across-zero"];
+    [self.app.buttons[@"explanation.close"] tap];
+    [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
 }
 
 - (NSInteger)answerForEquation:(NSString *)text {
@@ -91,24 +165,36 @@
     for (NSInteger index = 0; index < 4; index++) {
         XCUIElement *choice = self.app.buttons[[NSString stringWithFormat:@"answer.%ld", (long)index]];
         XCTAssertTrue(choice.hittable);
-        if (choice.label.integerValue == answer) {
+        NSPredicate *enabled = [NSPredicate predicateWithFormat:@"enabled == YES"];
+        XCTestExpectation *ready = [self expectationForPredicate:enabled evaluatedWithObject:choice handler:nil];
+        [self waitForExpectations:@[ready] timeout:5];
+        NSString *visibleAnswer = [choice.label componentsSeparatedByString:@"，"].lastObject;
+        if (visibleAnswer.integerValue == answer) {
             correct = choice;
         } else if (wrongCount < 2) {
             [choice tap];
             XCTAssertFalse(choice.enabled);
             wrongCount++;
+            if (wrongCount == 2) {
+                XCTAssertTrue([self.app.buttons[@"explanation.close"] waitForExistenceWithTimeout:5]);
+                [self capture:@"08-practice-help-sheet"];
+                [self.app.buttons[@"explanation.close"] tap];
+            }
         }
     }
     XCTAssertEqual(wrongCount, 2);
     XCTAssertNotNil(correct);
     [self capture:@"08-practice-after-two-misses"];
+    NSPredicate *enabled = [NSPredicate predicateWithFormat:@"enabled == YES"];
+    XCTestExpectation *ready = [self expectationForPredicate:enabled evaluatedWithObject:correct handler:nil];
+    [self waitForExpectations:@[ready] timeout:5];
     [correct tap];
     NSPredicate *streak = [NSPredicate predicateWithFormat:@"label CONTAINS %@", @"連對 ×1"];
     XCTestExpectation *updated = [self expectationForPredicate:streak
         evaluatedWithObject:self.app.staticTexts[@"practice.streak"] handler:nil];
     [self waitForExpectations:@[updated] timeout:5];
     [self capture:@"09-practice-correct"];
-    [self.app.buttons[@"practice.close"] tap];
+    [self leavePractice:@"practice.close"];
     XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:5]);
 }
 
@@ -124,7 +210,8 @@
     XCTAssertTrue([self.app.staticTexts[@"story.equation"] waitForExistenceWithTimeout:5]);
     [self.app.buttons[@"看怎麼算"] tap];
     [self capture:@"12-story-hint"];
-    [self.app.buttons[@"story.close"] tap];
+    [self.app.buttons[@"explanation.close"] tap];
+    [self leavePractice:@"story.close"];
     XCTAssertTrue([self.app.buttons[@"stories.grade.1"] waitForExistenceWithTimeout:5]);
     [self.app.buttons[@"navigation.home"] tap];
     XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:5]);

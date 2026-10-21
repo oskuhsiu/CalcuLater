@@ -28,8 +28,22 @@ NS_ASSUME_NONNULL_BEGIN
 /// SF Rounded monospaced digit font。
 + (UIFont *)roundedMonoFontOfSize:(CGFloat)size weight:(UIFontWeight)weight;
 
-/// SF Rounded proportional。一般文字用。
+/// SF Rounded proportional。一般文字用。既有固定排版不會自動放大。
 + (UIFont *)roundedFontOfSize:(CGFloat)size weight:(UIFontWeight)weight;
+
+/// Opt-in Dynamic Type helpers. Choose a cap that the receiving layout can fit.
+/// Set adjustsFontForContentSizeCategory on the receiving label as appropriate.
++ (UIFont *)scaledRoundedFontOfSize:(CGFloat)size
+                            weight:(UIFontWeight)weight
+                         textStyle:(UIFontTextStyle)textStyle
+                  maximumPointSize:(CGFloat)maximumPointSize;
++ (UIFont *)scaledRoundedMonoFontOfSize:(CGFloat)size
+                                weight:(UIFontWeight)weight
+                             textStyle:(UIFontTextStyle)textStyle
+                      maximumPointSize:(CGFloat)maximumPointSize;
+
+/// Central motion preference; evaluate when starting an animation, not once at launch.
+@property (class, nonatomic, readonly) BOOL motionEnabled;
 
 #pragma mark - Common modifiers
 

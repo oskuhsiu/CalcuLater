@@ -8,6 +8,7 @@
 
 @interface MultiplicationTableViewController ()
 @property (nonatomic, strong) UIScrollView *scroll;
+@property (nonatomic, strong) UIView *tableContent;
 @end
 
 @implementation MultiplicationTableViewController
@@ -54,8 +55,23 @@
     [self buildTable];
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    CGPoint offset = self.scroll.contentOffset;
+    [self buildTable];
+    [self.view layoutIfNeeded];
+    self.scroll.contentOffset = offset;
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [SpeechManager.sharedInstance stop];
+}
+
 - (void)buildTable {
+    [self.tableContent removeFromSuperview];
     UIView *content = [[UIView alloc] init];
+    self.tableContent = content;
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [self.scroll addSubview:content];
     [NSLayoutConstraint activateConstraints:@[

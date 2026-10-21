@@ -32,7 +32,9 @@
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSInteger prev = [d integerForKey:starsKey];
     if (stars > prev) [d setInteger:stars forKey:starsKey];
-    if (stars >= 1) [d setBool:YES forKey:doneKey];
+    // Finishing with help still counts as completing a learning session.
+    // Stars describe independent performance; they are not a gate to learning.
+    [d setBool:YES forKey:doneKey];
     [d synchronize];
 }
 

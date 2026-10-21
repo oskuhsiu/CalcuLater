@@ -64,6 +64,28 @@
     return base;
 }
 
++ (UIFont *)scaledRoundedFontOfSize:(CGFloat)size
+                            weight:(UIFontWeight)weight
+                         textStyle:(UIFontTextStyle)textStyle
+                  maximumPointSize:(CGFloat)maximumPointSize {
+    UIFont *base = [self roundedFontOfSize:size weight:weight];
+    return [[UIFontMetrics metricsForTextStyle:textStyle] scaledFontForFont:base
+                                                       maximumPointSize:MAX(size, maximumPointSize)];
+}
+
++ (UIFont *)scaledRoundedMonoFontOfSize:(CGFloat)size
+                                weight:(UIFontWeight)weight
+                             textStyle:(UIFontTextStyle)textStyle
+                      maximumPointSize:(CGFloat)maximumPointSize {
+    UIFont *base = [self roundedMonoFontOfSize:size weight:weight];
+    return [[UIFontMetrics metricsForTextStyle:textStyle] scaledFontForFont:base
+                                                       maximumPointSize:MAX(size, maximumPointSize)];
+}
+
++ (BOOL)motionEnabled {
+    return !UIAccessibilityIsReduceMotionEnabled();
+}
+
 + (void)applySoftShadowOnLayer:(CALayer *)layer {
     layer.shadowColor = [UIColor blackColor].CGColor;
     layer.shadowOpacity = 0.10;
@@ -79,30 +101,80 @@
 
 @implementation ChildButton
 
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) [self observeMotionPreference];
+    return self;
+}
+
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    self = [super initWithCoder:coder];
+    if (self) [self observeMotionPreference];
+    return self;
+}
+
+- (void)observeMotionPreference {
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(motionPreferenceChanged:)
+                                                 name:UIAccessibilityReduceMotionStatusDidChangeNotification
+                                               object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
 + (instancetype)buttonWithTitle:(NSString *)title backgroundColor:(UIColor *)bg {
     ChildButton *btn = [ChildButton buttonWithType:UIButtonTypeCustom];
     [btn setTitle:title forState:UIControlStateNormal];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    // White fails contrast on the candy palette. Keep text legible even when disabled.
+    [btn setTitleColor:ChildUI.brownText forState:UIControlStateNormal];
+    [btn setTitleColor:ChildUI.brownText forState:UIControlStateHighlighted];
+    [btn setTitleColor:ChildUI.brownText forState:UIControlStateDisabled];
     btn.titleLabel.font = [ChildUI roundedFontOfSize:22.0 weight:UIFontWeightBold];
+    btn.titleLabel.adjustsFontSizeToFitWidth = YES;
+    btn.titleLabel.minimumScaleFactor = 0.75;
     btn.backgroundColor = bg;
     btn.layer.cornerRadius = 20.0;
     [ChildUI applySoftShadowOnLayer:btn.layer];
-    [btn addTarget:btn action:@selector(_pressDown) forControlEvents:UIControlEventTouchDown];
-    [btn addTarget:btn action:@selector(_pressUp) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     return btn;
 }
 
-- (void)_pressDown {
-    [UIView animateWithDuration:0.10 delay:0 options:UIViewAnimationOptionAllowUserInteraction animations:^{
-        self.transform = CGAffineTransformMakeScale(0.92, 0.92);
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    if (!self.enabled || !ChildUI.motionEnabled || !self.window) {
+        [self restoreRestingTransform];
+        return;
+    }
+    [UIView animateWithDuration:highlighted ? 0.10 : 0.18
+                          delay:0
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        self.transform = highlighted ? CGAffineTransformMakeScale(0.96, 0.96) : CGAffineTransformIdentity;
     } completion:nil];
 }
 
-- (void)_pressUp {
-    [UIView animateWithDuration:0.20 delay:0 usingSpringWithDamping:0.5 initialSpringVelocity:0.5
-                        options:UIViewAnimationOptionAllowUserInteraction animations:^{
-        self.transform = CGAffineTransformIdentity;
-    } completion:nil];
+- (void)setEnabled:(BOOL)enabled {
+    [super setEnabled:enabled];
+    if (!enabled) [self restoreRestingTransform];
+}
+
+- (void)setHidden:(BOOL)hidden {
+    [super setHidden:hidden];
+    if (hidden) [self restoreRestingTransform];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (!self.window) [self restoreRestingTransform];
+}
+
+- (void)motionPreferenceChanged:(NSNotification *)notification {
+    if (!ChildUI.motionEnabled) [self restoreRestingTransform];
+}
+
+- (void)restoreRestingTransform {
+    [self.layer removeAllAnimations];
+    self.transform = CGAffineTransformIdentity;
 }
 
 @end

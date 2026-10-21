@@ -510,7 +510,7 @@ static WordProblemTemplate *T2(NSString *tid, NSInteger grade,
     [arr addObject:TF(@"g3_frac_cake",    3, @"把一塊蛋糕平分成 {b} 份，小明吃掉 {a} 份，小明吃了幾分之幾的蛋糕？", @"", 1, 6, 3, 8)];
     [arr addObject:TF(@"g3_frac_pizza",   3, @"一個披薩平分成 {b} 片，姐姐吃了 {a} 片，姐姐吃了幾分之幾的披薩？", @"", 1, 5, 4, 8)];
     [arr addObject:TF(@"g3_frac_paper",   3, @"把一張色紙平分成 {b} 等份後，剪下 {a} 份，剪下的部分占整張紙的幾分之幾？", @"", 1, 6, 4, 9)];
-    [arr addObject:TF(@"g3_frac_chocbar", 3, @"一條巧克力分成 {b} 段，弟弟拿走 {a} 段，弟弟拿走整條巧克力的幾分之幾？", @"", 1, 5, 3, 7)];
+    [arr addObject:TF(@"g3_frac_chocbar", 3, @"一條巧克力平均分成 {b} 等份，弟弟拿走 {a} 份，弟弟拿走整條巧克力的幾分之幾？", @"", 1, 5, 3, 7)];
     [arr addObject:TF(@"g3_frac_rope",    3, @"把一條繩子平分成 {b} 段，使用了 {a} 段，使用了整條繩子的幾分之幾？", @"", 1, 6, 4, 8)];
     [arr addObject:TF(@"g3_frac_apple",   3, @"一顆蘋果平均切成 {b} 塊，妹妹吃了 {a} 塊，妹妹吃了整顆蘋果的幾分之幾？", @"", 1, 5, 3, 8)];
 
