@@ -60,3 +60,14 @@ remain, including the accurate remainder check and equal-part fraction diagram.
 Native compilation, rendered screenshots, animation timing and small-device/
 iPad/large-text bounds are pending for this checkpoint. This document does not
 claim a visual or accessibility pass from source review alone.
+
+## First native build boundary
+
+[Run 39630648058](https://github.com/oskuhsiu/CalcuLater/actions/runs/39630648058)
+verified the environment but stopped in test compilation. Three board-test
+assertions contained unparenthesized Objective-C string-format commas inside
+C preprocessor macro arguments. The application sources compiled; this does not
+establish a runnable or visually correct app. The assertions now use local
+identifier variables. Boot and test were correctly skipped, while original
+build evidence export and owned-simulator cleanup succeeded. The next run is
+for this discriminating source correction, not an unchanged retry.

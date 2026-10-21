@@ -62,13 +62,16 @@ static void VABRecordPathStart(void *info, const CGPathElement *element) {
         for (NSInteger column = 0; column < sequence.columnCount; column++) {
             id digit = sequence.steps[i].visibleAnswerDigits[column];
             NSString *expected = [digit isKindOfClass:NSNumber.class] ? [digit stringValue] : @"";
-            XCTAssertEqualObjects([self label:[NSString stringWithFormat:@"verticalAnswer%ld", (long)column] inView:board].text, expected);
+            NSString *identifier = [NSString stringWithFormat:@"verticalAnswer%ld", (long)column];
+            XCTAssertEqualObjects([self label:identifier inView:board].text, expected);
         }
     }
     XCTAssertTrue([board showStepAtIndex:0 animated:NO]);
     for (NSInteger column = 0; column < sequence.columnCount; column++) {
-        XCTAssertEqualObjects([self label:[NSString stringWithFormat:@"verticalAnswer%ld", (long)column] inView:board].text, @"");
-        XCTAssertEqualObjects([self label:[NSString stringWithFormat:@"verticalWorking%ld", (long)column] inView:board].text, @"");
+        NSString *answerIdentifier = [NSString stringWithFormat:@"verticalAnswer%ld", (long)column];
+        NSString *workingIdentifier = [NSString stringWithFormat:@"verticalWorking%ld", (long)column];
+        XCTAssertEqualObjects([self label:answerIdentifier inView:board].text, @"");
+        XCTAssertEqualObjects([self label:workingIdentifier inView:board].text, @"");
     }
     XCTAssertFalse([board.accessibilityValue containsString:@"372"]);
     XCTAssertTrue([board.accessibilityValue containsString:@"500 減 128"]);
