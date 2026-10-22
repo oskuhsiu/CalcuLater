@@ -431,9 +431,9 @@ static BOOL RMUsableFrame(CGRect rect) {
     return progress;
 }
 
-- (void)assertVerticalExchange:(NSString *)counts name:(NSString *)name {
+- (void)assertVerticalExchange:(NSString *)exchangeDescription name:(NSString *)name {
     XCUIElement *exchange = [self element:@"verticalTeachingExchange"];
-    NSString *expected = [counts stringByAppendingString:@"。減少動態，直接看這一步"];
+    NSString *expected = [exchangeDescription stringByAppendingString:@"。減少動態，直接看這一步"];
     [self waitForValue:expected element:exchange application:self.app name:@"Vertical runtime Reduce Motion"];
     XCTAssertFalse([[exchange.value description] containsString:@"動態已播放完成"]);
     XCTAssertFalse([[exchange.value description] containsString:@"正在交換"]);
@@ -461,7 +461,7 @@ static BOOL RMUsableFrame(CGRect rect) {
     XCTAssertTrue([[[self element:@"verticalTeachingBoard"] value] containsString:@"答案還沒寫"]);
     [self capture:@"rm-carry-01-twelve-ones-before-exchange" application:self.app];
     [self tap:@"teaching.next"];
-    [self assertVerticalExchange:@"個位 12 → 2　・　十位 2 → 3" name:@"rm-carry-02-ten-ones-become-one-ten"];
+    [self assertVerticalExchange:@"這一步兩欄，不是整題全部。個位 12 → 2　・　十位 2 → 3。個位留下 2 個一，不換。十位原有 2 個十，不換" name:@"rm-carry-02-ten-ones-become-one-ten"];
     [self tap:@"explanation.close"];
     [self assertUnanswered:@"27 + 15 = ?" identifier:@"practice.problem" progress:progress];
     [self capture:@"rm-carry-03-original-question-still-blank" application:self.app];
@@ -471,12 +471,12 @@ static BOOL RMUsableFrame(CGRect rect) {
     XCTAssertTrue([self.app.staticTexts[@"teaching.prompt"].label containsString:@"1 個百"]);
     [self capture:@"rm-borrow-01-before-hundred-exchange" application:self.app];
     [self tap:@"teaching.next"];
-    [self assertVerticalExchange:@"百位 5 → 4　・　十位 0 → 10" name:@"rm-borrow-02-one-hundred-ten-tens"];
+    [self assertVerticalExchange:@"這一步兩欄，不是整題全部。百位 5 → 4　・　十位 0 → 10。百位留下 4 個百，不換。十位原有 0 個十，不換" name:@"rm-borrow-02-one-hundred-ten-tens"];
     [self tap:@"teaching.next"];
     XCTAssertTrue([self.app.staticTexts[@"teaching.prompt"].label containsString:@"1 個十"]);
     [self capture:@"rm-borrow-03-before-ten-exchange" application:self.app];
     [self tap:@"teaching.next"];
-    [self assertVerticalExchange:@"十位 10 → 9　・　個位 0 → 10" name:@"rm-borrow-04-one-ten-ten-ones"];
+    [self assertVerticalExchange:@"這一步兩欄，不是整題全部。十位 10 → 9　・　個位 0 → 10。十位留下 9 個十，不換。個位原有 0 個一，不換" name:@"rm-borrow-04-one-ten-ten-ones"];
     [self tap:@"explanation.close"];
     [self assertUnanswered:@"500 − 128 = ?" identifier:@"practice.problem" progress:progress];
     [self capture:@"rm-borrow-05-original-question-still-blank" application:self.app];

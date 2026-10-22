@@ -5,6 +5,7 @@
 /// system text size. Actual system Reduce Motion has a separate Settings suite.
 @interface GroupingFocusedActionUITests : XCTestCase
 @property (nonatomic, strong) XCUIApplication *app;
+@property (nonatomic, copy) NSDictionary *originalQuestion;
 @end
 @implementation GroupingFocusedActionUITests
 - (void)setUp { [super setUp]; self.continueAfterFailure = NO; XCUIDevice.sharedDevice.orientation = UIDeviceOrientationPortrait; self.app = [[XCUIApplication alloc] init]; }
@@ -25,7 +26,9 @@
     self.app.launchArguments = @[@"-AppleLanguages", @"(zh-Hant)", @"-AppleLocale", @"zh_TW", @"-soundEffectsEnabled", @"NO", @"-CalcuLaterScenario", scenario, @"-drillTier", @"2"];
     [self.app launch]; XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:10]);
     XCUIElement *stories = self.app.buttons[@"home.stories"]; if (!stories.hittable) [self.app.scrollViews.firstMatch swipeUp];
-    XCTAssertTrue(stories.hittable); [stories tap]; [self.app.buttons[@"stories.grade.3"] tap]; [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue(stories.hittable); [stories tap]; [self.app.buttons[@"stories.grade.3"] tap];
+    self.originalQuestion = [self mainQuestionState];
+    [self.app.buttons[@"看怎麼算"] tap];
     XCTAssertTrue([self.app.buttons[@"grouping.next"] waitForExistenceWithTimeout:5]); XCTAssertFalse(self.app.buttons[@"grouping.changeMeaning"].exists);
 }
 - (void)next { [self.app.buttons[@"grouping.next"] tap]; }
@@ -87,8 +90,131 @@
     }
     XCTAssertTrue([self.value containsString:@"第 1 / 4 位"]);
 }
+- (NSDictionary *)mainQuestionState {
+    NSMutableArray *answers = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 4; index++) {
+        XCUIElement *answer = self.app.buttons[[NSString stringWithFormat:@"answer.%lu", (unsigned long)index]];
+        XCTAssertTrue(answer.exists);
+        [answers addObject:@{@"label": answer.label, @"value": [answer.value description] ?: @"", @"enabled": @(answer.enabled)}];
+    }
+    XCUIElement *equation = self.app.staticTexts[@"story.equation"];
+    BOOL equationExists = equation.exists; // The unchanged story initially hides its equation.
+    return @{@"story": self.app.staticTexts[@"story.text"].label,
+             @"equationExists": @(equationExists), @"equation": equationExists ? equation.label : @"",
+             @"progress": self.app.staticTexts[@"session.progress"].label, @"answers": answers};
+}
+- (CGRect)checkedReachabilityFrame:(XCUIElement *)element {
+    XCTAssertTrue(element.exists);
+    CGRect frame = element.frame;
+    XCTAssertTrue(isfinite(frame.origin.x) && isfinite(frame.origin.y)
+        && isfinite(frame.size.width) && isfinite(frame.size.height));
+    XCTAssertGreaterThan(frame.size.width, 44); XCTAssertGreaterThan(frame.size.height, 44);
+    return frame;
+}
+- (CGRect)lowerControlsViewport {
+    CGRect viewport = CGRectIntersection([self checkedReachabilityFrame:self.content], self.app.windows.firstMatch.frame);
+    XCTAssertFalse(CGRectIsNull(viewport)); XCTAssertFalse(CGRectIsEmpty(viewport));
+    XCTAssertGreaterThan(viewport.size.width, 44); XCTAssertGreaterThan(viewport.size.height, 44);
+    return viewport;
+}
+- (void)assertReadAndRestartFullyVisible {
+    CGRect viewport = [self lowerControlsViewport];
+    for (NSString *identifier in @[@"grouping.read", @"grouping.restart"]) {
+        XCUIElement *control = self.app.buttons[identifier];
+        CGRect frame = [self checkedReachabilityFrame:control];
+        XCTAssertTrue(CGRectContainsRect(viewport, frame), @"The complete %@ frame %@ must be inside %@ before activation.",
+            identifier, NSStringFromCGRect(frame), NSStringFromCGRect(viewport));
+        XCTAssertTrue(control.hittable); XCTAssertTrue(control.enabled);
+    }
+}
+- (void)dragUpToReadAndRestart:(NSString *)name {
+    // Only called after the original first-play, lifecycle and selected-state
+    // assertions. Never reframe an animation to make visibility pass. Both lower
+    // controls must fit; a hittable sliver or XCTest's implicit tap scroll cannot pass.
+    XCUIElement *read = self.app.buttons[@"grouping.read"], *restart = self.app.buttons[@"grouping.restart"];
+    [self capture:[name stringByAppendingString:@"-before-upward-drag"]];
+    for (NSUInteger attempt = 0; attempt < 6; attempt++) {
+        CGRect scrollFrame = [self checkedReachabilityFrame:self.content], viewport = [self lowerControlsViewport];
+        CGRect pair = CGRectUnion([self checkedReachabilityFrame:read], [self checkedReachabilityFrame:restart]);
+        // Perform at least one real upward touch drag, even if this device already
+        // fits both controls. Subsequent drags stop as soon as complete frames fit.
+        if (attempt > 0 && CGRectContainsRect(viewport, pair)) break;
+        XCTAssertGreaterThanOrEqual(CGRectGetMinY(pair), CGRectGetMinY(viewport), @"Lower controls must not require a downward rescue.");
+        CGFloat distance = MIN(MAX(CGRectGetMaxY(pair) - CGRectGetMaxY(viewport) + 8, 24), viewport.size.height * 0.45);
+        CGFloat startY = CGRectGetMinY(viewport) + viewport.size.height * 0.8, endY = startY - distance;
+        XCUICoordinate *origin = [self.content coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
+        XCUICoordinate *start = [origin coordinateWithOffset:CGVectorMake(CGRectGetMidX(viewport) - CGRectGetMinX(scrollFrame), startY - CGRectGetMinY(scrollFrame))];
+        XCUICoordinate *end = [origin coordinateWithOffset:CGVectorMake(CGRectGetMidX(viewport) - CGRectGetMinX(scrollFrame), endY - CGRectGetMinY(scrollFrame))];
+        [start pressForDuration:0.05 thenDragToCoordinate:end withVelocity:XCUIGestureVelocitySlow thenHoldForDuration:0.2];
+        CGRect after = CGRectUnion([self checkedReachabilityFrame:read], [self checkedReachabilityFrame:restart]);
+        XCTAttachment *trace = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
+            @"attempt=%lu viewport=%@ pairBefore=%@ pairAfter=%@ fingerStartY=%.3f fingerEndY=%.3f readHittable=%d restartHittable=%d",
+            (unsigned long)attempt + 1, NSStringFromCGRect(viewport), NSStringFromCGRect(pair), NSStringFromCGRect(after),
+            startY, endY, read.hittable, restart.hittable]];
+        trace.name = [name stringByAppendingString:@"-upward-touch-geometry"]; trace.lifetime = XCTAttachmentLifetimeKeepAlways; [self addAttachment:trace];
+        if (!CGRectContainsRect(viewport, pair)) {
+            XCTAssertLessThan(CGRectGetMaxY(after), CGRectGetMaxY(pair), @"An upward finger drag must move the lower controls upward, not leave them locked.");
+        }
+    }
+    [self assertReadAndRestartFullyVisible];
+    [self capture:[name stringByAppendingString:@"-both-controls-fully-visible"]];
+}
+- (void)readSelectedStepWithoutChangingState:(NSString *)name {
+    NSString *selected = self.value, *progress = self.app.staticTexts[@"grouping.progress"].label;
+    XCUIElement *feedback = self.app.staticTexts[@"grouping.feedback"];
+    NSString *predictionFeedback = feedback.exists ? feedback.label : nil;
+    [self dragUpToReadAndRestart:name];
+    XCTAssertEqualObjects(self.value, selected, @"Inspection must preserve selected quantities and playback state.");
+    XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, progress);
+    [self assertReadAndRestartFullyVisible];
+    // Coordinate activation cannot silently auto-scroll an offscreen element.
+    // This proves reachable activation and unchanged state, not audible speech.
+    [[self.app.buttons[@"grouping.read"] coordinateWithNormalizedOffset:CGVectorMake(0.5, 0.5)] tap];
+    XCTAssertEqualObjects(self.value, selected, @"Read must not advance, restart, or change the selected quantities.");
+    XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, progress);
+    if (predictionFeedback) XCTAssertEqualObjects(feedback.label, predictionFeedback);
+    [self capture:[name stringByAppendingString:@"-after-read-unchanged"]];
+}
 - (void)assertMainQuestionUnansweredAfterClose {
     [self.app.buttons[@"explanation.close"] tap]; XCTAssertTrue(self.app.buttons[@"answer.0"].enabled); XCTAssertFalse(self.app.buttons[@"session.next"].exists);
+    XCTAssertEqualObjects([self mainQuestionState], self.originalQuestion, @"Teaching controls must leave the same main question, progress and answer choices unanswered.");
+}
+- (void)verifyRestartInFreshPresentation:(NSString *)name {
+    // The original close-from-selected-state route has ALREADY completed. Do not
+    // reset it first and accidentally replace its coverage with close-from-step-1.
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue([self.app.buttons[@"grouping.next"] waitForExistenceWithTimeout:5]);
+    NSString *initialProgress = self.app.staticTexts[@"grouping.progress"].label, *initialQuantities = self.value;
+    XCTAssertTrue([initialProgress hasPrefix:@"第 1 小步"]); XCTAssertFalse(self.app.buttons[@"grouping.previous"].enabled);
+    [self next];
+    NSString *predictionProgress = self.app.staticTexts[@"grouping.progress"].label;
+    NSString *emptyFeedback = self.app.staticTexts[@"grouping.feedback"].label;
+    [self.app.buttons[@"grouping.choice.2"] tap];
+    XCTAssertFalse(self.app.buttons[@"grouping.choice.2"].enabled);
+    XCTAssertEqualObjects([self.app.buttons[@"grouping.choice.2"].value description], @"再想一想");
+    [self.app.buttons[@"grouping.viewMode"] tap]; [self.app.buttons[@"grouping.viewMode"] tap];
+    [self.app.buttons[@"grouping.choice.1"] tap];
+    XCTAssertFalse(self.app.buttons[@"grouping.choice.1"].enabled);
+    XCTAssertEqualObjects([self.app.buttons[@"grouping.choice.1"].value description], @"對，想通這一步了");
+    XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, predictionProgress);
+    [self dragUpToReadAndRestart:[name stringByAppendingString:@"-restart"]];
+    [self assertReadAndRestartFullyVisible];
+    [[self.app.buttons[@"grouping.restart"] coordinateWithNormalizedOffset:CGVectorMake(0.5, 0.5)] tap];
+    XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, initialProgress);
+    XCTAssertEqualObjects(self.value, initialQuantities);
+    XCTAssertFalse(self.app.buttons[@"grouping.previous"].enabled);
+    XCTAssertFalse(self.app.buttons[@"grouping.choice.1"].exists); XCTAssertFalse(self.app.staticTexts[@"grouping.feedback"].exists);
+    [self capture:[name stringByAppendingString:@"-restart-step-one"]];
+    [self next];
+    XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, predictionProgress);
+    XCTAssertEqualObjects(self.app.staticTexts[@"grouping.feedback"].label, emptyFeedback);
+    XCTAssertEqualObjects(self.app.buttons[@"grouping.next"].label, @"先看示範");
+    for (NSString *identifier in @[@"grouping.choice.0", @"grouping.choice.1", @"grouping.choice.2"]) {
+        XCUIElement *choice = self.app.buttons[identifier]; XCTAssertTrue(choice.exists); XCTAssertTrue(choice.enabled);
+        XCTAssertEqualObjects([choice.value description], @"還沒選擇", @"Restart must clear both wrong attempts and the correct prediction.");
+    }
+    [self capture:[name stringByAppendingString:@"-restart-cleared-prediction"]];
+    [self assertMainQuestionUnansweredAfterClose];
 }
 - (void)testSharingFirstPlayReplayAndFourthRecipientStayFullyVisible {
     [self open:@"sharing"]; [self next]; [self next]; [self assertActionFullyVisible];
@@ -109,7 +235,10 @@
     [self.app.buttons[@"grouping.previous"] tap]; XCTAssertTrue([self.value containsString:@"第 3 / 4 位"]); XCTAssertTrue([self.value containsString:@"待分的糖果：20 顆"]); XCTAssertFalse([self.value containsString:@"播放完成"]);
     [self next]; [self waitForNaturalCompletionWithTransfers:1]; [self.app.buttons[@"grouping.viewMode"] tap]; XCTAssertTrue([self.value containsString:@"第 4 個小朋友有 1 顆"]);
     [self.app.buttons[@"grouping.replay"] tap]; [self assertActionFullyVisible]; [self waitForNaturalCompletionWithTransfers:1];
-    [self capture:@"focused-fourth-recipient-replay-from-overview"]; [self assertMainQuestionUnansweredAfterClose];
+    [self capture:@"focused-fourth-recipient-replay-from-overview"];
+    [self readSelectedStepWithoutChangingState:@"focused-fourth-recipient"];
+    [self assertMainQuestionUnansweredAfterClose];
+    [self verifyRestartInFreshPresentation:@"focused-fourth-recipient"];
 }
 - (void)testPackingFirstAndFifthBagUseOneVisibleSourceToTargetRoute {
     [self open:@"packing"]; [self next]; [self next];
@@ -125,7 +254,10 @@
     [self.app.buttons[@"grouping.previous"] tap]; [self.app.buttons[@"grouping.previous"] tap];
     XCTAssertTrue([self.value containsString:@"第 4 包有 4 顆"]); XCTAssertFalse([self.value containsString:@"第 5 包有"]);
     [self.app.buttons[@"grouping.replay"] tap]; [self assertActionFullyVisible]; [self waitForNaturalCompletionWithTransfers:4];
-    [self capture:@"focused-packing-fourth-bag-revisit"]; [self assertMainQuestionUnansweredAfterClose];
+    [self capture:@"focused-packing-fourth-bag-revisit"];
+    [self readSelectedStepWithoutChangingState:@"focused-packing-fourth-bag"];
+    [self assertMainQuestionUnansweredAfterClose];
+    [self verifyRestartInFreshPresentation:@"focused-packing-fourth-bag"];
 }
 - (void)assertFeedbackVisibleContaining:(NSArray<NSString *> *)phrases {
     XCUIElement *feedback = self.app.staticTexts[@"grouping.feedback"]; XCTAssertTrue(feedback.hittable);
@@ -152,7 +284,10 @@
     progress = self.app.staticTexts[@"grouping.progress"].label; [self.app.buttons[@"grouping.choice.1"] tap];
     [self assertFeedbackVisibleContaining:@[@"你選「還可以」", @"只有 3 顆", @"要 4 顆", @"還差 1 顆", @"沒有讓每位都再拿 1 顆"]];
     XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, progress);
-    [self capture:@"focused-wrong-continuation-feedback-no-scroll"]; [self assertMainQuestionUnansweredAfterClose];
+    [self capture:@"focused-wrong-continuation-feedback-no-scroll"];
+    [self readSelectedStepWithoutChangingState:@"focused-wrong-continuation"];
+    [self assertMainQuestionUnansweredAfterClose];
+    [self verifyRestartInFreshPresentation:@"focused-wrong-continuation"];
 }
 - (void)testLandscapePausePreservesSelectionUntilExplicitReplay {
     [self open:@"sharing"]; [self next]; [self next]; [self selectFirstRecipientIfFullRound]; [self waitForNaturalCompletionWithTransfers:1];
@@ -171,6 +306,9 @@
     [self.app.buttons[@"grouping.replay"] tap]; [self assertActionFullyVisible]; [self waitForNaturalCompletionWithTransfers:1];
     [XCUIDevice.sharedDevice pressButton:XCUIDeviceButtonHome]; [self.app activate];
     XCTAssertTrue([self.value containsString:@"第 1 / 4 位"]); XCTAssertTrue([self.value containsString:@"待分的糖果：22 顆"]);
-    [self capture:@"focused-portrait-explicit-replay-after-pause"]; [self assertMainQuestionUnansweredAfterClose];
+    [self capture:@"focused-portrait-explicit-replay-after-pause"];
+    [self readSelectedStepWithoutChangingState:@"focused-portrait-replay"];
+    [self assertMainQuestionUnansweredAfterClose];
+    [self verifyRestartInFreshPresentation:@"focused-portrait-replay"];
 }
 @end

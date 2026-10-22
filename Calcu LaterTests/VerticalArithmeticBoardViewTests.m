@@ -26,16 +26,11 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
 - (BOOL)canAnimate { return self.allowMotion; }
 @end
 
-@interface VABTraitTestBoard : VABAnimationTestBoard
-@property (nonatomic, strong) UITraitCollection *preferredTraits;
-@end
-@implementation VABTraitTestBoard
-- (UITraitCollection *)traitCollection { return self.preferredTraits ?: [super traitCollection]; }
-@end
-
 @interface VerticalArithmeticBoardViewTests : XCTestCase
 @property (nonatomic, strong) UIWindow *presentationWindow;
 @property (nonatomic, strong) UIWindow *previousKeyWindow;
+@property (nonatomic, strong) UIWindow *traitHostWindow;
+@property (nonatomic, strong) NSMutableArray<VABAnimationTestBoard *> *traitFixtureBoards;
 @end
 @implementation VerticalArithmeticBoardViewTests
 
@@ -61,8 +56,62 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
 }
 
 - (void)tearDown {
+    // Keep every trait fixture reachable for cleanup even if an assertion throws.
+    // Let UIKit remove the override; never replace a view's inherited collection.
+    for (VABAnimationTestBoard *board in self.traitFixtureBoards) {
+        [board cancelAnimations];
+        [board.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+        [board removeFromSuperview];
+    }
+    self.traitFixtureBoards = nil;
+    self.traitHostWindow.hidden = YES;
+    self.traitHostWindow.rootViewController = nil;
+    self.traitHostWindow = nil;
     [self releasePresentationWindow];
     [super tearDown];
+}
+
+- (UIView *)traitHostView {
+    if (!self.traitHostWindow) {
+        UIWindowScene *foreground = nil;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if ([scene isKindOfClass:UIWindowScene.class] && scene.activationState == UISceneActivationStateForegroundActive) {
+                foreground = (UIWindowScene *)scene;
+                break;
+            }
+        }
+        XCTAssertNotNil(foreground, @"Trait propagation needs the component run's real foreground scene.");
+        self.traitHostWindow = [[UIWindow alloc] initWithWindowScene:foreground];
+        self.traitHostWindow.frame = foreground.coordinateSpace.bounds;
+        self.traitHostWindow.rootViewController = [[UIViewController alloc] init];
+        self.traitHostWindow.hidden = NO; // Do not replace the app's key window.
+        [self.traitHostWindow layoutIfNeeded];
+        [self.traitHostWindow.rootViewController.view layoutIfNeeded];
+    }
+    return self.traitHostWindow.rootViewController.view;
+}
+
+- (VABAnimationTestBoard *)traitBoardWithFrame:(CGRect)frame inView:(UIView *)host {
+    VABAnimationTestBoard *board = [[VABAnimationTestBoard alloc] initWithFrame:frame];
+    if (!self.traitFixtureBoards) self.traitFixtureBoards = [NSMutableArray array];
+    [self.traitFixtureBoards addObject:board];
+    board.autoresizingMask = UIViewAutoresizingNone;
+    [host addSubview:board];
+    XCTAssertEqual(board.window, host.window);
+    XCTAssertNotNil(board.window.windowScene);
+    return board;
+}
+
+- (void)assertTraitsForBoard:(VABAnimationTestBoard *)board category:(UIContentSizeCategory)category {
+    UITraitCollection *hostTraits = board.window.rootViewController.view.traitCollection;
+    XCTAssertEqualObjects(board.traitCollection.preferredContentSizeCategory, category);
+    XCTAssertGreaterThan(board.traitCollection.displayScale, 0);
+    XCTAssertNotEqual(board.traitCollection.userInterfaceIdiom, UIUserInterfaceIdiomUnspecified);
+    XCTAssertEqual(board.traitCollection.displayScale, hostTraits.displayScale);
+    XCTAssertEqual(board.traitCollection.userInterfaceIdiom, hostTraits.userInterfaceIdiom);
+    XCTAssertEqual(board.traitCollection.userInterfaceStyle, hostTraits.userInterfaceStyle);
+    UIView *content = [board valueForKey:@"contentView"];
+    XCTAssertEqualObjects(content.traitCollection.preferredContentSizeCategory, category);
 }
 
 - (ArithmeticTeachingSequence *)sequence:(NSInteger)a second:(NSInteger)b operation:(NSString *)operation {
@@ -775,12 +824,15 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
     for (NSArray *entry in [self knownExchangeCases]) {
         ArithmeticTeachingSequence *sequence = [self sequence:[entry[0] integerValue] second:[entry[1] integerValue] operation:entry[2]];
         NSInteger index = [self regroupIndices:sequence][[entry[3] unsignedIntegerValue]].integerValue;
-        VABTraitTestBoard *board = [[VABTraitTestBoard alloc] initWithFrame:CGRectMake(0, 0, 288, 1000)];
+        UIView *host = [self traitHostView];
+        VABAnimationTestBoard *board = [self traitBoardWithFrame:CGRectMake(0, 0, 288, 1000) inView:host];
         for (NSString *category in @[UIContentSizeCategoryLarge, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
-            UITraitCollection *previous = board.traitCollection;
-            board.preferredTraits = [UITraitCollection traitCollectionWithPreferredContentSizeCategory:category];
-            [board traitCollectionDidChange:previous];
+            board.traitOverrides.preferredContentSizeCategory = category;
+            [board setNeedsLayout];
+            [board layoutIfNeeded];
+            XCTAssertEqualObjects(board.traitCollection.preferredContentSizeCategory, category);
             [board configureWithSequence:sequence stepIndex:index animated:NO];
+            [self assertTraitsForBoard:board category:category];
             CGFloat retainedFontSize = [self label:@"verticalRetainedSource" inView:board].font.pointSize;
             CGFloat countsFontSize = [self label:@"verticalExchangeCounts" inView:board].font.pointSize;
             for (NSNumber *width in @[@288, @343, @680]) {
@@ -799,6 +851,7 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
                     // margins used by the controller. Exercise normal and AX5.
                     UIView *viewport = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 680, 208)];
                     viewport.clipsToBounds = YES;
+                    [host addSubview:viewport];
                     CGRect unobscured = UIEdgeInsetsInsetRect(viewport.bounds, UIEdgeInsetsMake(8, 8, 8, 8));
                     XCTAssertEqualWithAccuracy(CGRectGetWidth(unobscured), 664, 0.001);
                     XCTAssertEqualWithAccuracy(CGRectGetHeight(unobscured), 192, 0.001);
@@ -822,9 +875,13 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
                     [self assertMeasuredExchangeGeometry:board];
                     [board cancelAnimations];
                     [board removeFromSuperview];
+                    [host addSubview:board];
+                    [viewport removeFromSuperview];
                 }
             }
         }
+        [board.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+        [board removeFromSuperview];
     }
 }
 
@@ -990,14 +1047,18 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
         for (NSNumber *writtenNumber in @[@NO, @YES]) {
             BOOL written = writtenNumber.boolValue;
             CGFloat width = MIN(680, CGRectGetWidth(window.bounds));
-            VABTraitTestBoard *board = [[VABTraitTestBoard alloc] initWithFrame:CGRectMake(0, 0, width, 1000)];
+            VABAnimationTestBoard *board = [self traitBoardWithFrame:CGRectMake(0, 0, width, 1000)
+                inView:window.rootViewController.view];
             // Geometry has a separate AX5 gate. Do not enlarge this real window
             // or force hidden labels to paint just to obtain presentation layers.
-            board.preferredTraits = [UITraitCollection traitCollectionWithPreferredContentSizeCategory:UIContentSizeCategoryLarge];
+            board.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge;
+            [board setNeedsLayout];
+            [board layoutIfNeeded];
+            XCTAssertEqualObjects(board.traitCollection.preferredContentSizeCategory, UIContentSizeCategoryLarge);
             board.allowMotion = YES;
-            [window.rootViewController.view addSubview:board];
             [board configureWithSequence:sequence stepIndex:index animated:NO];
             [self fitBoard:board width:width];
+            [self assertTraitsForBoard:board category:UIContentSizeCategoryLarge];
             CGRect action = board.currentActionRect;
             CGRect required = written ? board.currentTransformationRect : action;
             if (!written) board.frame = CGRectOffset(board.frame, 0, -action.origin.y);

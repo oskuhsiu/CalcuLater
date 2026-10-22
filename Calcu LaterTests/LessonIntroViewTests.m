@@ -2159,6 +2159,16 @@
     XCTAssertFalse(narration.adjustsFontSizeToFitWidth);
     [self assertRequiredActionIsContainedInActualClips:intro];
 }
+- (BOOL)contentHasVisibleArea:(UIView *)content inButton:(UIButton *)button {
+    if (!content || !button.window || content.window != button.window
+        || CGRectIsEmpty(content.bounds)
+        || CGRectIsEmpty([content convertRect:content.bounds toView:button])) return NO;
+    for (UIView *ancestor = content; ancestor; ancestor = ancestor.superview) {
+        if (ancestor.hidden || ancestor.alpha <= 0.01) return NO;
+        if (ancestor == button) return YES;
+    }
+    return NO;
+}
 - (void)assertPinnedListeningAndFooterFit:(LessonIntroView *)intro {
     UIScrollView *scroll = [intro valueForKey:@"scrollView"];
     NSMutableArray<NSValue *> *rects = [NSMutableArray array];
@@ -2182,16 +2192,35 @@
         CGPoint center = CGPointMake(CGRectGetMidX(rect), CGRectGetMidY(rect));
         UIView *hit = [intro hitTest:center withEvent:nil];
         XCTAssertTrue(hit == button || [hit isDescendantOfView:button]);
-        if (button.titleLabel.hidden) {
+        // UIKit owns these content views. A zero title rectangle paints no
+        // title even when its managed hidden bit is NO. Require exactly one
+        // actually visible content area, not an implementation-specific flag.
+        BOOL titleVisible = [self contentHasVisibleArea:button.titleLabel inButton:button];
+        BOOL symbolVisible = [self contentHasVisibleArea:button.imageView inButton:button];
+        XCTAssertNotEqual(titleVisible, symbolVisible, @"%@ must show its whole title or its symbol, never neither/both.", key);
+        if (!titleVisible) {
+            XCTAssertTrue(symbolVisible);
             XCTAssertFalse(button.imageView.hidden);
             XCTAssertNotNil([button imageForState:UIControlStateNormal]);
+            XCTAssertNotNil(button.imageView.image);
             XCTAssertGreaterThanOrEqual(button.imageView.bounds.size.width, 24);
+            CGRect symbol = [button.imageView convertRect:button.imageView.bounds toView:button];
+            XCTAssertGreaterThanOrEqual(symbol.size.width, 24);
+            XCTAssertGreaterThanOrEqual(symbol.size.height, 24);
             XCTAssertTrue(CGRectContainsRect(button.bounds, button.imageView.frame));
+            XCTAssertTrue(CGRectContainsRect(button.bounds, symbol));
         } else {
+            XCTAssertFalse(button.titleLabel.hidden);
+            XCTAssertFalse(symbolVisible);
+            XCTAssertEqualObjects(button.titleLabel.text, button.currentTitle);
             CGSize fullTitle = [button.currentTitle sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}];
             XCTAssertGreaterThanOrEqual(button.titleLabel.bounds.size.width + 0.5, fullTitle.width);
             XCTAssertGreaterThanOrEqual(button.titleLabel.bounds.size.height + 0.5, button.titleLabel.font.lineHeight);
             XCTAssertTrue(CGRectContainsRect(button.bounds, button.titleLabel.frame));
+            CGRect title = [button.titleLabel convertRect:button.titleLabel.bounds toView:button];
+            XCTAssertGreaterThanOrEqual(title.size.width + 0.5, fullTitle.width);
+            XCTAssertGreaterThanOrEqual(title.size.height + 0.5, button.titleLabel.font.lineHeight);
+            XCTAssertTrue(CGRectContainsRect(button.bounds, title));
         }
     }
     UIButton *pinned = [intro valueForKey:@"pinnedReadButton"];
@@ -2380,8 +2409,10 @@
                     compatibleWithTraitCollection:intro.traitCollection];
                 XCTAssertEqualWithAccuracy(button.titleLabel.font.pointSize, expected.pointSize, 0.01);
                 XCTAssertTrue(button.titleLabel.adjustsFontForContentSizeCategory);
-                XCTAssertEqual(button.titleLabel.hidden, usesSymbols, @"%@ at %@", key, category);
-                XCTAssertEqual(button.imageView.hidden, !usesSymbols, @"%@ at %@", key, category);
+                XCTAssertEqual([self contentHasVisibleArea:button.titleLabel inButton:button], !usesSymbols,
+                    @"%@ at %@ must retain the intended full-text or symbol presentation", key, category);
+                XCTAssertEqual([self contentHasVisibleArea:button.imageView inButton:button], usesSymbols,
+                    @"%@ at %@ must retain the intended full-text or symbol presentation", key, category);
                 XCTAssertEqualObjects(button.titleLabel.text, button.currentTitle);
                 XCTAssertGreaterThan(button.currentTitle.length, 0u);
                 XCTAssertEqualObjects(button.largeContentTitle, button.accessibilityLabel);

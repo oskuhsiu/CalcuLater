@@ -104,6 +104,9 @@
     [button setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     [button setContentCompressionResistancePriority:999 forAxis:UILayoutConstraintAxisVertical];
     button.contentEdgeInsets = UIEdgeInsetsMake(14, 16, 14, 16);
+    button.isAccessibilityElement = YES;
+    button.accessibilityTraits |= UIAccessibilityTraitButton;
+    button.accessibilityLabel = title;
     button.accessibilityIdentifier = identifier;
     NSLayoutConstraint *height = [button.heightAnchor constraintGreaterThanOrEqualToConstant:60];
     height.priority = 999; // Hidden arranged actions must be allowed to collapse.
@@ -188,6 +191,7 @@
     self.previousButton.enabled = self.stageIndex > 0;
     self.previousButton.accessibilityHint = self.stageIndex == 2 ? @"回到換一題想想。再回來時，會保留現在這組數字。" : @"回到看一個例子，不是換上一組探索數字。";
     [self.nextButton setTitle:self.stageIndex == 2 ? @"回到學一學" : @"下一階段" forState:UIControlStateNormal];
+    self.nextButton.accessibilityLabel = self.nextButton.currentTitle;
     self.nextButton.accessibilityHint = self.stageIndex == 2 ? @"離開探索，不會記錄為學會或增加星星。" : @"換到下一個學習階段。可以不看動畫，也可以再回來。";
     BOOL explore = self.stageIndex == 2;
     self.variationLabel.hidden = !explore; self.numberNavigation.hidden = !explore;
@@ -239,6 +243,7 @@
 - (void)updateReadingButton {
     BOOL reading = self.readingSpeechManager != nil;
     [self.readButton setTitle:reading ? @"停止朗讀" : (self.hasReadCurrentQuestion ? @"再聽一次" : @"聽題目") forState:UIControlStateNormal];
+    self.readButton.accessibilityLabel = self.readButton.currentTitle;
     self.readButton.accessibilityValue = reading ? @"正在朗讀題目" : @"沒有朗讀";
     self.readButton.accessibilityHint = reading ? @"停止朗讀，題目和學習階段都不會改變。" : @"從頭朗讀這題和想一想的提示，不會打開解答。";
 }

@@ -88,6 +88,7 @@
 - (void)removeHost {
     [self.controller stopQuestionReading];
     if (self.controller.presentedViewController) [self.controller dismissViewControllerAnimated:NO completion:nil];
+    [self.controller.traitOverrides removeTrait:UITraitLayoutDirection.class];
     self.window.hidden = YES;
     self.window.rootViewController = nil;
     self.controller = nil; self.window = nil; self.speech = nil;
@@ -441,16 +442,22 @@
 }
 - (void)testDirectionalLayoutAndAccessibilityKeepActionsAndEquationUnambiguous {
     [self showPath:[self path:@"carry"] size:CGSizeMake(1024, 768) category:UIContentSizeCategoryLarge];
+    // A root view's semantic attribute describes its immediate content; it is
+    // not an inherited RTL environment for the nested number-navigation stack.
+    self.controller.traitOverrides.layoutDirection = UITraitEnvironmentLayoutDirectionRightToLeft;
     self.controller.view.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
     [self.controller next]; [self.controller next];
     [self settleLayout];
     UIView *equation = [self view:@"concept.equation"];
     XCTAssertEqual(equation.semanticContentAttribute, UISemanticContentAttributeForceLeftToRight);
+    XCTAssertEqual(equation.effectiveUserInterfaceLayoutDirection, UIUserInterfaceLayoutDirectionLeftToRight);
     UILabel *stage = (UILabel *)[self view:@"concept.stage"];
     XCTAssertTrue(stage.accessibilityTraits & UIAccessibilityTraitHeader);
     UIButton *previous = (UIButton *)[self view:@"concept.previousNumbers"];
     UIButton *next = (UIButton *)[self view:@"concept.change"];
     UIStackView *numbers = (UIStackView *)previous.superview;
+    XCTAssertEqual(self.controller.traitCollection.layoutDirection, UITraitEnvironmentLayoutDirectionRightToLeft);
+    XCTAssertEqual(numbers.traitCollection.layoutDirection, UITraitEnvironmentLayoutDirectionRightToLeft);
     XCTAssertEqual(numbers.effectiveUserInterfaceLayoutDirection, UIUserInterfaceLayoutDirectionRightToLeft);
     XCTAssertEqual(numbers.axis, UILayoutConstraintAxisHorizontal);
     XCTAssertGreaterThanOrEqual(CGRectGetMinX(previous.frame), CGRectGetMaxX(next.frame));
