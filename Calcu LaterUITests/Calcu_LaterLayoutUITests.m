@@ -685,7 +685,16 @@
     XCTAssertEqualObjects([addition.value description], @"1", @"A family cannot accidentally disable every operation.");
     [self capture:@"layout-12-settings-last-operation-guard"];
     [self.app.buttons[@"settings.done"] tap];
+    // Wait for the real Home endpoint after the animated Settings dismissal.
+    NSPredicate *homeReachable = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        XCUIElement *homeSettings = self.app.buttons[@"home.settings"];
+        return homeSettings.exists && homeSettings.hittable;
+    }];
+    XCTestExpectation *returnedHome = [self expectationForPredicate:homeReachable
+        evaluatedWithObject:self.app handler:nil];
+    [self waitForExpectations:@[returnedHome] timeout:5];
     XCTAssertTrue(self.app.buttons[@"home.settings"].hittable);
+    [self assertVisibleControl:self.app.buttons[@"home.settings"]];
 }
 
 - (void)testSharingPredictionTransferReplayAndCommonRemainder {

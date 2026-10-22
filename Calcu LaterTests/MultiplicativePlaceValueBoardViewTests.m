@@ -8,6 +8,7 @@
 @interface MultiplicativePlaceValueBoardView (NativeTests)
 - (BOOL)motionAllowed;
 - (void)installScenePaint;
+- (BOOL)canRetainPresentedBeforePaint:(MTPPlaceValueProjection *)before;
 - (BOOL)actualVisibilityContainsRequiredRect;
 - (BOOL)installedPaintIsLawful;
 - (BOOL)ownedSurfaceHasNoAdditionalPaint:(CALayer *)layer;
@@ -209,6 +210,66 @@ static NSString *MTPNativeCoverObservation(MultiplicativePlaceValueBoardView *bo
     [lines addObject:[NSString stringWithFormat:@"observationEnd monotonic=%.9f wallUnix=%.6f publicTreesOnly=1 pixelsNotEstablished=1", CACurrentMediaTime(), NSDate.date.timeIntervalSince1970]];
     return [lines componentsJoinedByString:@"\n"];
 }
+// Post-verdict observation only. UIKit may synchronize internally even with NO;
+// unchanged read-only state cannot prove that capture was nonperturbing. This is
+// not an atomic compositor observation or evidence of pixels at the earlier gate.
+static NSString *MTPNativeCoverRasterState(MultiplicativePlaceValueBoardView *board) {
+    CADisplayLink *clock = [board valueForKey:@"clock"]; id transaction = [board valueForKey:@"transaction"];
+    return [NSString stringWithFormat:@"state=%ld interruption=%ld generation=%lu revision=%lu endpoint=%ld fullSnapshot=%d action=%p snapshot=%p before=%p after=%p clock=%p paused=%d transaction=%p callerDisableActions=%d callerDuration=%.9f",
+        (long)board.playbackState, (long)board.interruptionReason, (unsigned long)board.playbackGeneration, (unsigned long)board.layoutRevision,
+        (long)board.endpoint, board.displayingFullSnapshot, board.action, board.snapshot, board.action.before, board.action.after,
+        clock, clock ? clock.paused : NO, transaction, CATransaction.disableActions, CATransaction.animationDuration];
+}
+// At most 4,194,304 32-bit pixels and 16 MiB including actual row padding.
+static const size_t MTPNativeCoverRasterMaxPixels = 4u * 1024u * 1024u;
+static const size_t MTPNativeCoverRasterMaxBytes = 16u * 1024u * 1024u;
+static BOOL MTPNativeCoverRasterFits(size_t width, size_t height, size_t stride) {
+    return width && height && width <= 8192 && height <= 8192
+        && height <= MTPNativeCoverRasterMaxPixels / width && stride >= width * 4
+        && stride <= MTPNativeCoverRasterMaxBytes / height;
+}
+// Inspect only the retained bitmap, after cleanup; no second rendering or fallback.
+static NSString *MTPNativeCoverRasterPixels(UIImage *image, BOOL complete, CGRect roi, CGSize expectedPixels) {
+    CGImageRef bitmap = image.CGImage;
+    if (!bitmap) return @"pixels=inconclusive reason=no-bitmap";
+    CGColorSpaceRef colorSpace = CGImageGetColorSpace(bitmap); CGDataProviderRef provider = CGImageGetDataProvider(bitmap);
+    if (!colorSpace || !provider || CGImageIsMask(bitmap)) return @"pixels=inconclusive reason=unsupported-bitmap";
+    size_t width = CGImageGetWidth(bitmap), height = CGImageGetHeight(bitmap), stride = CGImageGetBytesPerRow(bitmap);
+    CGBitmapInfo info = CGImageGetBitmapInfo(bitmap), order = info & kCGBitmapByteOrderMask;
+    CGImageAlphaInfo alpha = CGImageGetAlphaInfo(bitmap);
+    BOOL bgra = order == kCGBitmapByteOrder32Little && alpha == kCGImageAlphaPremultipliedFirst;
+    BOOL rgba = order == kCGBitmapByteOrder32Big && alpha == kCGImageAlphaPremultipliedLast;
+    NSString *header = [NSString stringWithFormat:@"width=%zu height=%zu stride=%zu bpc=%zu bpp=%zu bitmapInfo=%u colorSpace=%@ imageScale=%g orientation=%ld complete=%d roiPixelsTopLeft=%@",
+        width, height, stride, CGImageGetBitsPerComponent(bitmap), CGImageGetBitsPerPixel(bitmap), (unsigned int)info,
+        CFBridgingRelease(CGColorSpaceCopyName(colorSpace)), (double)image.scale, (long)image.imageOrientation, complete, NSStringFromCGRect(roi)];
+    if (!MTPNativeCoverRasterFits(width,height,stride)
+        || CGImageGetBitsPerComponent(bitmap) != 8 || CGImageGetBitsPerPixel(bitmap) != 32 || (!bgra && !rgba)
+        || width != expectedPixels.width || height != expectedPixels.height
+        || CGColorSpaceGetModel(colorSpace) != kCGColorSpaceModelRGB || CGImageGetDecode(bitmap)
+        || image.imageOrientation != UIImageOrientationUp)
+        return [header stringByAppendingString:@" pixels=inconclusive reason=invalid-or-unsupported-bitmap"];
+    NSData *data = CFBridgingRelease(CGDataProviderCopyData(provider));
+    if (data.length < stride * height || data.length > MTPNativeCoverRasterMaxBytes)
+        return [header stringByAppendingString:@" pixels=inconclusive reason=invalid-provider-byte-length"];
+    BOOL validROI = isfinite(roi.origin.x) && isfinite(roi.origin.y) && isfinite(roi.size.width) && isfinite(roi.size.height)
+        && roi.size.width > 0 && roi.size.height > 0 && CGRectContainsRect(CGRectMake(0,0,width,height),roi);
+    const unsigned char *bytes = data.bytes; NSUInteger visible = 0, red = 0, samples = 0; BOOL varied = NO;
+    size_t r = bgra ? 2 : 0, b = bgra ? 0 : 2;
+    for (size_t y = 0; y < height; y++) for (size_t x = 0; x < width; x++) {
+        const unsigned char *pixel = bytes + y * stride + x * 4;
+        visible += pixel[3] != 0;
+        varied |= pixel[0] != bytes[0] || pixel[1] != bytes[1] || pixel[2] != bytes[2] || pixel[3] != bytes[3];
+        if (validROI && CGRectContainsPoint(roi,CGPointMake(x+.5,y+.5))) {
+            samples++; red += pixel[r] >= 180 && pixel[1] <= 100 && pixel[b] <= 100 && pixel[3] >= 230;
+        }
+    }
+    // Red-like counts are not marker identity. Static sameZ/highZ red images can
+    // calibrate layer inclusion, not presentation fidelity: compare animated Z/position
+    // controls too. None is a per-case before image or earlier-gate pixel proof.
+    return [header stringByAppendingFormat:@" visiblePixels=%lu varied=%d roiSamples=%lu redLikePixels=%lu redThreshold=R>=180,G<=100,B<=100,A>=230 pixels=%@ nativeGateVerdict=inconclusive staticControlsOnlyCalibrateLayerInclusion=1 presentationFidelityRequiresAnimatedZAndPositionControls=1",
+        (unsigned long)visible, varied, (unsigned long)samples, (unsigned long)red,
+        complete && visible && varied && validROI && samples ? @"prospective-only" : @"inconclusive-blank-incomplete-or-invalid-roi"];
+}
 static void MTPAddFrozenPaintAnimation(CALayer *layer, NSString *keyPath, id destination) {
     CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:keyPath];
     animation.fromValue = [layer valueForKeyPath:keyPath]; animation.toValue = destination;
@@ -319,15 +380,110 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
     return [lines componentsJoinedByString:@"\n"];
 }
 
+// Raw, bounded observations of the real certificate call, not a second version
+// of its guards. In particular, do not call the visibility diagnostic here: it
+// reevaluates production predicates. Backing contents are recorded by identity,
+// never copied or treated as proof of pixels. No recursive diagnostic calls,
+// property setters, or forced layout/display.
+static NSString *MTPPreparedCaptionRetentionObservation(MultiplicativePlaceValueBoardView *board,
+                                                        MTPPlaceValueProjection *before, BOOL retained) {
+    CFTimeInterval started = CACurrentMediaTime();
+    MTPPlaceValueProjection *current = [board valueForKey:@"projection"];
+    NSDictionary<NSString *, UILabel *> *labels = [board valueForKey:@"labels"];
+    NSMapTable<UILabel *, NSDictionary *> *receipts = [board valueForKey:@"preparedCaptionLayerConfigurations"];
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
+        @"realCertificateResult=%d phase=after-original-predicate-before-fallback monotonic=%.9f explicitRetention=%@ endpoint=%ld fullSnapshot=%d overview=%p scene=%p geometryValid=%d stationary=%d sceneAction=%p action=%p actionBefore=%p cradleRect=%@ cradle=%p units=%lu labels=%lu sceneLabels=%lu receipts=%lu clock=%p generation=%lu revision=%lu required=%@",
+        retained, started, [board valueForKey:@"retainingExplicitlyPreparedPaint"], (long)board.endpoint, board.displayingFullSnapshot,
+        [board valueForKey:@"overviewLayout"], board.scene, board.scene.geometryValid, board.scene.stationary, board.scene.action,
+        board.action, board.action.before, NSStringFromCGRect(board.scene.cradleRect), [board valueForKey:@"cradle"],
+        (unsigned long)[[board valueForKey:@"unitViews"] count], (unsigned long)labels.count,
+        (unsigned long)board.scene.labelFrames.count, (unsigned long)receipts.count, [board valueForKey:@"clock"],
+        (unsigned long)board.playbackGeneration, (unsigned long)board.layoutRevision, NSStringFromCGRect(board.requiredActionRect)]];
+    for (NSString *role in @[@"current", @"candidateBefore"]) {
+        MTPPlaceValueProjection *projection = [role isEqualToString:@"current"] ? current : before;
+        [lines addObject:[NSString stringWithFormat:@"projection=%@ identity=%p complete=%d canonicalSnapshot=%p placements=%lu ownedUnits=%@ owners=%@ carry=%@ labelTexts=%@",
+            role, projection, projection.complete, projection.canonicalSnapshot, (unsigned long)projection.placements.count,
+            projection.ownedUnitsByIdentifier, projection.ownersByIdentifier, projection.carryIdentifiers, projection.labelTexts]];
+    }
+    [lines addObject:[NSString stringWithFormat:@"canonical font=%@ descriptor=%@ color=%@ numberOfLines=0 lineBreakMode=%ld alignment=%ld strategy=%lu semantic=%ld",
+        board.scene.font, board.scene.font.fontDescriptor.fontAttributes, ChildUI.brownText, (long)NSLineBreakByWordWrapping,
+        (long)NSTextAlignmentNatural, (unsigned long)NSLineBreakStrategyStandard, (long)UISemanticContentAttributeUnspecified]];
+    NSArray<NSString *> *keys = [board.scene.labelFrames.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    for (NSUInteger index = 0; index < MIN(keys.count, 8u); index++) {
+        NSString *key = keys[index]; UILabel *label = labels[key];
+        CALayer *layer = label.layer, *paint = layer.presentationLayer;
+        [lines addObject:[NSString stringWithFormat:@"caption=%@ label=%p class=%@ superview=%p board=%p model=%p presentationGetter=%p presentationModel=%p presentationParentModel=%p frame=%@ expectedFrame=%@ bounds=%@ hidden=%d alpha=%g transform=%@ text=%@ font=%@ fontDescriptor=%@ textColor=%@ numberOfLines=%ld lineBreakMode=%ld alignment=%ld strategy=%lu enabled=%d highlighted=%d shadowColor=%@ adjustsFontSize=%d adjustsContentSize=%d tightening=%d semantic=%ld receipt=%@",
+            key, label, NSStringFromClass(label.class), label.superview, board, layer, paint, paint.modelLayer, paint.superlayer.modelLayer,
+            NSStringFromCGRect(label.frame), board.scene.labelFrames[key], NSStringFromCGRect(label.bounds), label.hidden, (double)label.alpha,
+            NSStringFromCGAffineTransform(label.transform), label.text, label.font, label.font.fontDescriptor.fontAttributes, label.textColor,
+            (long)label.numberOfLines, (long)label.lineBreakMode, (long)label.textAlignment, (unsigned long)label.lineBreakStrategy,
+            label.enabled, label.highlighted, label.shadowColor, label.adjustsFontSizeToFitWidth, label.adjustsFontForContentSizeCategory,
+            label.allowsDefaultTighteningForTruncation, (long)label.semanticContentAttribute, label ? [receipts objectForKey:label] : nil]];
+        NSAttributedString *styled = label.attributedText;
+        [lines addObject:[NSString stringWithFormat:@"caption=%@ attributedText=%p string=%@ length=%lu", key, styled, styled.string, (unsigned long)styled.length]];
+        NSUInteger location = 0, runs = 0;
+        while (location < styled.length && runs < 16) {
+            NSRange range; NSDictionary *attributes = [styled attributesAtIndex:location effectiveRange:&range];
+            [lines addObject:[NSString stringWithFormat:@"caption=%@ attributeRange=%@ attributes=%@", key, NSStringFromRange(range), attributes]];
+            location = NSMaxRange(range); runs++;
+        }
+        [lines addObject:[NSString stringWithFormat:@"caption=%@ attributeRuns=%lu complete=%d runLimit=16", key, (unsigned long)runs, location == styled.length]];
+    }
+    [lines addObject:[NSString stringWithFormat:@"captionsEnumerated=%lu total=%lu labelLimit=8", (unsigned long)MIN(keys.count, 8u), (unsigned long)keys.count]];
+    // Enumerate current model and current native trees in order, with an explicit
+    // bound. Parent/model identities expose membership without invoking a guard.
+    CALayer *boardPaint = board.layer.presentationLayer;
+    NSMutableArray<CALayer *> *pending = [NSMutableArray arrayWithObject:board.layer];
+    if (boardPaint) [pending addObject:boardPaint];
+    NSUInteger node = 0, omitted = 0;
+    for (; node < pending.count && node < 32; node++) {
+        CALayer *layer = pending[node]; NSArray<CALayer *> *children = layer.sublayers;
+        NSDictionary *properties = [layer dictionaryWithValuesForKeys:@[@"frame", @"bounds", @"position", @"anchorPoint", @"anchorPointZ",
+            @"zPosition", @"hidden", @"opacity", @"transform", @"sublayerTransform", @"animationKeys", @"mask", @"needsDisplay", @"needsLayout",
+            @"borderWidth", @"cornerRadius", @"shadowOpacity", @"compositingFilter", @"filters", @"backgroundFilters", @"shouldRasterize", @"drawsAsynchronously",
+            @"contentsRect", @"contentsCenter", @"contentsGravity", @"contentsScale", @"contentsFormat", @"masksToBounds", @"opaque", @"geometryFlipped", @"doubleSided",
+            @"minificationFilter", @"magnificationFilter", @"minificationFilterBias", @"allowsGroupOpacity", @"allowsEdgeAntialiasing", @"edgeAntialiasingMask"]];
+        [lines addObject:[NSString stringWithFormat:@"node=%lu layer=%p class=%@ model=%p parent=%p delegate=%p contentsIdentity=%p backgroundColor=%@ backgroundAlpha=%g properties=%@ children=%lu",
+            (unsigned long)node, layer, NSStringFromClass(layer.class), layer.modelLayer, layer.superlayer, layer.delegate,
+            layer.contents, (__bridge id)layer.backgroundColor,
+            (double)(layer.backgroundColor ? CGColorGetAlpha(layer.backgroundColor) : 0), properties, (unsigned long)children.count]];
+        for (NSUInteger index = 0; index < children.count; index++) {
+            if (pending.count == 32) { omitted += children.count - index; break; }
+            [lines addObject:[NSString stringWithFormat:@"parent=%p childIndex=%lu child=%p childModel=%p", layer, (unsigned long)index, children[index], children[index].modelLayer]];
+            [pending addObject:children[index]];
+        }
+    }
+    [lines addObject:[NSString stringWithFormat:@"treeNodes=%lu omittedChildren=%lu nodeLimit=32 observationEnd=%.9f guardsNotReevaluated=1 pixelsNotEstablished=1",
+        (unsigned long)node, (unsigned long)omitted, CACurrentMediaTime()]];
+    return [lines componentsJoinedByString:@"\n"];
+}
+
 @interface MTPNativeBoard : MultiplicativePlaceValueBoardView
 @property (nonatomic) BOOL allowsMotion;
 @property (nonatomic) BOOL injectLabelAnimation;
 @property (nonatomic) BOOL captureVisibilityFailure;
 @property (nonatomic, copy) NSString *visibilityFailureDiagnostic;
+@property (nonatomic) BOOL capturePreparedCaptionRetention;
+@property (nonatomic, copy) NSString *preparedCaptionRetentionDiagnostic;
 - (NSString *)visibilityDiagnostic;
 @end
 @implementation MTPNativeBoard
 - (BOOL)motionAllowed { return self.allowsMotion; }
+- (BOOL)canRetainPresentedBeforePaint:(MTPPlaceValueProjection *)before {
+    BOOL retained = [super canRetainPresentedBeforePaint:before];
+    if (!retained && self.capturePreparedCaptionRetention && !self.preparedCaptionRetentionDiagnostic) {
+        // Diagnostic/KVC failures must not intercept the original result or
+        // fallback. A constant marker also prevents another capture attempt.
+        @try {
+            if ([[self valueForKey:@"retainingExplicitlyPreparedPaint"] boolValue])
+                self.preparedCaptionRetentionDiagnostic = MTPPreparedCaptionRetentionObservation(self, before, retained);
+        } @catch (NSException *exception) {
+            (void)exception;
+            self.preparedCaptionRetentionDiagnostic = @"INCONCLUSIVE: prepared-caption diagnostic collection raised an exception; original certificate returned NO.";
+        }
+    }
+    return retained;
+}
 - (BOOL)actualVisibilityContainsRequiredRect {
     BOOL admitted = [super actualVisibilityContainsRequiredRect];
     if (!admitted && self.captureVisibilityFailure && !self.visibilityFailureDiagnostic) {
@@ -387,6 +543,12 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
     XCTAssertNotNil(paint); XCTAssertEqual(paint.modelLayer, self.window.layer); XCTAssertFalse(paint.hidden); XCTAssertGreaterThan(paint.opacity, 0);
 }
 - (void)tearDown {
+    if (self.board.preparedCaptionRetentionDiagnostic.length) {
+        XCTAttachment *attachment = [XCTAttachment attachmentWithString:self.board.preparedCaptionRetentionDiagnostic];
+        attachment.name = @"native-prepared-caption-retention";
+        attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:attachment];
+    }
     if (_preElevationWindowDiagnostic.length && (self.board.captureVisibilityFailure || self.testRun.failureCount)) {
         XCTAttachment *attachment = [XCTAttachment attachmentWithString:_preElevationWindowDiagnostic];
         attachment.name = @"native-pre-elevation-scene-windows";
@@ -683,7 +845,9 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
         XCTAssertEqual(label.layer.presentationLayer.modelLayer, label.layer);
         XCTAssertFalse(label.layer.needsDisplay); XCTAssertFalse(label.layer.needsLayout);
     }
+    self.board.capturePreparedCaptionRetention = YES;
     XCTAssertEqual([self.board playInVisibleRect:self.board.bounds], MTPPlaceValuePlaybackStateRunning);
+    self.board.capturePreparedCaptionRetention = NO;
     NSDictionary<NSString *, UILabel *> *runningLabels = [self.board valueForKey:@"labels"];
     XCTAssertEqualObjects([NSSet setWithArray:runningLabels.allKeys], [NSSet setWithArray:preparedLabels.allKeys]);
     for (NSString *key in preparedLabels) {
@@ -1010,8 +1174,14 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
     }
 }
 - (void)testStandaloneLayerPaintOrderAnimationsAndGuideMutationFailClosed {
+    // Bound retained encoded payloads across all 18 cases; never retain raw UIImages
+    // in XCTest. Per-case pools drain the renderer, provider copy and PNG temporaries.
+    const NSUInteger rasterPNGCaseLimit = 2u * 1024u * 1024u, rasterMetadataCaseLimit = 32u * 1024u;
+    const NSUInteger rasterPNGTotalLimit = 18u * rasterPNGCaseLimit;
+    NSUInteger rasterPNGTotalBytes = 0;
     MultiplicativeTeachingAction *action = [self action:[self plan:126 op:@"×" b:4] kind:MultiplicativeTeachingActionKindExchangeUp column:2 last:NO];
     for (NSNumber *inside in @[@NO,@YES]) for (NSString *mode in @[@"sameZAbove",@"highZBelowIndex",@"animatedZ",@"animatedPosition",@"uncommittedReorder",@"uncommittedRemoval",@"uncommittedHiddenRemoval",@"uncommittedZeroOpacityRemoval",@"uncommittedDescendantRemoval"]) {
+        @autoreleasepool {
         [self fitAction:action width:self.viewport.bounds.size.width]; [self startPaused];
         void *originalClockIdentity = (__bridge void *)[self.board valueForKey:@"clock"];
         BOOL originalClockPaused = ((CADisplayLink *)[self.board valueForKey:@"clock"]).paused;
@@ -1025,6 +1195,9 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
             [cover addSublayer:descendant]; [self presentFrame]; XCTAssertNotNil(descendant.presentationLayer);
         }
         NSString *removalDiagnostic = nil;
+        UIImage *rasterImage = nil; __block BOOL rasterComplete = NO; CGRect rasterPixelROI = CGRectNull; CGSize rasterExpectedPixels = CGSizeZero;
+        __block CFTimeInterval rasterDrawStart = 0, rasterDrawEnd = 0;
+        NSMutableArray<NSString *> *rasterNotes = [NSMutableArray array];
         NSMutableArray<NSString *> *observations = [NSMutableArray array];
         void (^observe)(NSString *) = ^(NSString *phase) {
             [observations addObject:MTPNativeCoverObservation(self.board,parent,cover,descendant,action,
@@ -1073,6 +1246,43 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
                 observe(@"immediately after original recheck");
                 XCTAssertEqual(self.board.playbackState,MTPPlaceValuePlaybackStateInterrupted); XCTAssertEqual(self.board.snapshot,action.after); XCTAssertNil([self.board valueForKey:@"clock"]);
                 if (pending) XCTAssertEqualWithAccuracy(CATransaction.animationDuration,6.5,.0001);
+                // Exactly one prospective draw, after all original inner verdicts,
+                // before the original commit. No wait, layout, flush or guard call.
+                CFTimeInterval rasterStart = CACurrentMediaTime(); NSTimeInterval rasterWall = NSDate.date.timeIntervalSince1970;
+                @try {
+                    CGRect bounds = self.window.bounds, roi = [self.window convertRect:originalRequired fromView:self.board];
+                    CGFloat scale = self.window.screen.nativeScale; CGFloat width = ceil(bounds.size.width * scale), height = ceil(bounds.size.height * scale);
+                    rasterExpectedPixels = CGSizeMake(width,height);
+                    rasterPixelROI = CGRectMake((roi.origin.x-bounds.origin.x)*scale,(roi.origin.y-bounds.origin.y)*scale,roi.size.width*scale,roi.size.height*scale);
+                    [rasterNotes addObject:[NSString stringWithFormat:@"mode=%@ inside=%d phase=after-original-inner-verdicts-before-original-commit pending=%d window=%p frame=%@ bounds=%@ screenScale=%g nativeScale=%g roiOriginalRequiredInBoard=%@ roiInWindow=%@ roiPixelsTopLeft=%@ marker=%@ expectedColor=opaque-red actualColor=%@ coverOpaque=%d hidden=%d opacity=%g coverFrameInRetainedParent=%@ parent=%p captureLimit=4194304-pixels-and-16777216-raw-bytes afterScreenUpdates=NO",
+                        mode, inside.boolValue, pending, self.window, NSStringFromCGRect(self.window.frame), NSStringFromCGRect(bounds), (double)self.window.screen.scale, (double)scale,
+                        NSStringFromCGRect(originalRequired), NSStringFromCGRect(roi), NSStringFromCGRect(rasterPixelROI), cover.name, (__bridge id)cover.backgroundColor, cover.opaque, cover.hidden, (double)cover.opacity, NSStringFromCGRect(cover.frame), parent]];
+                    [rasterNotes addObject:[@"beforeCapture " stringByAppendingString:MTPNativeCoverRasterState(self.board)]];
+                    if (self.board.window == self.window && isfinite(scale) && scale > 0 && isfinite(width) && isfinite(height)
+                        && isfinite(bounds.origin.x) && isfinite(bounds.origin.y) && width > 0 && height > 0 && width <= 8192 && height <= 8192 && width * height <= MTPNativeCoverRasterMaxPixels) {
+                        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+                        format.scale = scale; format.opaque = NO; format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
+                        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithBounds:bounds format:format];
+                        // UIKit provisions this context before the callback. Check its
+                        // backing before draw; private UIKit/PNG scratch or RSS is not bounded here.
+                        rasterImage = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+                            CGContextRef bitmap = context.CGContext;
+                            size_t actualWidth = CGBitmapContextGetWidth(bitmap), actualHeight = CGBitmapContextGetHeight(bitmap), actualStride = CGBitmapContextGetBytesPerRow(bitmap);
+                            [rasterNotes addObject:[NSString stringWithFormat:@"rendererActualWidth=%zu height=%zu stride=%zu rawByteLimit=%zu",actualWidth,actualHeight,actualStride,MTPNativeCoverRasterMaxBytes]];
+                            if (!MTPNativeCoverRasterFits(actualWidth,actualHeight,actualStride) || actualWidth != width || actualHeight != height
+                                || CGBitmapContextGetBitsPerComponent(bitmap) != 8 || CGBitmapContextGetBitsPerPixel(bitmap) != 32) {
+                                [rasterNotes addObject:@"capture=inconclusive reason=unsupported-or-over-budget-renderer-context"]; return;
+                            }
+                            rasterDrawStart = CACurrentMediaTime();
+                            rasterComplete = [self.window drawViewHierarchyInRect:bounds afterScreenUpdates:NO];
+                            rasterDrawEnd = CACurrentMediaTime();
+                        }];
+                    } else [rasterNotes addObject:@"capture=inconclusive reason=invalid-window-or-renderer-bound"];
+                } @catch (NSException *exception) {
+                    [rasterNotes addObject:[NSString stringWithFormat:@"capture=inconclusive exception=%@ reason=%@",exception.name,exception.reason]];
+                }
+                [rasterNotes addObject:[NSString stringWithFormat:@"afterCapture %@ startMonotonic=%.9f endMonotonic=%.9f startWallUnix=%.6f endWallUnix=%.6f drawStartMonotonic=%.9f drawEndMonotonic=%.9f complete=%d nonperturbingNotEstablished=1 nativeGateVerdict=inconclusive",
+                    MTPNativeCoverRasterState(self.board), rasterStart, CACurrentMediaTime(), rasterWall, NSDate.date.timeIntervalSince1970, rasterDrawStart, rasterDrawEnd, rasterComplete]];
             } @finally { if (pending) [CATransaction commit]; }
         } @finally {
             [cover removeAllAnimations]; [cover removeFromSuperlayer]; [self presentFrame];
@@ -1087,6 +1297,32 @@ NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board
             }
         }
         XCTAssertNil([self.board valueForKey:@"clock"]);
+        // Only now inspect/encode/attach the retained image, after original cleanup
+        // and the original final clock assertion. Diagnostic failures change no verdict.
+        @try {
+            [rasterNotes addObject:MTPNativeCoverRasterPixels(rasterImage,rasterComplete,rasterPixelROI,rasterExpectedPixels)];
+            CGImageRef capturedBitmap = rasterImage.CGImage;
+            if (capturedBitmap && rasterDrawEnd > 0 && MTPNativeCoverRasterFits(CGImageGetWidth(capturedBitmap),CGImageGetHeight(capturedBitmap),CGImageGetBytesPerRow(capturedBitmap))) {
+                NSData *png = UIImagePNGRepresentation(rasterImage);
+                if (png.length && png.length <= rasterPNGCaseLimit && png.length <= rasterPNGTotalLimit - rasterPNGTotalBytes) {
+                    rasterPNGTotalBytes += png.length; // Charge before attachment, including an uncertain exception.
+                    XCTAttachment *pixels = [XCTAttachment attachmentWithData:png uniformTypeIdentifier:@"public.png"];
+                    pixels.name = [NSString stringWithFormat:@"native-cover-prospective-pixels-%@-%@",inside.boolValue ? @"inside" : @"outside",mode];
+                    pixels.lifetime = XCTAttachmentLifetimeKeepAlways; [self addAttachment:pixels];
+                } else [rasterNotes addObject:[NSString stringWithFormat:@"attachment=inconclusive reason=empty-or-over-budget-png encodedBytes=%lu caseLimit=%lu totalLimit=%lu",(unsigned long)png.length,(unsigned long)rasterPNGCaseLimit,(unsigned long)rasterPNGTotalLimit]];
+            }
+        } @catch (NSException *exception) {
+            [rasterNotes addObject:[NSString stringWithFormat:@"pixels=inconclusive exception=%@ reason=%@",exception.name,exception.reason]];
+        }
+        [rasterNotes addObject:[NSString stringWithFormat:@"aggregatePNGBytes=%lu aggregatePNGLimit=%lu metadataCaseLimit=%lu all18NewAttachmentBytesLimit=%lu",
+            (unsigned long)rasterPNGTotalBytes,(unsigned long)rasterPNGTotalLimit,(unsigned long)rasterMetadataCaseLimit,(unsigned long)(rasterPNGTotalLimit+18u*rasterMetadataCaseLimit)]];
+        NSData *metadata = [[rasterNotes componentsJoinedByString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+        if (!metadata.length || metadata.length > rasterMetadataCaseLimit)
+            metadata = [[NSString stringWithFormat:@"mode=%@ inside=%d raster=inconclusive reason=empty-or-over-budget-metadata nativeGateVerdict=inconclusive",mode,inside.boolValue] dataUsingEncoding:NSUTF8StringEncoding];
+        XCTAttachment *rasterMetadata = [XCTAttachment attachmentWithData:metadata uniformTypeIdentifier:@"public.utf8-plain-text"];
+        rasterMetadata.name = [NSString stringWithFormat:@"native-cover-prospective-raster-metadata-%@-%@",inside.boolValue ? @"inside" : @"outside",mode];
+        rasterMetadata.lifetime = XCTAttachmentLifetimeKeepAlways; [self addAttachment:rasterMetadata];
+        }
     }
     for (NSString *target in @[@"material",@"caption"]) for (NSNumber *hidden in @[@NO,@YES]) {
         [self fitAction:action width:self.viewport.bounds.size.width]; [self startPaused];
