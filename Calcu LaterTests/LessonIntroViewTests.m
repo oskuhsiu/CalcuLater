@@ -2692,7 +2692,6 @@
             UIScrollView *content = [breakIntro valueForKey:@"scrollView"];
             if (UIContentSizeCategoryIsAccessibilityCategory(category)) {
                 XCTAssertGreaterThan(paragraphFont.pointSize, 33);
-                XCTAssertGreaterThan(paragraph.bounds.size.height, content.bounds.size.height);
                 XCTAssertGreaterThan([self explanationRectForIntro:breakIntro includeRead:NO].size.height,
                     content.bounds.size.height);
             }
@@ -2718,6 +2717,37 @@
             NSUInteger beforeInspection = breakIntro.playbackGeneration;
             LessonIntroPlaybackState beforeState = breakIntro.playbackState;
             XCTAssertNil([breakIntro valueForKey:@"stepAnimator"]);
+            CGRect fittingFrame = breakIntro.frame;
+            CGSize fittingParagraphSize = paragraph.bounds.size;
+            CGFloat fittingContentWidth = content.bounds.size.width;
+            if (UIContentSizeCategoryIsAccessibilityCategory(category)) {
+                // The paragraph can fit the roomy 485-point viewport. Exercise
+                // actual overflow at the supported 566-point child height,
+                // without changing its width, fonts or physical window/scene.
+                CGRect inspectionFrame = fittingFrame;
+                inspectionFrame.origin.y = floor((controller.view.bounds.size.height - 566) / 2);
+                inspectionFrame.size.height = 566;
+                breakIntro.frame = inspectionFrame;
+                [breakIntro setNeedsLayout]; [breakIntro layoutIfNeeded];
+                [content layoutIfNeeded];
+                XCTAssertEqualWithAccuracy(content.bounds.size.height, 390, 0.5);
+                XCTAssertEqualWithAccuracy(content.bounds.size.width, fittingContentWidth, 0.5);
+                XCTAssertEqualWithAccuracy(paragraph.bounds.size.width, fittingParagraphSize.width, 0.5);
+                XCTAssertEqualWithAccuracy(paragraph.bounds.size.height, fittingParagraphSize.height, 0.5);
+                XCTAssertEqualWithAccuracy(paragraph.font.pointSize, paragraphFont.pointSize, 0.5);
+                XCTAssertGreaterThan(paragraph.bounds.size.height, content.bounds.size.height);
+                XCTAssertEqual(breakIntro.currentStepIndex, 0);
+                XCTAssertEqual(breakIntro.playbackGeneration, beforeInspection);
+                XCTAssertEqual(breakIntro.playbackState, beforeState);
+                XCTAssertNil([breakIntro valueForKey:@"stepAnimator"]);
+                XCTAssertEqualObjects(paragraph.text, fullText);
+                XCTAssertEqualObjects([breakIntro valueForKey:@"dots"], sourceDots);
+                for (NSUInteger index = 0; index < sourceDots.count; index++) {
+                    XCTAssertEqualObjects([sourceDots[index] dictionaryWithValuesForKeys:dotKeys], sourceStates[index]);
+                }
+                XCTAssertTrue(CGRectEqualToRect(window.bounds, windowBounds));
+                XCTAssertTrue(CGRectEqualToRect(window.windowScene.coordinateSpace.bounds, nativeSceneBounds));
+            }
             NSArray<NSString *> *controlKeys = @[@"previousButton", @"pinnedReadButton", @"nextButton", @"replayButton", @"startButton"];
             NSMutableArray<NSValue *> *controlRects = [NSMutableArray array];
             for (NSString *key in controlKeys) {
@@ -2814,6 +2844,30 @@
                     [self addAttachment:attachment];
                     assertStaticInspection();
                 }
+            }
+            if (UIContentSizeCategoryIsAccessibilityCategory(category)) {
+                // Restoring room is not playback permission. Keep the original
+                // 661-point causal-admission check after this text-only phase.
+                breakIntro.frame = fittingFrame;
+                [breakIntro setNeedsLayout]; [breakIntro layoutIfNeeded];
+                [content layoutIfNeeded];
+                XCTAssertTrue(CGRectEqualToRect(breakIntro.frame, fittingFrame));
+                XCTAssertEqualWithAccuracy(content.bounds.size.height, 485, 0.5);
+                XCTAssertEqualWithAccuracy(content.bounds.size.width, fittingContentWidth, 0.5);
+                XCTAssertEqualWithAccuracy(paragraph.bounds.size.width, fittingParagraphSize.width, 0.5);
+                XCTAssertEqualWithAccuracy(paragraph.bounds.size.height, fittingParagraphSize.height, 0.5);
+                XCTAssertEqualWithAccuracy(paragraph.font.pointSize, paragraphFont.pointSize, 0.5);
+                XCTAssertEqual(breakIntro.currentStepIndex, 0);
+                XCTAssertEqual(breakIntro.playbackGeneration, beforeInspection);
+                XCTAssertEqual(breakIntro.playbackState, beforeState);
+                XCTAssertNil([breakIntro valueForKey:@"stepAnimator"]);
+                XCTAssertEqualObjects(paragraph.text, fullText);
+                XCTAssertEqualObjects([breakIntro valueForKey:@"dots"], sourceDots);
+                for (NSUInteger index = 0; index < sourceDots.count; index++) {
+                    XCTAssertEqualObjects([sourceDots[index] dictionaryWithValuesForKeys:dotKeys], sourceStates[index]);
+                }
+                XCTAssertTrue(CGRectEqualToRect(window.bounds, windowBounds));
+                XCTAssertTrue(CGRectEqualToRect(window.windowScene.coordinateSpace.bounds, nativeSceneBounds));
             }
             // Only an explicit Next may leave inspection and admit the causal action.
             [breakIntro goToNextStep];

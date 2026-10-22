@@ -13,20 +13,29 @@
 - (void)replay;
 - (void)restart;
 - (void)focusCurrentContent;
+- (void)choosePrediction:(UIButton *)button;
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView;
 - (SpeechManager *)speechManager;
 @end
 
-/// Observe speech requests only, not audible output or playback/visibility.
+/// Observe requests and cancellation ordering, not audible output or playback/visibility.
 @interface VTSpeechRecorder : SpeechManager
 @property (nonatomic, strong) NSMutableArray<NSString *> *requests;
+@property (nonatomic) NSUInteger stopCount;
+@property (nonatomic, copy) NSString *currentRequest;
+@property (nonatomic, copy) void (^didStop)(void);
 @end
 @implementation VTSpeechRecorder
 - (void)speak:(NSString *)text {
     if (!self.requests) self.requests = [NSMutableArray array];
     [self.requests addObject:[text copy]];
+    self.currentRequest = text;
 }
-- (void)stop {}
+- (void)stop {
+    self.stopCount++;
+    self.currentRequest = nil;
+    if (self.didStop) self.didStop();
+}
 @end
 @interface VTSpeechRecordingController : VerticalTeachingViewController
 @property (nonatomic, strong) VTSpeechRecorder *recorder;
@@ -408,6 +417,7 @@
     [read sendActionsForControlEvents:UIControlEventTouchUpInside];
     XCTAssertEqual(self.speechRecorder.requests.count, requests + 1);
     XCTAssertEqualObjects(self.speechRecorder.requests.lastObject, expected);
+    XCTAssertEqualObjects(self.speechRecorder.currentRequest, expected);
     XCTAssertEqual(board.currentStepIndex, stepIndex);
     XCTAssertEqualObjects(board.accessibilityValue, snapshot);
     XCTAssertEqual(board.playbackState, playback);
@@ -425,8 +435,15 @@
     NSString *question = [NSString stringWithFormat:@"%@。%@。%@", prediction.title, prediction.explanation, prediction.prompt];
     XCTAssertEqual(self.speechRecorder.requests.count, 0u);
     [self assertReadRequests:question];
-    [[self choice:11] sendActionsForControlEvents:UIControlEventTouchUpInside];
     UILabel *feedback = [self.controller valueForKey:@"choiceFeedback"];
+    NSString *initialFeedback = feedback.text;
+    __block NSString *feedbackAtStop = nil;
+    self.speechRecorder.didStop = ^{ feedbackAtStop = feedback.text; };
+    NSUInteger stops = self.speechRecorder.stopCount;
+    [[self choice:11] sendActionsForControlEvents:UIControlEventTouchUpInside];
+    XCTAssertEqual(self.speechRecorder.stopCount, stops + 1);
+    XCTAssertNil(self.speechRecorder.currentRequest);
+    XCTAssertEqualObjects(feedbackAtStop, initialFeedback, @"Retire the old request before replacing visible feedback.");
     XCTAssertTrue([feedback.text containsString:@"你選 11 個一"]);
     XCTAssertTrue([feedback.text containsString:@"個位的 7 + 5 個一"]);
     XCTAssertTrue([feedback.text containsString:@"不計分"]);
@@ -439,6 +456,24 @@
     NSString *wrongSpeech = [NSString stringWithFormat:@"%@ %@", question, feedback.text];
     [self assertReadRequests:wrongSpeech];
     XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"42"]);
+    NSString *wrongFeedback = feedback.text;
+    stops = self.speechRecorder.stopCount;
+    NSNumber *generation = [self.controller valueForKey:@"semanticReframeGeneration"];
+    NSDictionary<NSNumber *, NSNumber *> *lastAttempts = [self.controller valueForKey:@"lastAttemptedValues"];
+    UIButton *foreignChoice = [UIButton buttonWithType:UIButtonTypeSystem];
+    foreignChoice.tag = 12;
+    XCTAssertTrue(foreignChoice.enabled);
+    NSArray<UIButton *> *ignoredChoices = @[[self choice:11], foreignChoice];
+    for (UIButton *ignored in ignoredChoices) {
+        // Call the handler directly so disabled UIControl dispatch cannot hide a missing guard.
+        [self.controller choosePrediction:ignored];
+        XCTAssertEqual(self.speechRecorder.stopCount, stops);
+        XCTAssertEqualObjects(self.speechRecorder.currentRequest, wrongSpeech);
+        XCTAssertEqual(self.speechRecorder.requests.count, 2u);
+        XCTAssertEqualObjects(feedback.text, wrongFeedback);
+        XCTAssertEqualObjects([self.controller valueForKey:@"semanticReframeGeneration"], generation);
+        XCTAssertEqualObjects(lastAttempts[@1], @11);
+    }
     [self.controller focusCurrentContent];
     UIButton *focus = [self.controller valueForKey:@"focusButton"];
     XCTAssertEqualObjects(focus.currentTitle, @"回到選項");
@@ -447,32 +482,41 @@
     XCTAssertEqualObjects(focus.currentTitle, @"看數量");
     XCTAssertTrue([self contains:[self.controller valueForKey:@"choices"]]);
     XCTAssertEqual(self.speechRecorder.requests.count, 2u, @"Inspecting must not request speech automatically.");
+    XCTAssertNil(self.speechRecorder.currentRequest);
+    [self assertReadRequests:wrongSpeech];
+    stops = self.speechRecorder.stopCount;
+    feedbackAtStop = nil;
     [[self choice:12] sendActionsForControlEvents:UIControlEventTouchUpInside];
+    XCTAssertEqual(self.speechRecorder.stopCount, stops + 1);
+    XCTAssertNil(self.speechRecorder.currentRequest);
+    XCTAssertEqualObjects(feedbackAtStop, wrongFeedback, @"Retire wrong coaching before showing correct feedback.");
+    self.speechRecorder.didStop = nil;
     XCTAssertTrue([feedback.text containsString:@"7 + 5 = 12 個一"]);
     XCTAssertTrue([self contains:feedback]);
     XCTAssertEqualObjects([self choice:12].accessibilityValue, @"和這一步的數量相同");
     XCTAssertFalse([feedback.text containsString:@"42"]);
+    XCTAssertEqual(board.currentStepIndex, 1);
     XCTAssertEqualObjects(board.accessibilityValue, before);
-    XCTAssertEqual(self.speechRecorder.requests.count, 2u);
+    XCTAssertEqual(self.speechRecorder.requests.count, 3u, @"Replacing feedback must not request speech automatically.");
     NSString *correctSpeech = [NSString stringWithFormat:@"%@ %@", question, feedback.text];
     [self assertReadRequests:correctSpeech];
     XCTAssertNotEqualObjects(self.speechRecorder.requests.lastObject, wrongSpeech);
     XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"42"]);
     [self.controller next];
-    XCTAssertEqual(self.speechRecorder.requests.count, 3u);
+    XCTAssertEqual(self.speechRecorder.requests.count, 4u);
     ArithmeticTeachingStep *calculation = board.currentStep;
     [self assertReadRequests:[NSString stringWithFormat:@"%@。%@", calculation.title, calculation.explanation]];
     [self.controller previous];
     XCTAssertFalse([self choice:12].enabled);
     XCTAssertTrue([((UILabel *)[self.controller valueForKey:@"choiceFeedback"]).text containsString:@"7 + 5 = 12 個一"]);
-    XCTAssertEqual(self.speechRecorder.requests.count, 4u, @"Navigation must not request speech automatically.");
+    XCTAssertEqual(self.speechRecorder.requests.count, 5u, @"Navigation must not request speech automatically.");
     [self assertReadRequests:correctSpeech];
     [self.controller restart];
     [self.controller next];
     XCTAssertTrue([self choice:11].enabled);
     XCTAssertTrue([self choice:12].enabled);
     XCTAssertEqual([[self.controller valueForKey:@"lastAttemptedValues"] count], 0u);
-    XCTAssertEqual(self.speechRecorder.requests.count, 5u, @"Restart must not request speech automatically.");
+    XCTAssertEqual(self.speechRecorder.requests.count, 6u, @"Restart must not request speech automatically.");
     [self assertReadRequests:question];
     XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"你選"]);
 }
@@ -490,8 +534,15 @@
         NSString *question = [NSString stringWithFormat:@"%@。%@。%@", prediction.title, prediction.explanation, prediction.prompt];
         [self assertReadRequests:question];
         requests++;
-        [[self choice:1] sendActionsForControlEvents:UIControlEventTouchUpInside];
         UILabel *feedback = [self.controller valueForKey:@"choiceFeedback"];
+        NSString *initialFeedback = feedback.text;
+        __block NSString *feedbackAtStop = nil;
+        self.speechRecorder.didStop = ^{ feedbackAtStop = feedback.text; };
+        NSUInteger stops = self.speechRecorder.stopCount;
+        [[self choice:1] sendActionsForControlEvents:UIControlEventTouchUpInside];
+        XCTAssertEqual(self.speechRecorder.stopCount, stops + 1);
+        XCTAssertNil(self.speechRecorder.currentRequest);
+        XCTAssertEqualObjects(feedbackAtStop, initialFeedback);
         NSString *unit = tested == 0 ? @"十" : @"一";
         NSString *source = tested == 0 ? @"百" : @"十";
         NSString *selection = [NSString stringWithFormat:@"你選 1 個%@", unit];
@@ -500,6 +551,7 @@
         XCTAssertTrue([feedback.text containsString:equality]);
         XCTAssertTrue([self contains:feedback]);
         VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+        NSString *snapshot = board.accessibilityValue;
         XCTAssertEqual(board.currentStepIndex, (NSInteger)index);
         XCTAssertTrue([board.accessibilityValue containsString:@"答案還沒寫"]);
         XCTAssertFalse([feedback.text containsString:@"372"]);
@@ -512,12 +564,29 @@
         XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:equality]);
         XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"372"]);
         if (tested == 0) XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"10 個一"]);
+        UIButton *previousVisitChoice = [self choice:10];
         [self.controller previous];
         [self.controller next];
         XCTAssertEqual(self.speechRecorder.requests.count, requests);
         [self assertReadRequests:wrongSpeech];
         requests++;
+        NSString *wrongFeedback = feedback.text;
+        stops = self.speechRecorder.stopCount;
+        feedbackAtStop = nil;
+        XCTAssertTrue(previousVisitChoice.enabled);
+        XCTAssertNotEqual(previousVisitChoice, [self choice:10]);
+        [self.controller choosePrediction:previousVisitChoice];
+        XCTAssertEqual(self.speechRecorder.stopCount, stops, @"A detached choice from the previous visit is not a new attempt.");
+        XCTAssertEqualObjects(self.speechRecorder.currentRequest, wrongSpeech);
+        XCTAssertEqual(self.speechRecorder.requests.count, requests);
+        XCTAssertEqualObjects(feedback.text, wrongFeedback);
         [[self choice:10] sendActionsForControlEvents:UIControlEventTouchUpInside];
+        XCTAssertEqual(self.speechRecorder.stopCount, stops + 1);
+        XCTAssertNil(self.speechRecorder.currentRequest);
+        XCTAssertEqualObjects(feedbackAtStop, wrongFeedback, @"Retire old unit coaching before replacing the attempt.");
+        self.speechRecorder.didStop = nil;
+        XCTAssertEqual(board.currentStepIndex, (NSInteger)index);
+        XCTAssertEqualObjects(board.accessibilityValue, snapshot);
         XCTAssertEqual(self.speechRecorder.requests.count, requests);
         [self assertReadRequests:[NSString stringWithFormat:@"%@ %@", question, feedback.text]];
         requests++;

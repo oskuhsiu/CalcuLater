@@ -482,6 +482,7 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     ArithmeticTeachingStep *step = self.currentStep;
     if (step.kind != ArithmeticTeachingStepKindPrediction || !button.enabled
         || ![self.choices.arrangedSubviews containsObject:button] || [self.answeredSteps containsIndex:self.stepIndex]) return;
+    [[self speechManager] stop]; // Retire the previous attempt's requested coaching before replacing it.
     self.semanticReframeGeneration++;
     NSNumber *key = @(self.stepIndex);
     NSMutableSet<NSNumber *> *attempts = self.attemptedValues[key];
