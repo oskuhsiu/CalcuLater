@@ -521,7 +521,8 @@
         XCTAssertEqual(self.speechRecorder.requests.count, requests);
         [self assertReadRequests:[NSString stringWithFormat:@"%@ %@", question, feedback.text]];
         requests++;
-        XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:[NSString stringWithFormat:@"你選 10 個%@", unit]]);
+        NSString *correctSelection = [NSString stringWithFormat:@"你選 10 個%@", unit];
+        XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:correctSelection]);
         XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:equality]);
         XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:selection]);
         XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"372"]);
