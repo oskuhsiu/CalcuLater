@@ -77,6 +77,35 @@
         XCTAssertTrue(CGRectContainsRect(self.focus.requiredActionRect, counter.frame));
     }
 }
+- (NSString *)geometryDescription {
+    NSMutableArray *lines = [NSMutableArray arrayWithObjects:
+        [NSString stringWithFormat:@"category=%@ bounds=%@ required=%@ measured=%@", self.focus.traitCollection.preferredContentSizeCategory,
+            NSStringFromCGRect(self.focus.bounds), NSStringFromCGRect(self.focus.requiredActionRect),
+            NSStringFromCGSize([self.focus requiredActionSizeThatFits:CGSizeMake(self.focus.bounds.size.width, CGFLOAT_MAX)])], nil];
+    for (UILabel *label in self.labels) {
+        CGRect text = [label.text boundingRectWithSize:CGSizeMake(label.bounds.size.width, CGFLOAT_MAX)
+            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:@{NSFontAttributeName:label.font} context:nil];
+        [lines addObject:[NSString stringWithFormat:@"%@ font=%@ %.2fpt lineHeight=%.2f frame=%@ textHeight=%.2f text=%@",
+            label.accessibilityIdentifier, label.font.fontName, label.font.pointSize, label.font.lineHeight, NSStringFromCGRect(label.frame), text.size.height, label.text]];
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+- (void)assertCategory:(NSString *)category fontSize:(CGFloat)fontSize maximumActionHeight:(CGFloat)height diagnosticName:(NSString *)name {
+    NSString *geometry = [self geometryDescription];
+    XCTAttachment *attachment = [XCTAttachment attachmentWithString:geometry];
+    attachment.name = name; attachment.lifetime = XCTAttachmentLifetimeKeepAlways; [self addAttachment:attachment];
+    XCTAssertEqualObjects(self.focus.traitCollection.preferredContentSizeCategory, category, @"%@", geometry);
+    XCTAssertGreaterThan(self.labels.count, 0u);
+    for (UILabel *label in self.labels) {
+        XCTAssertEqualObjects(label.traitCollection.preferredContentSizeCategory, category, @"%@", geometry);
+        XCTAssertEqualWithAccuracy(label.font.pointSize, fontSize, 0.01, @"%@", geometry);
+        XCTAssertFalse(label.adjustsFontSizeToFitWidth, @"%@", geometry);
+    }
+    CGFloat measured = [self.focus requiredActionSizeThatFits:CGSizeMake(self.focus.bounds.size.width, CGFLOAT_MAX)].height;
+    XCTAssertEqualWithAccuracy(self.focus.requiredActionRect.size.height, measured, 0.01, @"%@", geometry);
+    XCTAssertLessThanOrEqual(self.focus.requiredActionRect.size.height, height, @"%@", geometry);
+    [self assertTextAndCounterContainment]; [self assertConservation];
+}
 - (void)testFixedCounterSizeAndReadableGeometryAtCompactWideAndMaximumText {
     NSArray *actions = @[[self actionSharing:YES last:NO full:NO], [self actionSharing:YES last:YES full:NO], [self actionSharing:NO last:NO full:YES], [self actionSharing:NO last:YES full:YES]];
     for (NSString *category in @[UIContentSizeCategoryLarge, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
@@ -89,16 +118,22 @@
     }
 }
 - (void)testRealActionGeometryFitsCompactAndMaximumTextPortraitButRejectsLandscape {
-    [self fitAction:[self actionSharing:YES last:NO full:NO] width:288]; XCTAssertLessThanOrEqual(self.focus.requiredActionRect.size.height, 355);
+    self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge;
+    [self fitAction:[self actionSharing:YES last:NO full:NO] width:288];
+    [self assertCategory:UIContentSizeCategoryLarge fontSize:18 maximumActionHeight:355 diagnosticName:@"focused-compact-large-geometry"];
     UILabel *caption = [self.focus valueForKey:@"captionLabel"];
     XCTAssertTrue([caption.text containsString:@"這輪每位只再拿 1 顆"]);
     self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
     [self fitAction:[self actionSharing:YES last:YES full:NO] width:361];
-    XCTAssertLessThanOrEqual(self.focus.requiredActionRect.size.height, 577); XCTAssertGreaterThan(self.focus.requiredActionRect.size.height, 208);
+    [self assertCategory:UIContentSizeCategoryAccessibilityExtraExtraExtraLarge fontSize:28 maximumActionHeight:577 diagnosticName:@"focused-portrait-maximum-text-geometry"];
+    XCTAssertGreaterThan(self.focus.requiredActionRect.size.height, 208);
     XCTAssertFalse([self.focus playInVisibleRect:CGRectMake(0, 0, 361, 208)]);
     XCTAssertEqualObjects(self.focus.playbackState, @"paused-visibility"); XCTAssertNil([self.focus valueForKey:@"clock"]);
     XCTAssertEqual(self.focus.displayedPoolCount, 3); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@5, @5, @5, @5]));
     XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]);
+    self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge;
+    [self fitAction:[self actionSharing:YES last:NO full:NO] width:288];
+    [self assertCategory:UIContentSizeCategoryLarge fontSize:18 maximumActionHeight:355 diagnosticName:@"focused-compact-restored-large-geometry"];
 }
 - (void)testOneExistingObjectMovesAtATimeWithoutCrossingAnyLabelOrStationaryCounter {
     for (GroupingTeachingAction *action in @[[self actionSharing:YES last:NO full:YES], [self actionSharing:NO last:YES full:YES]]) {

@@ -1,6 +1,7 @@
 #import <XCTest/XCTest.h>
 #import <UIKit/UIKit.h>
 #import <math.h>
+#import <QuartzCore/QuartzCore.h>
 #import "LessonIntroView.h"
 #import "Lesson.h"
 #import "ArithmeticProblem.h"
@@ -81,17 +82,30 @@
 
 @interface LessonIntroViewTests : XCTestCase
 @property (nonatomic, strong) UIWindow *hostWindow;
+@property (nonatomic, weak) UIWindow *previousKeyWindow;
 @property (nonatomic, strong) LessonIntroView *intro;
 @end
 
 @implementation LessonIntroViewTests
 
-- (void)tearDown {
+- (void)releaseHost {
     [self.intro stopPlayback];
     [self.intro removeFromSuperview];
     self.intro = nil;
     self.hostWindow.hidden = YES;
+    self.hostWindow.rootViewController = nil;
     self.hostWindow = nil;
+    // Real presentation probes temporarily own the scene's key window. Leave
+    // the application's original window as we found it, including between
+    // widths within the same test. Geometry-only fixtures never become key.
+    if (self.previousKeyWindow && !self.previousKeyWindow.hidden
+        && self.previousKeyWindow.windowScene.activationState == UISceneActivationStateForegroundActive) {
+        [self.previousKeyWindow makeKeyWindow];
+    }
+    self.previousKeyWindow = nil;
+}
+- (void)tearDown {
+    [self releaseHost];
     [super tearDown];
 }
 
@@ -100,9 +114,7 @@
     return [[ArithmeticProblem alloc] initWithNumber1:a number2:b operator:make ? @"+" : @"-" answer:make ? a + b : a - b];
 }
 - (LessonIntroView *)hostIntro:(LessonIntroView *)intro width:(CGFloat)width height:(CGFloat)height {
-    [self.intro stopPlayback];
-    [self.intro removeFromSuperview];
-    self.hostWindow.hidden = YES;
+    [self releaseHost];
     self.hostWindow = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, width, height)];
     UIViewController *host = [[UIViewController alloc] init];
     self.hostWindow.rootViewController = host;
@@ -129,23 +141,57 @@
     XCTAssertNotNil(intro);
     return [self hostIntro:intro width:width height:500];
 }
-/// The components lane uses a real iPad-sized screen. Presentation probes
-/// must fit that actual window; an oversized synthetic phone window is not
-/// evidence that a wide child is visible. No window/gate override is used.
+/// Synthetic windows remain useful for synchronous layout matrices, but in a
+/// scene-based app they do not establish a native render tree. Presentation probes
+/// must use the foreground scene exactly as the production SceneDelegate does.
+/// The fixed-size child fits INSIDE the physical iPad window, never an oversized
+/// fake window, and no visibility gate or animation behavior is overridden.
 - (LessonIntroView *)showPresentationProblemA:(NSInteger)a width:(CGFloat)width {
-    CGSize screenSize = UIScreen.mainScreen.bounds.size;
-    XCTAssertGreaterThanOrEqual(screenSize.width, 736, @"Run every wide presentation probe on the components iPad host.");
-    XCTAssertGreaterThanOrEqual(screenSize.height, 500);
+    [self releaseHost];
+    BOOL nativeAnimationEnvironment = UIView.areAnimationsEnabled && !CATransaction.disableActions;
+    XCTAssertTrue(nativeAnimationEnvironment,
+        @"Native motion requires animations enabled and no leaked disable-actions transaction (enabled=%d disabled=%d).",
+        UIView.areAnimationsEnabled, CATransaction.disableActions);
+    if (!nativeAnimationEnvironment) return nil; // Do not drain or reset another component's transaction.
+    UIWindowScene *foregroundScene = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:UIWindowScene.class]
+            && scene.activationState == UISceneActivationStateForegroundActive
+            && ((UIWindowScene *)scene).screen == UIScreen.mainScreen) {
+            foregroundScene = (UIWindowScene *)scene;
+            break;
+        }
+    }
+    XCTAssertNotNil(foregroundScene, @"Native presentation requires the app's active physical window scene.");
+    if (!foregroundScene) return nil;
+    CGRect sceneBounds = foregroundScene.coordinateSpace.bounds;
+    XCTAssertGreaterThanOrEqual(sceneBounds.size.width, 736, @"Run every wide presentation probe on the components iPad host.");
+    XCTAssertGreaterThanOrEqual(sceneBounds.size.height, 500);
+    if (sceneBounds.size.width < width || sceneBounds.size.height < 500) return nil;
+    for (UIWindow *window in foregroundScene.windows) {
+        if (window.isKeyWindow) { self.previousKeyWindow = window; break; }
+    }
+    self.hostWindow = [[UIWindow alloc] initWithWindowScene:foregroundScene];
+    self.hostWindow.frame = sceneBounds;
+    UIViewController *host = [[UIViewController alloc] init];
+    self.hostWindow.rootViewController = host;
+    [self.hostWindow makeKeyAndVisible];
+    [self.hostWindow layoutIfNeeded];
     LessonIntroView *intro = [[LessonIntroView alloc] initWithProblem:[self problemA:a b:9 make:YES]
         lesson:[self lessonAtIndex:3]];
-    [self hostIntro:intro width:screenSize.width height:screenSize.height];
+    self.intro = intro;
     intro.autoresizingMask = UIViewAutoresizingNone;
-    intro.frame = CGRectMake(floor((screenSize.width - width) / 2), floor((screenSize.height - 500) / 2), width, 500);
-    [intro setNeedsLayout]; [intro layoutIfNeeded];
+    intro.frame = CGRectMake(floor((host.view.bounds.size.width - width) / 2),
+        floor((host.view.bounds.size.height - 500) / 2), width, 500);
+    [host.view addSubview:intro];
+    [host.view setNeedsLayout]; [host.view layoutIfNeeded];
+    [intro play];
+    [intro layoutIfNeeded];
     [CATransaction flush];
-    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-    XCTAssertEqualWithAccuracy(self.hostWindow.bounds.size.width, screenSize.width, 0.5);
-    XCTAssertEqualWithAccuracy(self.hostWindow.bounds.size.height, screenSize.height, 0.5);
+    XCTAssertEqual(self.hostWindow.windowScene, foregroundScene);
+    XCTAssertTrue(self.hostWindow.isKeyWindow);
+    XCTAssertEqualWithAccuracy(self.hostWindow.bounds.size.width, sceneBounds.size.width, 0.5);
+    XCTAssertEqualWithAccuracy(self.hostWindow.bounds.size.height, sceneBounds.size.height, 0.5);
     XCTAssertTrue(CGRectContainsRect(self.hostWindow.bounds, [intro convertRect:intro.bounds toView:self.hostWindow]));
     return intro;
 }
@@ -178,6 +224,24 @@
         NSStringFromCGRect(intro.bounds), NSStringFromCGRect(stage.bounds), NSStringFromCGRect(stage.frame),
         (long)intro.currentStepIndex, [intro valueForKey:@"stepAnimator"], NSStringFromCGRect(scroll.bounds),
         NSStringFromCGSize(scroll.contentSize), NSStringFromCGPoint(scroll.contentOffset)];
+    [trace appendFormat:@"ambientCategory=%@ windowCategory=%@ rootCategory=%@ introCategory=%@ animationsEnabled=%d disableActions=%d\n",
+        UITraitCollection.currentTraitCollection.preferredContentSizeCategory,
+        intro.window.traitCollection.preferredContentSizeCategory,
+        intro.window.rootViewController.traitCollection.preferredContentSizeCategory,
+        intro.traitCollection.preferredContentSizeCategory, UIView.areAnimationsEnabled, CATransaction.disableActions];
+    UILabel *instruction = [intro valueForKey:@"visibilityInstruction"];
+    NSLayoutConstraint *spacing = [intro valueForKey:@"scrollBottomSpacing"];
+    [trace appendFormat:@"instruction=%@ hidden=%d fitting=%@ reservedBottomSpacing=%.3f footer=%@ insets=%@\n",
+        NSStringFromCGRect(instruction.frame), instruction.hidden,
+        NSStringFromCGSize([instruction sizeThatFits:CGSizeMake(MAX(1, intro.bounds.size.width - 32), CGFLOAT_MAX)]),
+        (double)spacing.constant, NSStringFromCGRect([[intro valueForKey:@"buttonStack"] frame]),
+        NSStringFromUIEdgeInsets(scroll.adjustedContentInset)];
+    for (NSString *key in @[@"headerLabel", @"progressLabel", @"narration", @"visibilityInstruction"]) {
+        UILabel *label = [intro valueForKey:key];
+        [trace appendFormat:@"%@ category=%@ font=%.3f lineHeight=%.3f preferredWidth=%.3f frame=%@\n", key,
+            label.traitCollection.preferredContentSizeCategory, (double)label.font.pointSize, (double)label.font.lineHeight,
+            (double)label.preferredMaxLayoutWidth, NSStringFromCGRect(label.frame)];
+    }
     for (NSString *key in @[@"firstFrame", @"secondFrame", @"firstCountLabel", @"secondCountLabel"]) {
         UIView *part = [intro valueForKey:key];
         [trace appendFormat:@"%@=%@ alpha=%.3f\n", key, NSStringFromCGRect(part.frame), (double)part.alpha];
@@ -504,7 +568,48 @@
     }
 }
 
-- (void)assertCommittedPresentationForDots:(NSArray<UIView *> *)dots centers:(NSArray<NSValue *> *)centers {
+- (void)attachPresentationForIntro:(LessonIntroView *)intro expected:(NSArray<NSValue *> *)centers context:(NSString *)context {
+    [self attachGeometryForIntro:intro name:[context stringByAppendingString:@" geometry"]];
+    UIWindow *window = intro.window;
+    UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
+    NSMutableString *trace = [NSMutableString stringWithFormat:
+        @"%@\napplicationState=%ld screen=%@ scene=%@ activation=%ld sceneBounds=%@\n"
+        @"window=%@ key=%d hidden=%d windowBounds=%@ windowPresentation=%@\n"
+        @"playbackState=%ld generation=%lu activeGeneration=%@ animator=%@ state=%ld running=%d fraction=%.6f\n"
+        @"animationsEnabled=%d disableActions=%d\n",
+        context, (long)UIApplication.sharedApplication.applicationState, NSStringFromCGRect(UIScreen.mainScreen.bounds),
+        window.windowScene, (long)window.windowScene.activationState, NSStringFromCGRect(window.windowScene.coordinateSpace.bounds),
+        window, window.isKeyWindow, window.hidden, NSStringFromCGRect(window.bounds), window.layer.presentationLayer,
+        (long)intro.playbackState, (unsigned long)intro.playbackGeneration, [intro valueForKey:@"activeAnimationGeneration"],
+        animator, (long)animator.state, animator.isRunning, (double)animator.fractionComplete,
+        UIView.areAnimationsEnabled, CATransaction.disableActions];
+    for (UIView *ancestor = [intro valueForKey:@"stage"]; ancestor; ancestor = ancestor.superview) {
+        [trace appendFormat:@"ancestor=%@ frame=%@ bounds=%@ clips=%d hidden=%d alpha=%.3f presentation=%@\n",
+            ancestor.class, NSStringFromCGRect(ancestor.frame), NSStringFromCGRect(ancestor.bounds),
+            ancestor.clipsToBounds, ancestor.hidden, (double)ancestor.alpha, ancestor.layer.presentationLayer];
+    }
+    NSArray<UIView *> *dots = [intro valueForKey:@"dots"];
+    [trace appendFormat:@"expectedCount=%lu actualCount=%lu\n", (unsigned long)centers.count, (unsigned long)dots.count];
+    for (NSUInteger index = 0; index < dots.count; index++) {
+        UIView *dot = dots[index];
+        CALayer *presentation = dot.layer.presentationLayer;
+        NSString *expected = index < centers.count ? NSStringFromCGPoint(centers[index].CGPointValue) : @"<no expected center>";
+        [trace appendFormat:@"%@ identity=%p expected=%@ model=%@ presentation=%@ position=%@ bounds=%@ opacity=%.3f animations=%@\n",
+            dot.accessibilityIdentifier, (__bridge void *)dot, expected,
+            NSStringFromCGPoint(dot.layer.position), presentation, NSStringFromCGPoint(presentation.position),
+            NSStringFromCGRect(presentation.bounds), (double)presentation.opacity, dot.layer.animationKeys];
+    }
+    XCTAttachment *attachment = [XCTAttachment attachmentWithString:trace];
+    attachment.name = context;
+    attachment.lifetime = XCTAttachmentLifetimeDeleteOnSuccess;
+    [self addAttachment:attachment];
+}
+
+- (BOOL)assertCommittedPresentationForDots:(NSArray<UIView *> *)dots centers:(NSArray<NSValue *> *)centers
+    intro:(LessonIntroView *)intro context:(NSString *)context {
+    XCTAssertGreaterThan(dots.count, 0u);
+    XCTAssertEqual(dots.count, centers.count);
+    if (dots.count == 0 || dots.count != centers.count) return NO;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
     BOOL matched = NO;
     do {
@@ -521,14 +626,27 @@
             }
         }
     } while (!matched && deadline.timeIntervalSinceNow > 0);
-    XCTAssertTrue(matched, @"The native presentation, not merely the model, must reach the specified pose.");
+    if (!matched) [self attachPresentationForIntro:intro expected:centers context:context];
+    XCTAssertTrue(matched, @"%@: the native presentation, not merely the model, must reach the specified pose.", context);
+    // A missing presentation is a failed case, not a zero-position counter.
+    // Stop this case at its first failed boundary rather than manufacturing
+    // thousands of overlap/opacity reports from Objective-C messages to nil.
+    if (!matched) return NO;
     for (NSUInteger index = 0; index < dots.count; index++) {
         CALayer *presentation = dots[index].layer.presentationLayer;
         XCTAssertNotNil(presentation);
         XCTAssertEqualWithAccuracy(presentation.opacity, 1, 0.001);
         XCTAssertEqualWithAccuracy(presentation.position.x, centers[index].CGPointValue.x, 1);
         XCTAssertEqualWithAccuracy(presentation.position.y, centers[index].CGPointValue.y, 1);
+        XCTAssertEqualWithAccuracy(presentation.bounds.size.width, 32, 0.001);
+        XCTAssertEqualWithAccuracy(presentation.bounds.size.height, 32, 0.001);
+        XCTAssertTrue(CATransform3DIsIdentity(presentation.transform));
+        XCTAssertEqualWithAccuracy(presentation.anchorPoint.x, 0.5, 0.001);
+        XCTAssertEqualWithAccuracy(presentation.anchorPoint.y, 0.5, 0.001);
+        XCTAssertEqualWithAccuracy(presentation.frame.size.width, 32, 0.001);
+        XCTAssertEqualWithAccuracy(presentation.frame.size.height, 32, 0.001);
     }
+    return YES;
 }
 
 - (void)testNativePausedTransferPresentationMatchesEachLegMidpointWithoutLosingAUnit {
@@ -537,9 +655,17 @@
         for (NSNumber *aValue in @[@2, @9]) {
             NSInteger a = aValue.integerValue;
             LessonIntroView *intro = [self showPresentationProblemA:a width:width.doubleValue];
+            if (!intro) return; // The host precondition already failed.
             [self settleIntro:intro atStep:2];
             NSArray<UIView *> *dots = [[intro valueForKey:@"dots"] copy];
+            XCTAssertEqual(dots.count, (NSUInteger)(a + 9));
             NSArray<NSValue *> *source = [dots valueForKey:@"center"];
+            NSString *fixture = [NSString stringWithFormat:@"%ld + 9 at width %@", (long)a, width];
+            // Prove the real render tree exists BEFORE the production animator
+            // is constructed. This does not help Replay: that still begins
+            // immediately from the separately committed destination below.
+            if (![self assertCommittedPresentationForDots:dots centers:source intro:intro
+                context:[fixture stringByAppendingString:@" initial source"]]) return;
             NSArray *legs = [intro makeTenTransferLegs];
             for (NSString *playback in @[@"first play", @"Replay", @"Back then Next"]) {
                 if ([playback isEqualToString:@"Replay"]) [intro replayCurrentStep];
@@ -549,10 +675,18 @@
                 }
                 UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
                 XCTAssertNotNil(animator, @"%@ at width %@", playback, width);
+                if (!animator) {
+                    [self attachPresentationForIntro:intro expected:source context:[fixture stringByAppendingString:playback]];
+                    return;
+                }
+                XCTAssertEqual(animator.state, UIViewAnimatingStateActive);
+                XCTAssertTrue(animator.isRunning);
                 // UIKit forbids changing the scrubbing policy after pausing.
                 // Configure it while running, then probe the real paused timeline.
                 animator.scrubsLinearly = YES;
                 [animator pauseAnimation];
+                XCTAssertEqual(animator.state, UIViewAnimatingStateActive);
+                XCTAssertFalse(animator.isRunning);
                 // Probe the actual zero pose as well as every routed leg. For
                 // Replay this must replace a previously COMMITTED destination.
                 // Waiting dots may not remain in destination cells until their
@@ -568,7 +702,10 @@
                     [self assertRequiredActionIsContainedInActualClips:intro];
                     animator.fractionComplete = time / [intro makeTenTransferDuration];
                     NSArray<NSValue *> *expected = [self centersForLegs:legs atTime:time source:source];
-                    [self assertCommittedPresentationForDots:dots centers:expected];
+                    NSString *context = [NSString stringWithFormat:@"%@ %@ time %.6f / %.6f", fixture, playback,
+                        time, [intro makeTenTransferDuration]];
+                    if (![self assertCommittedPresentationForDots:dots centers:expected intro:intro context:context]) return;
+                    XCTAssertEqualObjects([intro valueForKey:@"dots"], dots);
                     XCTAssertEqualObjects([intro valueForKey:@"stepAnimator"], animator);
                     XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
                     NSMutableArray<NSValue *> *actual = [NSMutableArray array];
@@ -591,7 +728,8 @@
                 XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], a - 1);
                 // Do not let same-transaction model setup accidentally make the
                 // next Replay test easier than pressing Replay on a real result.
-                [self assertCommittedPresentationForDots:dots centers:[dots valueForKey:@"center"]];
+                if (![self assertCommittedPresentationForDots:dots centers:[dots valueForKey:@"center"] intro:intro
+                    context:[NSString stringWithFormat:@"%@ %@ committed destination", fixture, playback]]) return;
             }
         }
     }
@@ -618,16 +756,25 @@
     for (NSNumber *aValue in @[@2, @9]) {
         NSInteger a = aValue.integerValue;
         LessonIntroView *intro = [self showPresentationProblemA:a width:736];
+        if (!intro) return;
         [self settleIntro:intro atStep:2];
         XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateIdle);
         NSUInteger before = intro.playbackGeneration;
         NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+        if (![self assertCommittedPresentationForDots:identities centers:[identities valueForKey:@"center"] intro:intro
+            context:[NSString stringWithFormat:@"%ld + 9 natural completion source", (long)a]]) return;
+        CFTimeInterval requestedAt = CACurrentMediaTime();
         [intro goToNextStep];
         NSUInteger generation = intro.playbackGeneration;
         XCTAssertEqual(generation, before + 1);
         XCTAssertEqual(intro.playbackStepIndex, 3);
         XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
-        XCTAssertNotNil([intro valueForKey:@"stepAnimator"]);
+        UIViewPropertyAnimator *nativeAnimator = [intro valueForKey:@"stepAnimator"];
+        XCTAssertNotNil(nativeAnimator);
+        __block CFTimeInterval completedAt = 0;
+        [nativeAnimator addCompletion:^(UIViewAnimatingPosition position) {
+            completedAt = CACurrentMediaTime();
+        }];
         [self assertRequiredActionIsContainedInActualClips:intro];
         // These are already endpoint quantities. They alone must not pass a
         // completion gate while the actual presentation is still in transit.
@@ -642,6 +789,11 @@
         }];
         XCTNSPredicateExpectation *completed = [[XCTNSPredicateExpectation alloc] initWithPredicate:naturallyCompleted object:intro];
         [self waitForExpectations:@[completed] timeout:8];
+        XCTAssertGreaterThan(completedAt, 0);
+        XCTAssertGreaterThanOrEqual(completedAt - requestedAt + 1.0 / 60.0, [intro makeTenTransferDuration],
+            @"Use the actual callback time, not later predicate polling, to verify the finite native timeline.");
+        if (![self assertCommittedPresentationForDots:identities centers:[identities valueForKey:@"center"] intro:intro
+            context:[NSString stringWithFormat:@"%ld + 9 natural completion destination", (long)a]]) return;
         [self assertRequiredActionIsContainedInActualClips:intro];
         XCTAssertNil([intro valueForKey:@"stepAnimator"]);
         XCTAssertEqualObjects([intro valueForKey:@"activeAnimationGeneration"], @0);
@@ -1449,6 +1601,7 @@
     XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression needs a real running display-link-guarded animator.");
     for (NSNumber *hide in @[@NO, @YES]) {
         LessonIntroView *intro = [self showPresentationProblemA:2 width:736];
+        if (!intro) return;
         UIView *ancestor = [[UIView alloc] initWithFrame:self.hostWindow.bounds];
         ancestor.clipsToBounds = YES;
         ancestor.autoresizesSubviews = NO;
@@ -1505,46 +1658,87 @@
 
 - (void)testManualScrollInvalidatesTheRunningGenerationAndRecoveryNeedsExplicitReplay {
     XCTSkipIf(UIAccessibilityIsReduceMotionEnabled(), @"This regression needs an active native animator.");
-    LessonIntroView *intro = [self hostIntro:[[LessonIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
-        lesson:[self lessonAtIndex:3]] width:736 height:260];
-    intro.autoresizingMask = UIViewAutoresizingNone;
-    [self settleIntro:intro atStep:3];
-    [intro replayCurrentStep];
-    [self assertRequiredActionIsContainedInActualClips:intro];
-    UIViewPropertyAnimator *oldAnimator = [intro valueForKey:@"stepAnimator"];
-    NSUInteger generation = intro.playbackGeneration;
-    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
-    CGPoint visibleOffset = scroll.contentOffset;
-    NSArray *identities = [[intro valueForKey:@"dots"] copy];
-    XCTAssertNotNil(oldAnimator);
-    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
-    [scroll setContentOffset:CGPointZero animated:NO];
-    [self assertVisibilityPausedWithoutObscuringInspection:intro];
-    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, CGPointZero));
-    XCTAssertEqual(intro.playbackGeneration, generation);
-    XCTAssertEqual(intro.currentStepIndex, 3);
-    [intro completeStepAnimation:oldAnimator generation:generation step:3 position:UIViewAnimatingPositionEnd];
-    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateVisibilityPaused);
-    // More space and a manually restored viewport do not schedule a playback.
-    self.hostWindow.frame = CGRectMake(0, 0, 736, 420);
-    self.hostWindow.rootViewController.view.frame = self.hostWindow.bounds;
-    intro.frame = CGRectMake(0, 0, 736, 420);
-    [intro setNeedsLayout]; [intro layoutIfNeeded];
-    [scroll setContentOffset:visibleOffset animated:NO];
-    [self assertRequiredActionIsContainedInActualClips:intro];
-    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateVisibilityPaused);
-    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
-    XCTAssertEqual(intro.playbackGeneration, generation);
-    CGPoint beforeReplay = scroll.contentOffset;
-    [intro replayCurrentStep];
-    XCTAssertEqual(intro.playbackGeneration, generation + 1);
-    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
-    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, beforeReplay));
-    [self assertRequiredActionIsContainedInActualClips:intro];
-    [intro completeStepAnimation:oldAnimator generation:generation step:3 position:UIViewAnimatingPositionEnd];
-    XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
-    XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
-    [self assertEquationHidden:intro a:2 b:9 make:YES];
+    for (NSNumber *useSafeOffset in @[@YES, @NO]) {
+        CLRecordingIntroView *intro = [[CLRecordingIntroView alloc] initWithProblem:[self problemA:2 b:9 make:YES]
+            lesson:[self lessonAtIndex:3]];
+        [self hostIntro:intro width:736 height:260];
+        intro.autoresizingMask = UIViewAutoresizingNone;
+        [self settleIntro:intro atStep:3];
+        [intro replayCurrentStep];
+        [self assertRequiredActionIsContainedInActualClips:intro];
+        UIViewPropertyAnimator *oldAnimator = [intro valueForKey:@"stepAnimator"];
+        NSUInteger generation = intro.playbackGeneration;
+        UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+        NSArray *identities = [[intro valueForKey:@"dots"] copy];
+        XCTAssertNotNil(oldAnimator);
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+        [scroll setContentOffset:CGPointZero animated:NO];
+        [self assertVisibilityPausedWithoutObscuringInspection:intro];
+        XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, CGPointZero));
+        XCTAssertEqual(intro.playbackGeneration, generation);
+        XCTAssertEqual(intro.currentStepIndex, 3);
+        [intro completeStepAnimation:oldAnimator generation:generation step:3 position:UIViewAnimatingPositionEnd];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateVisibilityPaused);
+        // More space and a manually restored viewport do not schedule playback.
+        self.hostWindow.frame = CGRectMake(0, 0, 736, 420);
+        self.hostWindow.rootViewController.view.frame = self.hostWindow.bounds;
+        intro.frame = CGRectMake(0, 0, 736, 420);
+        [intro setNeedsLayout]; [intro layoutIfNeeded];
+        UIView *stage = [intro valueForKey:@"stage"];
+        UIView *footer = [intro valueForKey:@"buttonStack"];
+        CGFloat replayViewportHeight = CGRectGetMinY(footer.frame) - 12 - CGRectGetMinY(scroll.frame);
+        UIEdgeInsets insets = scroll.adjustedContentInset;
+        CGFloat replayMaximumOffset = MAX(-insets.top,
+            scroll.contentSize.height - replayViewportHeight + insets.bottom);
+        CGRect action = [stage convertRect:[[intro valueForKey:@"requiredActionBounds"] CGRectValue] toView:scroll];
+        if (useSafeOffset.boolValue) {
+            // Choose inside BOTH the current instruction-visible viewport and
+            // the larger viewport after Replay hides that instruction. An old
+            // narrow-viewport offset can be visible yet no longer scroll-valid.
+            CGFloat minimum = MAX(-insets.top, CGRectGetMaxY(action) - scroll.bounds.size.height);
+            CGFloat maximum = MIN(replayMaximumOffset, CGRectGetMinY(action));
+            XCTAssertGreaterThan(maximum, minimum);
+            [scroll setContentOffset:CGPointMake(0, (minimum + maximum) / 2) animated:NO];
+        } else {
+            // Reproduce the original stale-offset premise using actual current
+            // geometry, not an old small-height offset that may already be
+            // invalid at this font size. It is legal now and becomes invalid
+            // ONLY when explicit Replay releases the instruction's reservation.
+            CGFloat minimum = MAX(replayMaximumOffset + 1,
+                CGRectGetMaxY(action) - scroll.bounds.size.height);
+            CGFloat maximum = MIN(scroll.contentSize.height - scroll.bounds.size.height + insets.bottom,
+                CGRectGetMinY(action));
+            XCTAssertGreaterThan(maximum, minimum);
+            CGFloat selectedOffset = (minimum + maximum) / 2;
+            XCTAssertGreaterThan(selectedOffset, replayMaximumOffset);
+            XCTAssertLessThanOrEqual(selectedOffset,
+                scroll.contentSize.height - scroll.bounds.size.height + insets.bottom);
+            [scroll setContentOffset:CGPointMake(0, selectedOffset) animated:NO];
+        }
+        [self assertRequiredActionIsContainedInActualClips:intro];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateVisibilityPaused);
+        XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+        XCTAssertEqual(intro.playbackGeneration, generation);
+        CGPoint beforeReplay = scroll.contentOffset;
+        NSUInteger framingCount = intro.framingCount;
+        [self attachGeometryForIntro:intro name:useSafeOffset.boolValue ? @"Safe recovery before Replay" : @"Narrow viewport offset before Replay"];
+        [intro replayCurrentStep];
+        [self attachGeometryForIntro:intro name:useSafeOffset.boolValue ? @"Safe recovery after Replay" : @"Narrow viewport offset after Replay"];
+        XCTAssertEqual(intro.playbackGeneration, generation + 1);
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+        XCTAssertEqualWithAccuracy(scroll.bounds.size.height, replayViewportHeight, 0.001);
+        if (useSafeOffset.boolValue) XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, beforeReplay));
+        else {
+            XCTAssertEqualWithAccuracy(scroll.contentOffset.x, beforeReplay.x, 0.001);
+            XCTAssertEqualWithAccuracy(scroll.contentOffset.y, replayMaximumOffset, 0.001);
+        }
+        XCTAssertEqual(intro.framingCount, framingCount, @"A contained scene must not be reframed in either recovery case.");
+        [self assertRequiredActionIsContainedInActualClips:intro];
+        [intro completeStepAnimation:oldAnimator generation:generation step:3 position:UIViewAnimatingPositionEnd];
+        XCTAssertEqual(intro.playbackState, LessonIntroPlaybackStateRunning);
+        XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+        [self assertEquationHidden:intro a:2 b:9 make:YES];
+    }
 }
 
 - (void)testIdleBeyondTheOldTimerIntervalNeverAdvances {
@@ -1639,6 +1833,13 @@
             initWithProblem:[self problemA:a b:9 make:make.boolValue]
             lesson:[self lessonAtIndex:make.boolValue ? 3 : 4]];
         [self hostIntro:intro width:736 height:300];
+        // This matrix is the fixed-Large geometry contract. Record an inherited
+        // trait/font leak at its first boundary; do not pin or shrink fonts to
+        // conceal it. Maximum text has its own unchanged visibility coverage.
+        [self attachGeometryForIntro:intro name:@"Resize fixture initial traits and typography"];
+        XCTAssertEqualObjects(intro.traitCollection.preferredContentSizeCategory, UIContentSizeCategoryLarge);
+        UILabel *instruction = [intro valueForKey:@"visibilityInstruction"];
+        XCTAssertEqualWithAccuracy(instruction.font.pointSize, 18, 0.001);
         [self settleIntro:intro atStep:selectedStep];
         NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
         UIScrollView *scroll = [intro valueForKey:@"scrollView"];

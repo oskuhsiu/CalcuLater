@@ -16,6 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSArray<NSNumber *> *displayedGroupCounts;
 @property (nonatomic, assign, readonly) NSInteger inFlightCount;
 @property (nonatomic, assign, readonly, getter=isShowingBeforeState) BOOL showingBeforeState;
+/// Invalidates the old clock and retires its scene before adopting the action.
+/// Pending trait/lifecycle callbacks cannot mix the two actions' owner maps.
 - (void)configureWithAction:(nullable GroupingTeachingAction *)action;
 /// Requires the complete causal scene inside both the supplied viewport and the
 /// actual window/ancestor clipping bounds. Rechecks visibility on every tick.

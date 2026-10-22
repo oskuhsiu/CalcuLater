@@ -364,10 +364,37 @@
     return [board.value description];
 }
 - (void)waitForGroupingValue:(NSString *)expected {
-    XCUIElement *board = [self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"];
-    NSPredicate *settled = [NSPredicate predicateWithFormat:@"value CONTAINS %@", expected];
-    XCTestExpectation *ready = [self expectationForPredicate:settled evaluatedWithObject:board handler:nil];
-    [self waitForExpectations:@[ready] timeout:3];
+    NSPredicate *settled = [NSPredicate predicateWithFormat:@"SELF CONTAINS %@", expected];
+    [self waitForFreshGroupingValueMatching:settled timeout:3 name:@"grouping-quantity-observations"];
+}
+- (void)waitForFreshGroupingValueMatching:(NSPredicate *)condition timeout:(NSTimeInterval)timeout name:(NSString *)name {
+    NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+    NSMutableArray<NSString *> *samples = [NSMutableArray array];
+    NSPredicate *freshValue = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary<NSString *, id> *bindings) {
+        NSTimeInterval queryStarted = NSProcessInfo.processInfo.systemUptime - started;
+        // Query the element on EVERY evaluation. Apply the condition to its
+        // full string, not to an element supplied to the predicate expectation.
+        XCUIElement *board = [self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"];
+        BOOL exists = board.exists;
+        NSString *value = exists ? ([board.value description] ?: @"<nil groupingTeachingBoard.value>") : @"<missing groupingTeachingBoard>";
+        BOOL matches = exists && [condition evaluateWithObject:value];
+        [samples addObject:[NSString stringWithFormat:@"sample=%lu queryStarted=%.6f observed=%.6f exists=%d matches=%d value=%@",
+            (unsigned long)samples.count + 1, queryStarted, NSProcessInfo.processInfo.systemUptime - started,
+            exists, matches, value]];
+        return matches;
+    }];
+    XCTNSPredicateExpectation *ready = [[XCTNSPredicateExpectation alloc] initWithPredicate:freshValue object:nil];
+    XCTWaiterResult result = [XCTWaiter waitForExpectations:@[ready] timeout:timeout];
+    // A non-asserting waiter lets us retain every full-value sample BEFORE a
+    // failed assertion stops this test (continueAfterFailure is NO).
+    NSString *trace = [NSString stringWithFormat:@"condition=%@ timeout=%.3f elapsed=%.6f result=%ld\n%@",
+        condition, timeout, NSProcessInfo.processInfo.systemUptime - started, (long)result,
+        [samples componentsJoinedByString:@"\n"]];
+    XCTAttachment *observations = [XCTAttachment attachmentWithString:trace];
+    observations.name = name;
+    observations.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:observations];
+    XCTAssertEqual(result, XCTWaiterResultCompleted, @"The live grouping value must satisfy %@ within %.3f seconds.", condition, timeout);
 }
 - (void)finishFocusedSharingRound {
     // Recipient subactions are explicit child choices, not a completed round.
@@ -388,9 +415,8 @@
         @"A division action must expose its renderer lifecycle before completion can be accepted.");
     NSUInteger transfers = [value containsString:@" / "] ? 1 : 4; // These story fixtures are23÷4.
     NSTimeInterval declaredActionDuration = 0.28 + 0.82 * transfers + 0.24;
-    NSPredicate *completed = [NSPredicate predicateWithFormat:@"value ENDSWITH %@", @"。播放完成。播放狀態：completed"];
-    XCTestExpectation *ready = [self expectationForPredicate:completed evaluatedWithObject:[self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"] handler:nil];
-    [self waitForExpectations:@[ready] timeout:declaredActionDuration + 1.0];
+    NSPredicate *completed = [NSPredicate predicateWithFormat:@"SELF ENDSWITH %@", @"。播放完成。播放狀態：completed"];
+    [self waitForFreshGroupingValueMatching:completed timeout:declaredActionDuration + 1.0 name:@"grouping-natural-completion-observations"];
     // The existing separate quantity/model wait remains at3seconds, unchanged.
 }
 - (void)frameBoardForInspection:(XCUIElement *)board in:(XCUIElement *)content {
@@ -596,14 +622,96 @@
 
 // Actual-question ten-frame acceptance flows. Fixtures are launch-only and
 // restricted to the matching lesson kind in PracticeViewController.
-- (NSString *)openTenFrameLesson:(NSString *)title scenario:(NSString *)scenario {
+- (XCUIElement *)revealTenFrameLesson:(NSString *)lessonID title:(NSString *)title in:(XCUIElement *)collection {
+    NSString *identifier = [@"lessons.lesson." stringByAppendingString:lessonID];
+    NSString *titleIdentifier = [identifier stringByAppendingString:@".title"];
+    NSArray<NSString *> *lessonOrder = @[@"L1", @"L2", @"L3", @"L4", @"L5"];
+    NSUInteger targetIndex = [lessonOrder indexOfObject:lessonID];
+    XCTAssertNotEqual(targetIndex, NSNotFound);
+    // Keep the original five-gesture budget. A full swipe can carry L4 from
+    // below the compact viewport to above it before the next observation.
+    for (NSUInteger attempt = 0; attempt < 5; attempt++) {
+        XCUIElement *cell = collection.cells[identifier];
+        XCUIElement *label = cell.staticTexts[titleIdentifier];
+        BOOL exists = cell.exists;
+        if (exists && label.exists && cell.hittable && label.hittable) break;
+        CGRect containerFrame = collection.frame;
+        CGRect viewport = CGRectIntersection(containerFrame, self.app.windows.firstMatch.frame);
+        XCTAssertFalse(CGRectIsNull(viewport));
+        XCTAssertTrue(isfinite(viewport.origin.x) && isfinite(viewport.origin.y)
+            && isfinite(viewport.size.width) && isfinite(viewport.size.height));
+        XCTAssertGreaterThan(viewport.size.width, 44);
+        XCTAssertGreaterThan(viewport.size.height, 44);
+        CGRect before = exists ? cell.frame : CGRectNull;
+        BOOL hasGeometry = !CGRectIsNull(before) && !CGRectIsEmpty(before)
+            && isfinite(before.origin.x) && isfinite(before.origin.y)
+            && isfinite(before.size.width) && isfinite(before.size.height);
+        CGFloat requested = viewport.size.height * 0.3;
+        NSString *basis = @"search toward later lessons";
+        if (hasGeometry) {
+            requested = CGRectGetMidY(before) - CGRectGetMidY(viewport);
+            basis = @"fresh target cell frame";
+        } else {
+            // Virtualized cells may have no frame. Visible later lessons or
+            // later sections prove that we must go BACK, not swipe farther down.
+            for (XCUIElement *anchor in collection.cells.allElementsBoundByIndex) {
+                if (!CGRectIntersectsRect(anchor.frame, viewport)) continue;
+                NSString *anchorID = anchor.identifier;
+                NSString *prefix = @"lessons.lesson.";
+                NSUInteger anchorIndex = [anchorID hasPrefix:prefix]
+                    ? [lessonOrder indexOfObject:[anchorID substringFromIndex:prefix.length]] : NSNotFound;
+                if ((anchorIndex != NSNotFound && anchorIndex > targetIndex)
+                    || [anchorID hasPrefix:@"lessons.concept."] || [anchorID hasPrefix:@"lessons.table."]) {
+                    requested = -requested;
+                    basis = [@"visible later catalog row: " stringByAppendingString:anchorID];
+                    break;
+                }
+            }
+        }
+        // A centered but unhittable cell is not evidence for either direction.
+        CGFloat travel = fabs(requested) < 1 ? 0 : MIN(MAX(fabs(requested), 24), viewport.size.height * 0.3);
+        CGFloat startY = CGRectGetMinY(viewport) + viewport.size.height * (requested > 0 ? 0.65 : 0.35);
+        CGFloat endY = startY + (requested > 0 ? -travel : travel);
+        XCUICoordinate *origin = [collection coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
+        CGFloat x = CGRectGetMidX(viewport) - CGRectGetMinX(containerFrame);
+        XCUICoordinate *start = [origin coordinateWithOffset:CGVectorMake(x, startY - CGRectGetMinY(containerFrame))];
+        XCUICoordinate *end = [origin coordinateWithOffset:CGVectorMake(x, endY - CGRectGetMinY(containerFrame))];
+        CGPoint touchStart = start.screenPoint, touchEnd = end.screenPoint;
+        XCTAssertTrue(CGRectContainsPoint(viewport, touchStart) && CGRectContainsPoint(viewport, touchEnd));
+        // Slow, held-end dragging limits inertial overshoot; it adds no sleep.
+        if (travel > 0) [start pressForDuration:0.05 thenDragToCoordinate:end
+            withVelocity:XCUIGestureVelocitySlow thenHoldForDuration:0.2];
+        XCUIElement *afterCell = collection.cells[identifier];
+        BOOL existsAfter = afterCell.exists;
+        CGRect after = existsAfter ? afterCell.frame : CGRectNull;
+        XCUIElement *afterLabel = afterCell.staticTexts[titleIdentifier];
+        BOOL titleHittableAfter = existsAfter && afterLabel.exists && afterLabel.hittable;
+        CGRect viewportAfter = CGRectIntersection(collection.frame, self.app.windows.firstMatch.frame);
+        XCTAttachment *trace = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
+            @"attempt=%lu identifier=%@ direction=%@ basis=%@ requested=%.2f travel=%.2f "
+             "targetBefore=%@ targetAfter=%@ viewportBefore=%@ viewportAfter=%@ touchStart=%@ touchEnd=%@ titleHittableAfter=%d",
+            (unsigned long)attempt + 1, identifier, travel == 0 ? @"none" : (requested > 0 ? @"later/up-drag" : @"earlier/down-drag"),
+            basis, requested, travel, NSStringFromCGRect(before), NSStringFromCGRect(after),
+            NSStringFromCGRect(viewport), NSStringFromCGRect(viewportAfter), NSStringFromCGPoint(touchStart),
+            NSStringFromCGPoint(touchEnd), titleHittableAfter]];
+        trace.name = @"ten-frame-catalog-reveal";
+        trace.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:trace];
+        if (travel == 0) break;
+    }
+    XCUIElement *lesson = collection.cells[identifier];
+    XCUIElement *label = lesson.staticTexts[titleIdentifier];
+    XCTAssertTrue(lesson.exists && label.exists && lesson.hittable && label.hittable,
+        @"The named lesson must be visibly reachable within five measured drags: %@", identifier);
+    XCTAssertEqualObjects(label.label, title);
+    return lesson;
+}
+- (NSString *)openTenFrameLesson:(NSString *)lessonID title:(NSString *)title scenario:(NSString *)scenario {
     [self relaunchScenario:scenario];
     [self tapHomeCard:@"home.lessons"];
-    XCUIElement *collection = self.app.collectionViews.firstMatch;
+    XCUIElement *collection = self.app.collectionViews[@"lessons.catalog"];
     XCTAssertTrue([collection waitForExistenceWithTimeout:5]);
-    XCUIElement *lesson = self.app.staticTexts[title];
-    for (NSUInteger attempt = 0; attempt < 5 && !lesson.hittable; attempt++) [collection swipeUp];
-    XCTAssertTrue(lesson.hittable);
+    XCUIElement *lesson = [self revealTenFrameLesson:lessonID title:title in:collection];
     [lesson tap];
     XCTAssertTrue([self.app.buttons[@"lessonIntro.start"] waitForExistenceWithTimeout:5]);
     [self.app.buttons[@"lessonIntro.start"] tap];
@@ -709,7 +817,7 @@
     }
 }
 - (void)testMakeTenCurrentNineDotsReplayBackRotateAndFinish {
-    NSString *question = [self openTenFrameLesson:@"合十法（進位加）" scenario:@"make-ten-nine"];
+    NSString *question = [self openTenFrameLesson:@"L4" title:@"合十法（進位加）" scenario:@"make-ten-nine"];
     XCTAssertEqualObjects(question, @"2 + 9 = ?");
     XCTAssertFalse(self.app.buttons[@"lessonIntro.previous"].enabled);
     [self.app.buttons[@"lessonIntro.next"] tap];
@@ -804,7 +912,7 @@
     [self assertTenFrameReturnedToUnansweredQuestion:question];
 }
 - (void)testBreakTenCurrentEightOnesSurviveReplayBackgroundAndReturn {
-    NSString *question = [self openTenFrameLesson:@"破十法（退位減）" scenario:@"break-ten-nine"];
+    NSString *question = [self openTenFrameLesson:@"L5" title:@"破十法（退位減）" scenario:@"break-ten-nine"];
     XCTAssertEqualObjects(question, @"18 − 9 = ?");
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
     [self capture:@"45a-break-ten-initial-before-inspection"];
@@ -839,7 +947,7 @@
     [self assertTenFrameReturnedToUnansweredQuestion:question];
 }
 - (void)testTenFrameVerticalComparisonAndSwipeReturnToTheOriginalQuestion {
-    NSString *question = [self openTenFrameLesson:@"合十法（進位加）" scenario:@"make-ten-eighteen"];
+    NSString *question = [self openTenFrameLesson:@"L4" title:@"合十法（進位加）" scenario:@"make-ten-eighteen"];
     XCTAssertEqualObjects(question, @"9 + 9 = ?");
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 9 個，第二框 9 個"]);

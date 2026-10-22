@@ -303,6 +303,14 @@ static BOOL RMUsableFrame(CGRect rect) {
     XCTAssertTrue([self.app.buttons[@"lessonIntro.next"] waitForExistenceWithTimeout:5]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
     XCTAssertFalse(self.app.staticTexts[@"explanation.steps"].exists);
+    // Opening teaching presents a truthful static first scene, not a playback
+    // request. Require that scene before explicitly exercising Reduce Motion.
+    XCTAssertEqualObjects([self.app.staticTexts[@"lessonIntro.progress"].value description],
+        @"第 0 次播放，第 1 小步，靜止圖示，尚未播放");
+    [self assertFullyVisible:[self element:@"lessonIntro.stage"] inScroll:@"lessonIntro.content"];
+    [self capture:[@"rm-" stringByAppendingFormat:@"%@-initial-static", scenario] application:self.app];
+    [self tap:@"lessonIntro.replay"];
+    XCTAssertEqual([self tenFrameGeneration], 1u, @"Only the explicit Replay requests the first playback generation.");
     return progress;
 }
 

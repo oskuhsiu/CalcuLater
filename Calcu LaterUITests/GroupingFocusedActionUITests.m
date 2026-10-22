@@ -33,9 +33,32 @@
     // Declared lead + visible serial legs + tail, plus1s runner slack. Selected
     // after-state totals cannot satisfy this natural renderer-lifecycle assertion.
     NSTimeInterval duration = 0.28 + 0.82 * transfers + 0.24;
-    NSPredicate *completed = [NSPredicate predicateWithFormat:@"value CONTAINS %@ AND value CONTAINS %@", @"播放狀態：completed", @"播放完成"];
-    XCTestExpectation *ready = [self expectationForPredicate:completed evaluatedWithObject:self.board handler:nil];
-    [self waitForExpectations:@[ready] timeout:duration + 1.0];
+    NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+    NSMutableArray<NSString *> *samples = [NSMutableArray array];
+    NSPredicate *completed = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary<NSString *, id> *bindings) {
+        NSTimeInterval queryStarted = NSProcessInfo.processInfo.systemUptime - started;
+        XCUIElement *board = [self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"];
+        BOOL exists = board.exists;
+        NSString *value = exists ? ([board.value description] ?: @"<nil groupingTeachingBoard.value>") : @"<missing groupingTeachingBoard>";
+        // Preserve BOTH original requirements. Selected final counts, a pause,
+        // cancellation, or a static endpoint are not natural completion.
+        BOOL matches = exists && [value containsString:@"播放狀態：completed"] && [value containsString:@"播放完成"];
+        [samples addObject:[NSString stringWithFormat:@"sample=%lu queryStarted=%.6f observed=%.6f exists=%d matches=%d value=%@",
+            (unsigned long)samples.count + 1, queryStarted, NSProcessInfo.processInfo.systemUptime - started,
+            exists, matches, value]];
+        return matches;
+    }];
+    XCTNSPredicateExpectation *ready = [[XCTNSPredicateExpectation alloc] initWithPredicate:completed object:nil];
+    XCTWaiterResult result = [XCTWaiter waitForExpectations:@[ready] timeout:duration + 1.0];
+    NSString *trace = [NSString stringWithFormat:@"transfers=%lu timeout=%.3f elapsed=%.6f result=%ld\n%@",
+        (unsigned long)transfers, duration + 1.0, NSProcessInfo.processInfo.systemUptime - started, (long)result,
+        [samples componentsJoinedByString:@"\n"]];
+    XCTAttachment *observations = [XCTAttachment attachmentWithString:trace];
+    observations.name = @"focused-grouping-natural-completion-observations";
+    observations.lifetime = XCTAttachmentLifetimeKeepAlways;
+    // Retain samples before the failure assertion can stop this test.
+    [self addAttachment:observations];
+    XCTAssertEqual(result, XCTWaiterResultCompleted, @"The live action must naturally complete within %.3f seconds.", duration + 1.0);
 }
 - (void)assertActionFullyVisible {
     XCTAssertEqual([[self.app descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"groupingTeachingBoard"].count, 1u);

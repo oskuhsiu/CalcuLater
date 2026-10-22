@@ -169,13 +169,39 @@
 - (void)waitForGroupingValues:(NSArray<NSString *> *)fragments {
     NSMutableArray<NSPredicate *> *conditions = [NSMutableArray array];
     for (NSString *fragment in fragments) {
-        [conditions addObject:[NSPredicate predicateWithFormat:@"value CONTAINS %@", fragment]];
+        [conditions addObject:[NSPredicate predicateWithFormat:@"SELF CONTAINS %@", fragment]];
     }
-    [conditions addObject:[NSPredicate predicateWithFormat:@"NOT (value CONTAINS %@)", @"正在移動"]];
+    [conditions addObject:[NSPredicate predicateWithFormat:@"NOT (SELF CONTAINS %@)", @"正在移動"]];
     NSPredicate *settled = [NSCompoundPredicate andPredicateWithSubpredicates:conditions];
-    XCTestExpectation *ready = [self expectationForPredicate:settled
-        evaluatedWithObject:[self element:@"groupingTeachingBoard"] handler:nil];
-    [self waitForExpectations:@[ready] timeout:3];
+    [self waitForFreshGroupingValueMatching:settled timeout:3 name:@"layout-grouping-quantity-observations"];
+}
+- (void)waitForFreshGroupingValueMatching:(NSPredicate *)condition timeout:(NSTimeInterval)timeout name:(NSString *)name {
+    NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+    NSMutableArray<NSString *> *samples = [NSMutableArray array];
+    NSPredicate *freshValue = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary<NSString *, id> *bindings) {
+        NSTimeInterval queryStarted = NSProcessInfo.processInfo.systemUptime - started;
+        // Re-query each time, rather than evaluating against the expectation's
+        // earlier XCUIElement snapshot. Keep the entire observed lifecycle value.
+        XCUIElement *board = [self element:@"groupingTeachingBoard"];
+        BOOL exists = board.exists;
+        NSString *value = exists ? ([board.value description] ?: @"<nil groupingTeachingBoard.value>") : @"<missing groupingTeachingBoard>";
+        BOOL matches = exists && [condition evaluateWithObject:value];
+        [samples addObject:[NSString stringWithFormat:@"sample=%lu queryStarted=%.6f observed=%.6f exists=%d matches=%d value=%@",
+            (unsigned long)samples.count + 1, queryStarted, NSProcessInfo.processInfo.systemUptime - started,
+            exists, matches, value]];
+        return matches;
+    }];
+    XCTNSPredicateExpectation *ready = [[XCTNSPredicateExpectation alloc] initWithPredicate:freshValue object:nil];
+    XCTWaiterResult result = [XCTWaiter waitForExpectations:@[ready] timeout:timeout];
+    NSString *trace = [NSString stringWithFormat:@"condition=%@ timeout=%.3f elapsed=%.6f result=%ld\n%@",
+        condition, timeout, NSProcessInfo.processInfo.systemUptime - started, (long)result,
+        [samples componentsJoinedByString:@"\n"]];
+    XCTAttachment *observations = [XCTAttachment attachmentWithString:trace];
+    observations.name = name;
+    observations.lifetime = XCTAttachmentLifetimeKeepAlways;
+    // Retain all samples before continueAfterFailure=NO can stop the case.
+    [self addAttachment:observations];
+    XCTAssertEqual(result, XCTWaiterResultCompleted, @"The live grouping value must satisfy %@ within %.3f seconds.", condition, timeout);
 }
 - (CGRect)checkedFrame:(XCUIElement *)element {
     XCTAssertTrue(element.exists);
@@ -242,9 +268,8 @@
         @"A division action must expose its renderer lifecycle; a static overview is not motion evidence.");
     NSUInteger transfers = [value containsString:@" / "] ? 1 : 4; // These story fixtures are 23 ÷ 4.
     NSTimeInterval duration = 0.28 + 0.82 * transfers + 0.24;
-    NSPredicate *completed = [NSPredicate predicateWithFormat:@"value ENDSWITH %@", @"。播放完成。播放狀態：completed"];
-    XCTestExpectation *ready = [self expectationForPredicate:completed evaluatedWithObject:[self element:@"groupingTeachingBoard"] handler:nil];
-    [self waitForExpectations:@[ready] timeout:duration + 1.0];
+    NSPredicate *completed = [NSPredicate predicateWithFormat:@"SELF ENDSWITH %@", @"。播放完成。播放狀態：completed"];
+    [self waitForFreshGroupingValueMatching:completed timeout:duration + 1.0 name:@"layout-grouping-natural-completion-observations"];
 }
 - (void)finishFocusedSharingRoundWatchingActions:(BOOL)watch {
     for (NSUInteger recipient = 0; recipient < 9; recipient++) {
@@ -399,6 +424,17 @@
     XCUIElement *content = self.app.scrollViews[@"teaching.content"];
     CGRect action = [self checkedFrame:exchange];
     CGRect viewport = CGRectIntersection(content.frame, self.app.windows.firstMatch.frame);
+    // Save actual geometry before an assertion can terminate the case. A fit
+    // failure must be distinguished from a feasible action framed incorrectly.
+    XCTAttachment *geometry = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
+        @"uptime=%.6f action=%@ viewport=%@ usableViewport=%@ board=%@ heading=%@ narration=%@ progress=%@ actionValue=%@",
+        NSProcessInfo.processInfo.systemUptime, NSStringFromCGRect(action), NSStringFromCGRect(viewport),
+        NSStringFromCGRect(CGRectInset(viewport, 0, 8)), NSStringFromCGRect([self element:@"verticalTeachingBoard"].frame),
+        NSStringFromCGRect(self.app.staticTexts[@"teaching.heading"].frame), NSStringFromCGRect(self.app.staticTexts[@"explanation.steps"].frame),
+        self.app.staticTexts[@"teaching.progress"].label, [exchange.value description]]];
+    geometry.name = @"vertical-exchange-framing-observations";
+    geometry.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:geometry];
     XCTAssertGreaterThan(action.size.height, 100.0);
     XCTAssertGreaterThanOrEqual(CGRectGetMinX(action), CGRectGetMinX(viewport) - 1);
     XCTAssertLessThanOrEqual(CGRectGetMaxX(action), CGRectGetMaxX(viewport) + 1);
@@ -502,6 +538,10 @@
     // Verify rotation itself recovered semantic focus before inspection or Replay
     // has any chance to repair a hidden exchange.
     [self assertVerticalExchangeVisible];
+    XCTAssertFalse([[[self element:@"verticalTeachingExchange"].value description] containsString:@"正在交換"],
+        @"Rotation may reframe the selected action but cannot silently replay it.");
+    XCTAssertEqualObjects([board.value description], snapshot);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, progress);
     [self assertTeachingControls];
     [self assertHorizontalBounds:board in:content];
     [self.app.buttons[@"teaching.focus"] tap];

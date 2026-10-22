@@ -66,8 +66,58 @@
 }
 - (void)tapConcept:(NSString *)identifier {
     XCUIElement *button = self.app.buttons[identifier];
-    [self reveal:button inScroll:self.app.scrollViews[@"concept.content"]];
+    [self revealConceptButton:button];
     [button tap];
+}
+- (void)revealConceptButton:(XCUIElement *)button {
+    XCUIElement *scroll = self.app.scrollViews[@"concept.content"];
+    // A six-point sliver can be "hittable" while XCTest chooses a point at the
+    // scroll's clipping edge. Expose the actual complete button before tapping;
+    // navigation must not masquerade as a failed changed-question contract.
+    CGRect viewport = CGRectZero;
+    CGRect target = CGRectZero;
+    for (NSUInteger attempt = 0; attempt <= 10; attempt++) {
+        CGRect scrollFrame = [self checkedFrame:scroll];
+        viewport = CGRectIntersection(scrollFrame, self.app.windows.firstMatch.frame);
+        XCTAssertFalse(CGRectIsNull(viewport));
+        XCTAssertGreaterThan(viewport.size.width, 44);
+        XCTAssertGreaterThan(viewport.size.height, 44);
+        CGRect visibleBounds = CGRectInset(viewport, 8, 8);
+        BOOL hasTarget = button.exists;
+        target = hasTarget ? [self checkedFrame:button] : CGRectZero;
+        if (hasTarget) {
+            XCTAssertLessThanOrEqual(target.size.width, visibleBounds.size.width);
+            XCTAssertLessThanOrEqual(target.size.height, visibleBounds.size.height);
+            if (CGRectContainsRect(visibleBounds, target)) {
+                XCTAssertTrue(button.hittable, @"The fully visible concept button must be tappable.");
+                return;
+            }
+        }
+        if (attempt == 10) break;
+        CGFloat distance = hasTarget ? CGRectGetMidY(target) - CGRectGetMidY(viewport)
+                                     : viewport.size.height * 0.4;
+        CGFloat travel = MIN(MAX(fabs(distance), 24), viewport.size.height * 0.4);
+        CGFloat startY = CGRectGetMinY(viewport) + viewport.size.height * (distance > 0 ? 0.75 : 0.35);
+        CGFloat endY = startY + (distance > 0 ? -travel : travel);
+        XCUICoordinate *origin = [scroll coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
+        XCUICoordinate *start = [origin coordinateWithOffset:CGVectorMake(CGRectGetMidX(viewport) - CGRectGetMinX(scrollFrame),
+                                                                       startY - CGRectGetMinY(scrollFrame))];
+        XCUICoordinate *end = [origin coordinateWithOffset:CGVectorMake(CGRectGetMidX(viewport) - CGRectGetMinX(scrollFrame),
+                                                                     endY - CGRectGetMinY(scrollFrame))];
+        [start pressForDuration:0.05 thenDragToCoordinate:end
+            withVelocity:XCUIGestureVelocitySlow thenHoldForDuration:0.2];
+        NSString *observation = [NSString stringWithFormat:@"attempt=%lu identifier=%@ viewport=%@ targetBefore=%@ targetAfter=%@ requested=%.3f travel=%.3f startY=%.3f endY=%.3f hittable=%d",
+            (unsigned long)attempt + 1, button.identifier, NSStringFromCGRect(viewport), NSStringFromCGRect(target),
+            NSStringFromCGRect(button.exists ? button.frame : CGRectZero), distance, travel, startY, endY, button.hittable];
+        XCTAttachment *trace = [XCTAttachment attachmentWithString:observation];
+        trace.name = @"concept-button-reveal-scroll";
+        trace.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:trace];
+    }
+    XCTAssertTrue(button.exists, @"Missing concept button: %@", button.identifier);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, 8, 8), target),
+                  @"The complete concept button must be reachable within ten drags: %@ in %@", NSStringFromCGRect(target), NSStringFromCGRect(viewport));
+    XCTAssertTrue(button.hittable, @"The fully visible concept button must be tappable.");
 }
 - (XCUIElement *)element:(NSString *)identifier {
     return [self.app descendantsMatchingType:XCUIElementTypeAny][identifier];

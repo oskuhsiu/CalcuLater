@@ -49,6 +49,8 @@ static const NSTimeInterval GFTTail = 0.24;
 @property (nonatomic, copy, readwrite) NSArray<NSNumber *> *displayedGroupCounts;
 @property (nonatomic, assign, readwrite) NSInteger inFlightCount;
 @property (nonatomic, assign, readwrite, getter=isShowingBeforeState) BOOL showingBeforeState;
+/// The maps below belong to this exact immutable action, only after construction.
+@property (nonatomic, strong, nullable) GroupingTeachingAction *renderedAction;
 @property (nonatomic, strong) GFTLayout *sceneLayout;
 @property (nonatomic, strong) UILabel *captionLabel;
 @property (nonatomic, strong) UILabel *sourceLabel;
@@ -92,7 +94,10 @@ static const NSTimeInterval GFTTail = 0.24;
 }
 - (void)dealloc { [_clock invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
 - (void)configureWithAction:(GroupingTeachingAction *)action {
-    [self cancelPlayback]; self.action = action;
+    // UIKit can deliver a pending trait change inside layoutIfNeeded, before
+    // layoutSubviews. Retire the old action's entire scene BEFORE publishing
+    // the new action, so its cancellation never uses the old bag/recipient IDs.
+    [self invalidateClock]; [self clearScene]; self.action = action;
     self.playbackState = action && ![self motionAllowed] ? @"reduced-motion" : @"settled"; self.showingBeforeState = NO;
     self.sceneNeedsLayout = YES;
     [self invalidateIntrinsicContentSize]; [self setNeedsLayout]; [self layoutIfNeeded];
@@ -171,7 +176,7 @@ static const NSTimeInterval GFTTail = 0.24;
 - (CGSize)requiredActionSizeThatFits:(CGSize)size { return CGSizeMake(size.width, [self layoutForWidth:MAX(1, size.width)].actionHeight); }
 - (CGSize)sizeThatFits:(CGSize)size { return CGSizeMake(size.width, [self layoutForWidth:MAX(1, size.width)].height); }
 - (CGSize)intrinsicContentSize { return CGSizeMake(UIViewNoIntrinsicMetric, [self sizeThatFits:self.bounds.size].height); }
-- (CGRect)requiredActionRect { return self.action && self.sceneLayout ? CGRectMake(0, 0, CGRectGetWidth(self.bounds), self.sceneLayout.actionHeight) : CGRectNull; }
+- (CGRect)requiredActionRect { return self.action && self.renderedAction == self.action && self.sceneLayout ? CGRectMake(0, 0, CGRectGetWidth(self.bounds), self.sceneLayout.actionHeight) : CGRectNull; }
 - (CGRect)accessibilityFrame {
     CGRect rect = self.requiredActionRect;
     return !CGRectIsNull(rect) ? UIAccessibilityConvertFrameToScreenCoordinates(rect, self) : [super accessibilityFrame];
@@ -203,21 +208,26 @@ static const NSTimeInterval GFTTail = 0.24;
     }
     counter.color = color; counter.center = point; return counter;
 }
+- (void)clearScene {
+    // Mark the scene unavailable before removing UIKit views, too. Lifecycle
+    // callbacks during replacement may invalidate playback, but cannot render.
+    self.renderedAction = nil; self.sceneLayout = nil;
+    for (UIView *view in self.subviews.copy) [view removeFromSuperview];
+    self.counters = [NSMutableDictionary dictionary]; self.sourcePoints = [NSMutableDictionary dictionary];
+    self.targetPoints = [NSMutableDictionary dictionary]; self.targetGroups = [NSMutableDictionary dictionary];
+    self.groupLabels = [NSMutableDictionary dictionary]; self.movingIDs = @[];
+    self.captionLabel = nil; self.sourceLabel = nil; self.summaryLabel = nil;
+    self.displayedPoolCount = 0; self.displayedGroupCounts = @[]; self.inFlightCount = 0;
+    self.accessibilityValue = nil; self.spokenDescription = @"";
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
     BOOL resized = !CGSizeEqualToSize(self.renderedSize, self.bounds.size);
     if (!resized && !self.sceneNeedsLayout) return;
     BOOL interrupted = self.clock != nil, inspectingBefore = self.showingBeforeState && !interrupted;
-    // Do not render a new action through a previous action's counters here.
     [self invalidateClock]; self.renderedSize = self.bounds.size; self.sceneNeedsLayout = NO;
-    for (UIView *view in self.subviews.copy) [view removeFromSuperview];
-    self.counters = [NSMutableDictionary dictionary]; self.sourcePoints = [NSMutableDictionary dictionary];
-    self.targetPoints = [NSMutableDictionary dictionary]; self.targetGroups = [NSMutableDictionary dictionary];
-    self.groupLabels = [NSMutableDictionary dictionary]; self.movingIDs = @[];
-    if (!self.action || CGRectGetWidth(self.bounds) <= 0) {
-        self.sceneLayout = nil; self.displayedPoolCount = 0; self.displayedGroupCounts = @[]; self.inFlightCount = 0;
-        self.accessibilityValue = nil; self.spokenDescription = @""; return;
-    }
+    [self clearScene];
+    if (!self.action || CGRectGetWidth(self.bounds) <= 0) return;
     self.sceneLayout = [self layoutForWidth:CGRectGetWidth(self.bounds)];
     GFTLayout *layout = self.sceneLayout;
     self.captionLabel = [self label:layout.caption identifier:@"grouping.focus.caption"];
@@ -247,7 +257,7 @@ static const NSTimeInterval GFTTail = 0.24;
     }
     // Tail-first source exits and left-to-right target arrivals have empty lanes.
     [moving sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) { return [b compare:a]; }];
-    self.movingIDs = moving;
+    self.movingIDs = moving; self.renderedAction = self.action;
     if (interrupted) self.playbackState = @"cancelled";
     [self renderCompletedCount:inspectingBefore ? 0 : moving.count movingProgress:-1 before:inspectingBefore];
 }
@@ -260,7 +270,7 @@ static const NSTimeInterval GFTTail = 0.24;
     return @"這一步完成 · 再慢慢看";
 }
 - (void)updateLabels {
-    if (!self.action) return;
+    if (!self.action || self.renderedAction != self.action) return;
     self.captionLabel.text = [self captionForStatus:self.statusText]; self.sourceLabel.text = [self sourceTitle:self.displayedPoolCount];
     for (NSNumber *group in self.activeGroups) self.groupLabels[group].text = [self groupTitle:group.integerValue count:self.displayedGroupCounts[group.integerValue].integerValue];
     self.summaryLabel.text = [self summaryForCounts:self.displayedGroupCounts];
@@ -285,29 +295,35 @@ static const NSTimeInterval GFTTail = 0.24;
     return CGPointMake(lane - (distance - a - b), end.y);
 }
 - (void)renderCompletedCount:(NSInteger)completed movingProgress:(CGFloat)progress before:(BOOL)before {
-    if (!self.action) return;
-    completed = MAX(0, MIN(completed, (NSInteger)self.movingIDs.count));
     self.showingBeforeState = before;
+    if (!self.action || self.renderedAction != self.action) return;
+    completed = MAX(0, MIN(completed, (NSInteger)self.movingIDs.count));
     NSMutableArray<NSNumber *> *counts = [self.action.snapshot.groupCountsBefore mutableCopy];
     while (counts.count < self.action.snapshot.groupCountsAfter.count) [counts addObject:@0];
     NSSet *completeIDs = [NSSet setWithArray:[self.movingIDs subarrayWithRange:NSMakeRange(0, completed)]];
     NSNumber *movingID = progress >= 0 && completed < (NSInteger)self.movingIDs.count ? self.movingIDs[completed] : nil;
     self.inFlightCount = movingID ? 1 : 0; self.displayedPoolCount = self.action.snapshot.poolCountBefore.integerValue - completed - self.inFlightCount;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    for (NSNumber *identity in self.counters) {
-        GFTCounter *counter = self.counters[identity];
-        BOOL arrived = [completeIDs containsObject:identity], originalTarget = !self.sourcePoints[identity];
-        if (arrived || originalTarget) {
-            counter.center = self.targetPoints[identity].CGPointValue;
-            counter.color = [ChildUI candyColorAtIndex:self.targetGroups[identity].integerValue];
-            if (arrived) { NSInteger group = self.targetGroups[identity].integerValue; counts[group] = @(counts[group].integerValue + 1); }
-        } else if ([identity isEqual:movingID]) {
-            counter.center = [self routeFrom:self.sourcePoints[identity].CGPointValue to:self.targetPoints[identity].CGPointValue progress:progress];
-            counter.color = [ChildUI candyColorAtIndex:self.targetGroups[identity].integerValue];
-            [self bringSubviewToFront:counter];
-        } else { counter.center = self.sourcePoints[identity].CGPointValue; counter.color = ChildUI.skyBlue; }
+    @try {
+        for (NSNumber *identity in self.counters) {
+            GFTCounter *counter = self.counters[identity];
+            BOOL arrived = [completeIDs containsObject:identity], originalTarget = !self.sourcePoints[identity];
+            if (arrived || originalTarget) {
+                counter.center = self.targetPoints[identity].CGPointValue;
+                counter.color = [ChildUI candyColorAtIndex:self.targetGroups[identity].integerValue];
+                if (arrived) { NSInteger group = self.targetGroups[identity].integerValue; counts[group] = @(counts[group].integerValue + 1); }
+            } else if ([identity isEqual:movingID]) {
+                counter.center = [self routeFrom:self.sourcePoints[identity].CGPointValue to:self.targetPoints[identity].CGPointValue progress:progress];
+                counter.color = [ChildUI candyColorAtIndex:self.targetGroups[identity].integerValue];
+                [self bringSubviewToFront:counter];
+            } else { counter.center = self.sourcePoints[identity].CGPointValue; counter.color = ChildUI.skyBlue; }
+        }
+    } @finally {
+        // Do not swallow an invariant failure, but never leave an explicit
+        // transaction open to contaminate unrelated views or later callbacks.
+        [CATransaction commit];
     }
-    [CATransaction commit]; self.displayedGroupCounts = counts; [self updateLabels];
+    self.displayedGroupCounts = counts; [self updateLabels];
 }
 - (BOOL)motionAllowed { return ChildUI.motionEnabled; }
 - (BOOL)applicationActive { return UIApplication.sharedApplication.applicationState == UIApplicationStateActive; }

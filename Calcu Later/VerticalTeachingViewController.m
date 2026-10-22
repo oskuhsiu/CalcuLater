@@ -40,6 +40,9 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
 @property (nonatomic) BOOL framingContent;
 @property (nonatomic) BOOL needsSemanticReframe;
 @property (nonatomic) CGSize lastViewportSize;
+@property (nonatomic) BOOL hasMeasuredContentGeometry;
+@property (nonatomic) CGRect lastBoardFrameInScroll;
+@property (nonatomic) CGSize lastContentSize;
 - (BOOL)frameCurrentTransformation;
 @end
 
@@ -536,16 +539,35 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
         self.needsSemanticReframe = YES;
         [self.board cancelAnimations];
     }
-    // Wait for final board height; rotation never starts another playback.
-    if (self.needsSemanticReframe && !self.framingContent && fabs(self.board.bounds.size.height - self.boardHeight.constant) < 0.5) {
-        self.needsSemanticReframe = NO;
+    // A fitted board height is not a settled stack: the labels above it can
+    // invalidate their wrapped heights on the NEXT layout pass. Observe the
+    // board's content-space position too, not just the viewport dimensions.
+    // Scrolling does not change these coordinates, so a safe inspection offset
+    // is retained and a learner's manual inspection never gets pulled back.
+    if (!self.framingContent && fabs(self.board.bounds.size.height - self.boardHeight.constant) < 0.5) {
         [self.board layoutIfNeeded];
-        if (!self.hasManualInspection) {
-            if (self.inspectionAnchor == VTInspectionAnchorAction) [self frameCurrentTransformation];
-            else if (self.inspectionAnchor == VTInspectionAnchorFeedback) [self framePredictionFeedback];
-            else if (self.inspectionAnchor == VTInspectionAnchorChoices) [self framePredictionChoices];
-            else if (self.inspectionAnchor == VTInspectionAnchorWritten) [self frameRect:self.board.currentWrittenRect inView:self.board];
-            else if (self.inspectionAnchor == VTInspectionAnchorNotice) [self frameRect:self.playbackNotice.bounds inView:self.playbackNotice];
+        CGRect boardFrame = [self.board convertRect:self.board.bounds toView:self.scroll];
+        BOOL contentChanged = !self.hasMeasuredContentGeometry
+            || !CGRectEqualToRect(self.lastBoardFrameInScroll, boardFrame)
+            || !CGSizeEqualToSize(self.lastContentSize, self.scroll.contentSize);
+        self.hasMeasuredContentGeometry = YES;
+        self.lastBoardFrameInScroll = boardFrame;
+        self.lastContentSize = self.scroll.contentSize;
+        if (contentChanged) {
+            self.needsSemanticReframe = YES;
+            [self.board cancelAnimations];
+        }
+        if (self.needsSemanticReframe) {
+            self.needsSemanticReframe = NO;
+            if (!self.hasManualInspection) {
+                if (self.inspectionAnchor == VTInspectionAnchorAction) {
+                    if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) [self frameCurrentTransformation];
+                    else [self frameRect:self.board.currentActionRect inView:self.board];
+                } else if (self.inspectionAnchor == VTInspectionAnchorFeedback) [self framePredictionFeedback];
+                else if (self.inspectionAnchor == VTInspectionAnchorChoices) [self framePredictionChoices];
+                else if (self.inspectionAnchor == VTInspectionAnchorWritten) [self frameRect:self.board.currentWrittenRect inView:self.board];
+                else if (self.inspectionAnchor == VTInspectionAnchorNotice) [self frameRect:self.playbackNotice.bounds inView:self.playbackNotice];
+            }
         }
     }
     // Wrapping can displace an action without changing the viewport size.
