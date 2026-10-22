@@ -19,7 +19,8 @@ typedef NS_ENUM(NSInteger, VerticalArithmeticPlaybackState) {
 @property (nonatomic, strong, readonly, nullable) ArithmeticTeachingStep *currentStep;
 /// Actual laid-out regrouping regions, in board coordinates. CGRectNull on
 /// other steps. Prefer the complete grid+concrete exchange when it fits; the
-/// concrete region lets a compact-height owner prioritize countable motion.
+/// concrete region includes every exchanged/unchanged unit and wrapped label,
+/// so a compact-height owner cannot admit motion using the exchanged counters alone.
 @property (nonatomic, assign, readonly) CGRect currentTransformationRect;
 @property (nonatomic, assign, readonly) CGRect currentConcreteTransformationRect;
 /// Actual notation and action bounds; no guessed fraction of the overall board.
@@ -30,14 +31,19 @@ typedef NS_ENUM(NSInteger, VerticalArithmeticPlaybackState) {
 @property (nonatomic, assign, readonly, getter=isPlaying) BOOL playing;
 
 /// Plays only after the complete action fits the unobscured viewport.
-/// visibleRect is in board coordinates. If the notation also fits, animate its
-/// packet too; otherwise keep notation still and animate only the concrete action.
+/// visibleRect is in board coordinates. If the notation also fits both this
+/// rectangle and the real clipping ancestors, animate its packet too; otherwise
+/// try the complete concrete action with the same actual-visibility checks.
 /// Returns NO without motion when the required region does not fit. Reduce Motion
-/// accepts a fully visible static snapshot, with its own observable playback state.
+/// accepts a fully visible, explicitly labelled before/after comparison, with
+/// its own observable playback state. The two working columns are not a whole-
+/// problem inventory. During playback only one exchanged representation is visible;
+/// unchanged source-after and destination-before units are never animated.
 - (BOOL)playCurrentActionInVisibleRect:(CGRect)visibleRect;
 
 /// Invalid sequences or indices clear the entire board and return NO.
-/// Animated regrouping uses the step's own before/after counts, including replay.
+/// Animated regrouping uses only the step's typed before/after counts. Re-selecting
+/// the same snapshot without a geometry change keeps its unchanged objects intact.
 - (BOOL)configureWithSequence:(nullable ArithmeticTeachingSequence *)sequence
                    stepIndex:(NSInteger)stepIndex
                     animated:(BOOL)animated;
@@ -47,7 +53,9 @@ typedef NS_ENUM(NSInteger, VerticalArithmeticPlaybackState) {
 /// Also called on resize, removal, hiding, backgrounding and Reduce Motion changes.
 - (void)cancelAnimations;
 
-/// Height includes the grid, exchange illustration and wrapped count captions.
+/// Height includes the grid, every countable unit row, and all wrapped captions.
+/// Exchange units keep their measured size; a small viewport gets a static
+/// comparison rather than shrunken material or partly visible playback.
 /// Pass the actual available width; the owner should allow vertical scrolling.
 - (CGSize)sizeThatFits:(CGSize)size;
 @end

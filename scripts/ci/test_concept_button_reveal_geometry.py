@@ -93,7 +93,7 @@ class ConceptButtonSourceContractTests(unittest.TestCase):
             'CGRectGetMaxY(viewport) - 7',
         ):
             self.assertIn(fragment, SOURCE)
-        self.assertEqual(len(re.findall(r'- \(void\)test\w+\s*\{', SOURCE)), 4)
+        self.assertEqual(len(re.findall(r'- \(void\)test\w+\s*\{', SOURCE)), 5)
 
 
 class ConceptButtonArithmeticTests(unittest.TestCase):

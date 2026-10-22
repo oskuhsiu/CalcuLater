@@ -2,9 +2,48 @@
 #import "ChildUIKit.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <stdlib.h>
 
 static const NSTimeInterval VABExchangeDuration = 0.88;
 static const CGFloat VABInset = 16.0;
+static const CGFloat VABUnitGap = 6.0;
+static const CGFloat VABExchangeHandoff = 0.5;
+// The 28 pt sign has its own lane, outside both 4 pt outline outsets.
+static const CGFloat VABExchangeLane = 40.0;
+
+/// These are the selected working columns, not all operands in the problem.
+/// Carry annotations are already included in workingDigits and are never added.
+typedef struct {
+    BOOL valid;
+    NSInteger sourceBefore;
+    NSInteger sourceAfter;
+    NSInteger destinationBefore;
+    NSInteger destinationAfter;
+    NSInteger exchangedSource;
+    NSInteger exchangedDestination;
+} VABExchangeQuantities;
+
+typedef struct {
+    CGRect scope;
+    CGRect mode;
+    CGRect sourceLabel;
+    CGRect destinationLabel;
+    CGRect sourceUnits;
+    CGRect destinationUnits;
+    CGRect sign;
+    CGRect retainedSourceLabel;
+    CGRect retainedDestinationLabel;
+    CGRect retainedSourceUnits;
+    CGRect retainedDestinationUnits;
+    CGRect counts;
+    CGFloat height;
+} VABExchangeLayout;
+
+static NSInteger VABPlaceValue(NSInteger place) {
+    NSInteger value = 1;
+    for (NSInteger index = 0; index < place; index++) value *= 10;
+    return value;
+}
 
 @interface VABWeakDisplayLinkTarget : NSObject
 @property (nonatomic, weak) id target;
@@ -78,6 +117,13 @@ typedef struct {
 @property (nonatomic, strong) NSMutableArray<NSValue *> *columnFrames;
 @property (nonatomic, strong) NSMutableArray<VABUnitView *> *exchangeSourceUnits;
 @property (nonatomic, strong) NSMutableArray<VABUnitView *> *exchangeDestinationUnits;
+@property (nonatomic, strong) NSMutableArray<VABUnitView *> *retainedSourceUnits;
+@property (nonatomic, strong) NSMutableArray<VABUnitView *> *retainedDestinationUnits;
+@property (nonatomic, strong) UILabel *exchangeModeLabel;
+@property (nonatomic, strong) UILabel *exchangeEqualsLabel;
+@property (nonatomic, strong) CAShapeLayer *exchangeSourceOutline;
+@property (nonatomic, strong) CAShapeLayer *exchangeDestinationOutline;
+@property (nonatomic) CFTimeInterval exchangeAnimationStartTime;
 @property (nonatomic, strong) NSMutableArray<CALayer *> *animatedLayers;
 @property (nonatomic, strong) NSMutableArray<UIView *> *transientViews;
 @property (nonatomic, strong, nullable) CADisplayLink *animationDisplayLink;
@@ -90,6 +136,8 @@ typedef struct {
 @property (nonatomic, strong) UIAccessibilityElement *summaryElement;
 @property (nonatomic, strong) UIAccessibilityElement *concreteElement;
 - (void)animationTick:(CADisplayLink *)link;
+- (VABExchangeQuantities)exchangeQuantities;
+- (VABExchangeLayout)exchangeLayoutForWidth:(CGFloat)width;
 @end
 
 @implementation VABWeakDisplayLinkTarget
@@ -121,6 +169,8 @@ typedef struct {
     _columnFrames = [NSMutableArray array];
     _exchangeSourceUnits = [NSMutableArray array];
     _exchangeDestinationUnits = [NSMutableArray array];
+    _retainedSourceUnits = [NSMutableArray array];
+    _retainedDestinationUnits = [NSMutableArray array];
     _animatedLayers = [NSMutableArray array];
     _transientViews = [NSMutableArray array];
     self.backgroundColor = ChildUI.creamBackground;
@@ -156,6 +206,9 @@ typedef struct {
         [self invalidateIntrinsicContentSize];
         return NO;
     }
+    // Replay of the same immutable snapshot must not replace unchanged objects.
+    // A real width/trait change still requests a new measured layout.
+    BOOL sameSnapshot = self.sequence == sequence && self.currentStep == sequence.steps[stepIndex] && self.contentView;
     self.playbackState = VerticalArithmeticPlaybackStateStill;
     self.playsWrittenExchange = YES;
     self.requiresVisiblePlayback = NO;
@@ -164,12 +217,13 @@ typedef struct {
     self.currentStep = sequence.steps[stepIndex];
     self.isAccessibilityElement = NO;
     [self updateSpokenSummary];
-    self.needsSnapshotLayout = YES;
+    self.needsSnapshotLayout = self.needsSnapshotLayout || !sameSnapshot;
     [self invalidateIntrinsicContentSize];
     [self setNeedsLayout];
     [self layoutIfNeeded];
-    if (animated && [self canAnimate]) [self animateCurrentAction];
-    else if (animated && !ChildUI.motionEnabled) self.playbackState = VerticalArithmeticPlaybackStateReducedMotion;
+    // The convenience path must obey the same full-material admission as the
+    // controller-owned playback path, including newly added retained rows.
+    if (animated) [self playCurrentActionInVisibleRect:self.bounds];
     return YES;
 }
 
@@ -189,6 +243,12 @@ typedef struct {
     [self.columnFrames removeAllObjects];
     [self.exchangeSourceUnits removeAllObjects];
     [self.exchangeDestinationUnits removeAllObjects];
+    [self.retainedSourceUnits removeAllObjects];
+    [self.retainedDestinationUnits removeAllObjects];
+    self.exchangeModeLabel = nil;
+    self.exchangeEqualsLabel = nil;
+    self.exchangeSourceOutline = nil;
+    self.exchangeDestinationOutline = nil;
 }
 
 - (NSString *)placeNameForColumn:(NSInteger)column {
@@ -220,7 +280,12 @@ typedef struct {
                                [problem.operatorSymbol isEqualToString:@"+"] ? @"加" : @"減", (long)problem.number2];
     NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObjects:spokenProblem, step.explanation, nil];
     if (step.kind == ArithmeticTeachingStepKindPrediction && step.prompt.length) [parts addObject:step.prompt];
-    if (step.kind == ArithmeticTeachingStepKindRegroup) [parts addObject:[self exchangeCountsText]];
+    if (step.kind == ArithmeticTeachingStepKindRegroup) {
+        [parts addObject:[self exchangeScopeText]];
+        [parts addObject:[self exchangeCountsText]];
+        [parts addObject:[self retainedSourceText]];
+        [parts addObject:[self retainedDestinationText]];
+    }
     NSMutableArray<NSString *> *written = [NSMutableArray array];
     for (NSInteger column = 0; column < self.sequence.columnCount; column++) {
         id digit = step.visibleAnswerDigits[column];
@@ -244,7 +309,7 @@ typedef struct {
 
 - (void)setPlaybackState:(VerticalArithmeticPlaybackState)playbackState {
     _playbackState = playbackState;
-    self.concreteElement.accessibilityValue = [NSString stringWithFormat:@"%@。%@", [self exchangeCountsText], [self playbackDescription]];
+    self.concreteElement.accessibilityValue = [NSString stringWithFormat:@"%@。%@。%@。%@。%@", [self exchangeScopeText], [self exchangeCountsText], [self retainedSourceText], [self retainedDestinationText], [self playbackDescription]];
 }
 
 - (NSArray *)accessibilityElements {
@@ -260,8 +325,8 @@ typedef struct {
     if (CGRectIsNull(concrete) || CGRectIsEmpty(concrete)) return @[self.summaryElement];
     if (!self.concreteElement) self.concreteElement = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:self];
     self.concreteElement.accessibilityIdentifier = @"verticalTeachingExchange";
-    self.concreteElement.accessibilityLabel = @"這一步的完整交換";
-    self.concreteElement.accessibilityValue = [NSString stringWithFormat:@"%@。%@", [self exchangeCountsText], [self playbackDescription]];
+    self.concreteElement.accessibilityLabel = @"這一步兩欄的交換與不動的數量";
+    self.concreteElement.accessibilityValue = [NSString stringWithFormat:@"%@。%@。%@。%@。%@", [self exchangeScopeText], [self exchangeCountsText], [self retainedSourceText], [self retainedDestinationText], [self playbackDescription]];
     self.concreteElement.accessibilityLanguage = @"zh-TW";
     self.concreteElement.accessibilityTraits = UIAccessibilityTraitStaticText;
     self.concreteElement.accessibilityFrameInContainerSpace = concrete;
@@ -271,7 +336,9 @@ typedef struct {
 #pragma mark - Width-aware layout
 
 - (UIFont *)bodyFont {
-    return [ChildUI scaledRoundedFontOfSize:18 weight:UIFontWeightMedium textStyle:UIFontTextStyleBody maximumPointSize:30];
+    return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightMedium]
+        maximumPointSize:30 compatibleWithTraitCollection:self.traitCollection];
 }
 
 - (CGFloat)heightForText:(NSString *)text font:(UIFont *)font width:(CGFloat)width {
@@ -295,7 +362,7 @@ typedef struct {
     m.gridHeight = m.headingHeight + m.annotationHeight + m.operandHeight * 2 + 10 + m.answerHeight;
     m.illustrationHeight = 0;
     if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) {
-        m.illustrationHeight = 110 + [self heightForText:[self exchangeCountsText] font:self.bodyFont width:textWidth - 20];
+        m.illustrationHeight = [self exchangeLayoutForWidth:textWidth].height;
     } else if ([self validColumn:self.currentStep.activeColumn] && self.currentStep.kind != ArithmeticTeachingStepKindPrediction) {
         m.illustrationHeight = 100 + [self heightForText:[self illustrationTitle] font:self.bodyFont width:textWidth - 20];
     }
@@ -522,33 +589,283 @@ typedef struct {
     return units;
 }
 
-- (void)buildExchangeIllustration {
+- (VABExchangeQuantities)exchangeQuantities {
+    VABExchangeQuantities q = {0};
     ArithmeticTeachingStep *step = self.currentStep;
-    if (![self validColumn:step.sourceColumn] || ![self validColumn:step.destinationColumn]) return;
+    if (step.kind != ArithmeticTeachingStepKindRegroup || ![self validColumn:step.sourceColumn]
+        || ![self validColumn:step.destinationColumn] || labs(step.sourceColumn - step.destinationColumn) != 1
+        || step.workingDigitsBefore.count != self.sequence.columnCount
+        || step.workingDigits.count != self.sequence.columnCount) return q;
+    q.sourceBefore = step.workingDigitsBefore[step.sourceColumn].integerValue;
+    q.sourceAfter = step.workingDigits[step.sourceColumn].integerValue;
+    q.destinationBefore = step.workingDigitsBefore[step.destinationColumn].integerValue;
+    q.destinationAfter = step.workingDigits[step.destinationColumn].integerValue;
+    // Valid canonical steps are bounded. Reject an inconsistent projection rather
+    // than silently truncate it, invent material, or add a carry a second time.
+    for (NSNumber *count in @[@(q.sourceBefore), @(q.sourceAfter), @(q.destinationBefore), @(q.destinationAfter)]) {
+        if (count.integerValue < 0 || count.integerValue > 20) return q;
+    }
+    q.exchangedSource = q.sourceBefore - q.sourceAfter;
+    q.exchangedDestination = q.destinationAfter - q.destinationBefore;
+    NSInteger sourceValue = VABPlaceValue(self.sequence.columnCount - 1 - step.sourceColumn);
+    NSInteger destinationValue = VABPlaceValue(self.sequence.columnCount - 1 - step.destinationColumn);
+    q.valid = q.exchangedSource > 0 && q.exchangedDestination > 0
+        && q.exchangedSource * sourceValue == q.exchangedDestination * destinationValue;
+    return q;
+}
+
+- (UIFont *)exchangeFont {
+    return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCallout]
+        scaledFontForFont:[ChildUI roundedFontOfSize:17 weight:UIFontWeightBold]
+        maximumPointSize:24 compatibleWithTraitCollection:self.traitCollection];
+}
+
+- (UIFont *)exchangeScopeFont {
+    return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
+        scaledFontForFont:[ChildUI roundedFontOfSize:15 weight:UIFontWeightMedium]
+        maximumPointSize:22 compatibleWithTraitCollection:self.traitCollection];
+}
+
+- (NSString *)exchangeScopeText { return @"這一步兩欄，不是整題全部"; }
+- (NSString *)exchangeComparisonText { return @"換前、換後比一比"; }
+- (NSString *)exchangePlayingText { return @"圈起這一組，再換一換"; }
+
+- (NSString *)exchangedSourceText {
+    return [NSString stringWithFormat:@"%ld 個%@", (long)[self exchangeQuantities].exchangedSource,
+        [self unitNameForColumn:self.currentStep.sourceColumn]];
+}
+
+- (NSString *)exchangedDestinationText {
+    return [NSString stringWithFormat:@"%ld 個%@", (long)[self exchangeQuantities].exchangedDestination,
+        [self unitNameForColumn:self.currentStep.destinationColumn]];
+}
+
+- (NSString *)retainedSourceText {
+    return [NSString stringWithFormat:@"%@留下 %ld 個%@，不換", [self placeNameForColumn:self.currentStep.sourceColumn],
+        (long)[self exchangeQuantities].sourceAfter, [self unitNameForColumn:self.currentStep.sourceColumn]];
+}
+
+- (NSString *)retainedDestinationText {
+    return [NSString stringWithFormat:@"%@原有 %ld 個%@，不換", [self placeNameForColumn:self.currentStep.destinationColumn],
+        (long)[self exchangeQuantities].destinationBefore, [self unitNameForColumn:self.currentStep.destinationColumn]];
+}
+
+- (CGSize)exchangeUnitSizeForColumn:(NSInteger)column {
+    return self.sequence.columnCount - 1 - column == 1 ? CGSizeMake(13, 40) : CGSizeMake(22, 22);
+}
+
+- (NSInteger)exchangeUnitColumnsForCount:(NSInteger)count column:(NSInteger)column width:(CGFloat)width {
+    CGSize unit = [self exchangeUnitSizeForColumn:column];
+    return MIN(MAX(1, count), MAX(1, (NSInteger)floor((width + VABUnitGap) / (unit.width + VABUnitGap))));
+}
+
+- (CGFloat)exchangeUnitHeightForCount:(NSInteger)count column:(NSInteger)column width:(CGFloat)width {
+    if (count == 0) return 0;
+    NSInteger columns = [self exchangeUnitColumnsForCount:count column:column width:width];
+    NSInteger rows = (count + columns - 1) / columns;
+    return rows * [self exchangeUnitSizeForColumn:column].height + (rows - 1) * VABUnitGap;
+}
+
+- (CGFloat)unwrappedWidthForText:(NSString *)text font:(UIFont *)font {
+    return ceil([text sizeWithAttributes:@{NSFontAttributeName:font}].width) + 1;
+}
+
+- (CGFloat)twoLineWidthForText:(NSString *)text font:(UIFont *)font {
+    CGFloat upper = [self unwrappedWidthForText:text font:font];
+    CGFloat lower = 1;
+    CGFloat twoLines = 2 * [self heightForText:text font:font width:upper];
+    // Find the actual wrapping boundary, rather than estimating CJK glyph widths.
+    while (upper - lower > 1) {
+        CGFloat width = floor((lower + upper) / 2);
+        if ([self heightForText:text font:font width:width] <= twoLines) upper = width;
+        else lower = width;
+    }
+    return ceil(upper);
+}
+
+- (CGFloat)shortRowWidthForCount:(NSInteger)count column:(NSInteger)column {
+    if (count == 0) return 0;
+    CGSize unit = [self exchangeUnitSizeForColumn:column];
+    // Two rows of dots/blocks or one row of rods. Never compress a material unit.
+    NSInteger rows = unit.height == 40 ? 1 : 2;
+    NSInteger columns = (count + rows - 1) / rows;
+    return columns * unit.width + (columns - 1) * VABUnitGap;
+}
+
+- (VABExchangeLayout)wideExchangeLayoutForWidth:(CGFloat)width {
+    VABExchangeLayout layout = {0};
+    VABExchangeQuantities q = [self exchangeQuantities];
+    if (!q.valid) return layout;
+    ArithmeticTeachingStep *step = self.currentStep;
+    CGFloat inset = 6, groupGap = 12, labelGap = 4;
+    CGFloat innerWidth = width - 2 * inset;
+    CGFloat sourceWidth = MAX([self unwrappedWidthForText:[self exchangedSourceText] font:self.exchangeFont],
+        [self shortRowWidthForCount:q.exchangedSource column:step.sourceColumn]);
+    CGFloat destinationWidth = MAX([self unwrappedWidthForText:[self exchangedDestinationText] font:self.exchangeFont],
+        [self shortRowWidthForCount:q.exchangedDestination column:step.destinationColumn]);
+    CGFloat retainedSourceWidth = MAX([self twoLineWidthForText:[self retainedSourceText] font:self.exchangeFont],
+        [self shortRowWidthForCount:q.sourceAfter column:step.sourceColumn]);
+    CGFloat retainedDestinationWidth = MAX([self twoLineWidthForText:[self retainedDestinationText] font:self.exchangeFont],
+        [self shortRowWidthForCount:q.destinationBefore column:step.destinationColumn]);
+    CGFloat modeWidth = MAX([self unwrappedWidthForText:[self exchangeComparisonText] font:self.exchangeFont],
+        [self unwrappedWidthForText:[self exchangePlayingText] font:self.exchangeFont]);
+    CGFloat extra = MAX(0, modeWidth - sourceWidth - VABExchangeLane - destinationWidth);
+    sourceWidth += extra / 2;
+    destinationWidth += extra / 2;
+    CGFloat scopeWidth = [self unwrappedWidthForText:[self exchangeScopeText] font:self.exchangeScopeFont];
+    extra = MAX(0, scopeWidth - retainedSourceWidth - groupGap - retainedDestinationWidth);
+    retainedSourceWidth += extra / 2;
+    retainedDestinationWidth += extra / 2;
+    CGFloat exchangeWidth = sourceWidth + VABExchangeLane + destinationWidth;
+    CGFloat requiredWidth = exchangeWidth + 2 * groupGap + retainedSourceWidth + retainedDestinationWidth;
+    if (requiredWidth > innerWidth) return layout;
+    // Spend spare width on the unchanged captions, not on smaller type or units.
+    retainedSourceWidth += (innerWidth - requiredWidth) / 2;
+    retainedDestinationWidth += (innerWidth - requiredWidth) / 2;
+    CGFloat destinationX = inset + sourceWidth + VABExchangeLane;
+    CGFloat retainedSourceX = inset + exchangeWidth + groupGap;
+    CGFloat retainedDestinationX = retainedSourceX + retainedSourceWidth + groupGap;
+    CGFloat scopeAvailable = retainedSourceWidth + groupGap + retainedDestinationWidth;
+    CGFloat headerHeight = MAX([self heightForText:[self exchangeScopeText] font:self.exchangeScopeFont width:scopeAvailable],
+        MAX([self heightForText:[self exchangeComparisonText] font:self.exchangeFont width:exchangeWidth],
+            [self heightForText:[self exchangePlayingText] font:self.exchangeFont width:exchangeWidth]));
+    layout.mode = CGRectMake(inset, inset, exchangeWidth, headerHeight);
+    layout.scope = CGRectMake(retainedSourceX, inset, scopeAvailable, headerHeight);
+    CGFloat y = inset + headerHeight + labelGap;
+    CGFloat labelHeight = MAX([self heightForText:[self exchangedSourceText] font:self.exchangeFont width:sourceWidth],
+        [self heightForText:[self exchangedDestinationText] font:self.exchangeFont width:destinationWidth]);
+    layout.sourceLabel = CGRectMake(inset, y, sourceWidth, labelHeight);
+    layout.destinationLabel = CGRectMake(destinationX, y, destinationWidth, labelHeight);
+    CGFloat unitsHeight = MAX([self exchangeUnitHeightForCount:q.exchangedSource column:step.sourceColumn width:sourceWidth],
+        [self exchangeUnitHeightForCount:q.exchangedDestination column:step.destinationColumn width:destinationWidth]);
+    layout.sourceUnits = CGRectMake(inset, y + labelHeight + labelGap, sourceWidth, unitsHeight);
+    layout.destinationUnits = CGRectMake(destinationX, y + labelHeight + labelGap, destinationWidth, unitsHeight);
+    layout.sign = CGRectMake(inset + sourceWidth + (VABExchangeLane - 28) / 2, CGRectGetMidY(layout.sourceUnits) - 20, 28, 40);
+    labelHeight = [self heightForText:[self retainedSourceText] font:self.exchangeFont width:retainedSourceWidth];
+    layout.retainedSourceLabel = CGRectMake(retainedSourceX, y, retainedSourceWidth, labelHeight);
+    unitsHeight = [self exchangeUnitHeightForCount:q.sourceAfter column:step.sourceColumn width:retainedSourceWidth];
+    layout.retainedSourceUnits = CGRectMake(retainedSourceX, y + labelHeight + labelGap, retainedSourceWidth, unitsHeight);
+    labelHeight = [self heightForText:[self retainedDestinationText] font:self.exchangeFont width:retainedDestinationWidth];
+    layout.retainedDestinationLabel = CGRectMake(retainedDestinationX, y, retainedDestinationWidth, labelHeight);
+    unitsHeight = [self exchangeUnitHeightForCount:q.destinationBefore column:step.destinationColumn width:retainedDestinationWidth];
+    layout.retainedDestinationUnits = CGRectMake(retainedDestinationX, y + labelHeight + labelGap, retainedDestinationWidth, unitsHeight);
+    y = MAX(MAX(CGRectGetMaxY(layout.sourceUnits), CGRectGetMaxY(layout.sign)),
+        MAX(CGRectGetMaxY(layout.retainedSourceUnits), CGRectGetMaxY(layout.retainedDestinationUnits))) + 6;
+    layout.counts = CGRectMake(inset, y, innerWidth, [self heightForText:[self exchangeCountsText] font:self.bodyFont width:innerWidth]);
+    layout.height = CGRectGetMaxY(layout.counts) + inset;
+    return layout;
+}
+
+- (VABExchangeLayout)exchangeLayoutForWidth:(CGFloat)width {
+    VABExchangeLayout layout = {0};
+    VABExchangeQuantities q = [self exchangeQuantities];
+    if (!q.valid) return layout;
+    VABExchangeLayout wide = [self wideExchangeLayoutForWidth:width];
+    if (wide.height > 0) return wide;
+    ArithmeticTeachingStep *step = self.currentStep;
+    CGFloat innerWidth = MAX(1, width - 20);
+    CGFloat half = MAX(1, (innerWidth - VABExchangeLane) / 2);
+    CGFloat rightX = width - 10 - half;
+    CGFloat y = 10;
+    CGFloat height = [self heightForText:[self exchangeScopeText] font:self.exchangeScopeFont width:innerWidth];
+    layout.scope = CGRectMake(10, y, innerWidth, height);
+    y += height + 6;
+    height = MAX([self heightForText:[self exchangeComparisonText] font:self.exchangeFont width:innerWidth],
+        [self heightForText:[self exchangePlayingText] font:self.exchangeFont width:innerWidth]);
+    layout.mode = CGRectMake(10, y, innerWidth, height);
+    y += height + 6;
+    height = MAX([self heightForText:[self exchangedSourceText] font:self.exchangeFont width:half],
+        [self heightForText:[self exchangedDestinationText] font:self.exchangeFont width:half]);
+    layout.sourceLabel = CGRectMake(10, y, half, height);
+    layout.destinationLabel = CGRectMake(rightX, y, half, height);
+    y += height + 6;
+    height = MAX([self exchangeUnitHeightForCount:q.exchangedSource column:step.sourceColumn width:half],
+        [self exchangeUnitHeightForCount:q.exchangedDestination column:step.destinationColumn width:half]);
+    layout.sourceUnits = CGRectMake(10, y, half, height);
+    layout.destinationUnits = CGRectMake(rightX, y, half, height);
+    layout.sign = CGRectMake(width / 2 - 14, CGRectGetMidY(layout.sourceUnits) - 20, 28, 40);
+    y += height + 12;
+    height = MAX([self heightForText:[self retainedSourceText] font:self.exchangeFont width:half],
+        [self heightForText:[self retainedDestinationText] font:self.exchangeFont width:half]);
+    layout.retainedSourceLabel = CGRectMake(10, y, half, height);
+    layout.retainedDestinationLabel = CGRectMake(rightX, y, half, height);
+    y += height + 6;
+    height = MAX([self exchangeUnitHeightForCount:q.sourceAfter column:step.sourceColumn width:half],
+        [self exchangeUnitHeightForCount:q.destinationBefore column:step.destinationColumn width:half]);
+    layout.retainedSourceUnits = CGRectMake(10, y, half, height);
+    layout.retainedDestinationUnits = CGRectMake(rightX, y, half, height);
+    y += height + 10;
+    height = [self heightForText:[self exchangeCountsText] font:self.bodyFont width:innerWidth];
+    layout.counts = CGRectMake(10, y, innerWidth, height);
+    layout.height = y + height + 10;
+    return layout;
+}
+
+- (UILabel *)addExchangeLabel:(NSString *)text font:(UIFont *)font identifier:(NSString *)identifier frame:(CGRect)frame {
+    UILabel *label = [self labelWithText:text font:font identifier:identifier];
+    label.numberOfLines = 0;
+    label.adjustsFontSizeToFitWidth = NO;
+    label.frame = frame;
+    [self.illustrationView addSubview:label];
+    return label;
+}
+
+- (NSArray<VABUnitView *> *)addExchangeUnits:(NSInteger)count column:(NSInteger)column rect:(CGRect)rect color:(UIColor *)color identifier:(NSString *)identifier {
+    NSMutableArray<VABUnitView *> *units = [NSMutableArray arrayWithCapacity:count];
+    CGSize size = [self exchangeUnitSizeForColumn:column];
+    NSInteger columns = [self exchangeUnitColumnsForCount:count column:column width:rect.size.width];
+    CGFloat height = [self exchangeUnitHeightForCount:count column:column width:rect.size.width];
+    for (NSInteger index = 0; index < count; index++) {
+        NSInteger row = index / columns;
+        NSInteger rowCount = MIN(columns, count - row * columns);
+        CGFloat rowWidth = rowCount * size.width + (rowCount - 1) * VABUnitGap;
+        CGFloat x = CGRectGetMinX(rect) + (rect.size.width - rowWidth) / 2 + (index % columns) * (size.width + VABUnitGap);
+        CGFloat y = CGRectGetMinY(rect) + (rect.size.height - height) / 2 + row * (size.height + VABUnitGap);
+        VABUnitView *unit = [[VABUnitView alloc] initWithFrame:CGRectMake(x, y, size.width, size.height)];
+        unit.backgroundColor = UIColor.clearColor;
+        unit.place = self.sequence.columnCount - 1 - column;
+        unit.unitColor = color;
+        unit.isAccessibilityElement = NO;
+        unit.accessibilityIdentifier = [NSString stringWithFormat:@"%@.%ld", identifier, (long)index];
+        [self.illustrationView addSubview:unit];
+        [units addObject:unit];
+    }
+    return units;
+}
+
+- (CAShapeLayer *)exchangeOutlineForRect:(CGRect)rect {
+    CAShapeLayer *outline = [CAShapeLayer layer];
+    outline.path = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(rect, -3, -3) cornerRadius:6].CGPath;
+    outline.strokeColor = ChildUI.brownText.CGColor;
+    outline.lineWidth = 2;
+    outline.fillColor = UIColor.clearColor.CGColor;
+    outline.opacity = 0;
+    [self.illustrationView.layer addSublayer:outline];
+    return outline;
+}
+
+- (void)buildExchangeIllustration {
+    VABExchangeQuantities q = [self exchangeQuantities];
+    if (!q.valid) return;
+    ArithmeticTeachingStep *step = self.currentStep;
     CGFloat width = CGRectGetWidth(self.illustrationView.bounds);
-    CGFloat half = (width - 48) / 2;
-    BOOL carriesLeft = step.destinationColumn < step.sourceColumn;
-    NSInteger sourceCount = carriesLeft ? 10 : 1;
-    NSInteger destinationCount = carriesLeft ? 1 : 10;
-    NSString *sourceText = [NSString stringWithFormat:@"%ld 個%@", (long)sourceCount, [self unitNameForColumn:step.sourceColumn]];
-    NSString *destinationText = [NSString stringWithFormat:@"%ld 個%@", (long)destinationCount, [self unitNameForColumn:step.destinationColumn]];
-    UIFont *font = [ChildUI scaledRoundedFontOfSize:17 weight:UIFontWeightBold textStyle:UIFontTextStyleCallout maximumPointSize:24];
-    UILabel *source = [self labelWithText:sourceText font:font identifier:@"verticalExchangeSource"];
-    source.frame = CGRectMake(10, 10, half, 30);
-    [self.illustrationView addSubview:source];
-    UILabel *destination = [self labelWithText:destinationText font:font identifier:@"verticalExchangeDestination"];
-    destination.frame = CGRectMake(width - half - 10, 10, half, 30);
-    [self.illustrationView addSubview:destination];
-    UILabel *equals = [self labelWithText:@"=" font:[ChildUI roundedFontOfSize:25 weight:UIFontWeightBold] identifier:@"verticalExchangeEquals"];
-    equals.frame = CGRectMake(width / 2 - 16, 40, 32, 40);
-    [self.illustrationView addSubview:equals];
-    [self.exchangeSourceUnits addObjectsFromArray:[self addUnits:sourceCount column:step.sourceColumn inRect:CGRectMake(10, 40, half, 44) parent:self.illustrationView color:ChildUI.pumpkinOrange crossingFrom:NSNotFound]];
-    [self.exchangeDestinationUnits addObjectsFromArray:[self addUnits:destinationCount column:step.destinationColumn inRect:CGRectMake(width - half - 10, 40, half, 44) parent:self.illustrationView color:ChildUI.skyBlue crossingFrom:NSNotFound]];
-    UILabel *counts = [self labelWithText:[self exchangeCountsText] font:self.bodyFont identifier:@"verticalExchangeCounts"];
-    counts.numberOfLines = 0;
-    counts.adjustsFontSizeToFitWidth = NO;
-    counts.frame = CGRectMake(10, 92, width - 20, CGRectGetHeight(self.illustrationView.bounds) - 102);
-    [self.illustrationView addSubview:counts];
+    VABExchangeLayout layout = [self exchangeLayoutForWidth:width];
+    [self addExchangeLabel:[self exchangeScopeText] font:self.exchangeScopeFont identifier:@"verticalExchangeScope" frame:layout.scope];
+    self.exchangeModeLabel = [self addExchangeLabel:[self exchangeComparisonText] font:self.exchangeFont identifier:@"verticalExchangeMode" frame:layout.mode];
+    [self addExchangeLabel:[self exchangedSourceText] font:self.exchangeFont identifier:@"verticalExchangeSource" frame:layout.sourceLabel];
+    [self addExchangeLabel:[self exchangedDestinationText] font:self.exchangeFont identifier:@"verticalExchangeDestination" frame:layout.destinationLabel];
+    self.exchangeEqualsLabel = [self addExchangeLabel:@"=" font:[ChildUI roundedFontOfSize:25 weight:UIFontWeightBold] identifier:@"verticalExchangeEquals"
+        frame:layout.sign];
+    [self.exchangeSourceUnits addObjectsFromArray:[self addExchangeUnits:q.exchangedSource column:step.sourceColumn rect:layout.sourceUnits color:ChildUI.pumpkinOrange identifier:@"verticalExchangedSourceUnit"]];
+    [self.exchangeDestinationUnits addObjectsFromArray:[self addExchangeUnits:q.exchangedDestination column:step.destinationColumn rect:layout.destinationUnits color:ChildUI.skyBlue identifier:@"verticalExchangedDestinationUnit"]];
+    [self addExchangeLabel:[self retainedSourceText] font:self.exchangeFont identifier:@"verticalRetainedSource" frame:layout.retainedSourceLabel];
+    [self addExchangeLabel:[self retainedDestinationText] font:self.exchangeFont identifier:@"verticalRetainedDestination" frame:layout.retainedDestinationLabel];
+    // These same objects never join an animation or a transient collection.
+    [self.retainedSourceUnits addObjectsFromArray:[self addExchangeUnits:q.sourceAfter column:step.sourceColumn rect:layout.retainedSourceUnits color:ChildUI.mintGreen identifier:@"verticalRetainedSourceUnit"]];
+    [self.retainedDestinationUnits addObjectsFromArray:[self addExchangeUnits:q.destinationBefore column:step.destinationColumn rect:layout.retainedDestinationUnits color:ChildUI.mintGreen identifier:@"verticalRetainedDestinationUnit"]];
+    [self addExchangeLabel:[self exchangeCountsText] font:self.bodyFont identifier:@"verticalExchangeCounts" frame:layout.counts];
+    self.exchangeSourceOutline = [self exchangeOutlineForRect:layout.sourceUnits];
+    self.exchangeDestinationOutline = [self exchangeOutlineForRect:layout.destinationUnits];
 }
 
 - (NSString *)illustrationTitle {
@@ -586,7 +903,9 @@ typedef struct {
     CGRect required = self.currentActionRect;
     if (CGRectIsNull(required) || CGRectIsEmpty(required) || CGRectIsNull(visibleRect)
         || CGRectIsEmpty(visibleRect) || !CGRectContainsRect(visibleRect, required)) return NO;
-    self.playsWrittenExchange = CGRectContainsRect(visibleRect, self.currentTransformationRect);
+    CGRect writtenAndConcrete = self.currentTransformationRect;
+    self.playsWrittenExchange = CGRectContainsRect(visibleRect, writtenAndConcrete)
+        && [self playbackRectFitsClippingAncestors:writtenAndConcrete];
     self.requiresVisiblePlayback = YES;
     if (![self playbackFitsClippingAncestors]) return NO;
     if ([self canAnimate]) [self animateCurrentAction];
@@ -595,7 +914,10 @@ typedef struct {
 }
 
 - (BOOL)playbackFitsClippingAncestors {
-    CGRect action = self.currentPlaybackRect;
+    return [self playbackRectFitsClippingAncestors:self.currentPlaybackRect];
+}
+
+- (BOOL)playbackRectFitsClippingAncestors:(CGRect)action {
     if (CGRectIsNull(action) || CGRectIsEmpty(action)) return NO;
     for (UIView *view = self; view; view = view.superview) {
         if ((view.clipsToBounds || view == self.window)
@@ -612,7 +934,7 @@ typedef struct {
 }
 
 - (void)addAnimation:(CAAnimation *)animation toLayer:(CALayer *)layer key:(NSString *)key {
-    animation.removedOnCompletion = YES;
+    if (self.exchangeAnimationStartTime > 0) animation.beginTime = [layer convertTime:self.exchangeAnimationStartTime fromLayer:nil];
     [layer addAnimation:animation forKey:key];
     [self.animatedLayers addObject:layer];
 }
@@ -632,23 +954,42 @@ typedef struct {
     }
     if (!self.animatedLayers.count) return;
     self.playbackState = VerticalArithmeticPlaybackStatePlaying;
-    self.animationEndTime = CACurrentMediaTime() + VABExchangeDuration;
+    self.animationEndTime = (self.exchangeAnimationStartTime > 0 ? self.exchangeAnimationStartTime : CACurrentMediaTime()) + VABExchangeDuration;
     VABWeakDisplayLinkTarget *proxy = [VABWeakDisplayLinkTarget new];
     proxy.target = self;
     self.animationDisplayLink = [CADisplayLink displayLinkWithTarget:proxy selector:@selector(tick:)];
     [self.animationDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
+- (CAKeyframeAnimation *)concreteOwnershipAnimationForSource:(BOOL)source {
+    CAKeyframeAnimation *ownership = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    ownership.values = source ? @[@1, @0, @0] : @[@0, @1, @1];
+    ownership.keyTimes = @[@0, @(VABExchangeHandoff), @1];
+    ownership.calculationMode = kCAAnimationDiscrete;
+    ownership.duration = VABExchangeDuration;
+    ownership.fillMode = kCAFillModeForwards;
+    // Keep the live endpoint until the display link restores the explicitly
+    // labelled comparison; otherwise a removed source animation could flash back.
+    ownership.removedOnCompletion = NO;
+    return ownership;
+}
+
 - (void)animateExchange {
     ArithmeticTeachingStep *step = self.currentStep;
     if (![self validColumn:step.sourceColumn] || ![self validColumn:step.destinationColumn] || self.annotationLabels.count != self.sequence.columnCount) return;
+    VABExchangeQuantities quantities = [self exchangeQuantities];
+    if (!quantities.valid || self.exchangeSourceUnits.count != quantities.exchangedSource
+        || self.exchangeDestinationUnits.count != quantities.exchangedDestination) return;
     BOOL carriesLeft = step.destinationColumn < step.sourceColumn;
+    self.exchangeAnimationStartTime = CACurrentMediaTime();
+    self.exchangeModeLabel.text = [self exchangePlayingText];
+    self.exchangeEqualsLabel.text = @"→";
     if (self.playsWrittenExchange) {
         UILabel *source = self.annotationLabels[step.sourceColumn];
         UILabel *destination = self.annotationLabels[step.destinationColumn];
         CGPoint from = [self.gridView convertPoint:source.center toView:self.contentView];
         CGPoint to = [self.gridView convertPoint:destination.center toView:self.contentView];
-        NSString *packetText = [NSString stringWithFormat:@"%@%@", carriesLeft ? @"10" : @"1", [self unitNameForColumn:step.sourceColumn]];
+        NSString *packetText = [NSString stringWithFormat:@"%ld%@", (long)quantities.exchangedSource, [self unitNameForColumn:step.sourceColumn]];
         UILabel *packet = [self labelWithText:packetText font:[ChildUI roundedMonoFontOfSize:16 weight:UIFontWeightBold] identifier:@"verticalMovingExchange"];
         packet.frame = CGRectMake(0, 0, 44, 30);
         packet.center = to;
@@ -663,11 +1004,12 @@ typedef struct {
         [path addQuadCurveToPoint:to controlPoint:CGPointMake((from.x + to.x) / 2, MIN(from.y, to.y) - 32)];
         CAKeyframeAnimation *travel = [CAKeyframeAnimation animationWithKeyPath:@"position"];
         travel.path = path.CGPath;
-        travel.duration = 0.62;
+        travel.duration = VABExchangeDuration * VABExchangeHandoff;
         travel.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
         CAKeyframeAnimation *visibility = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-        visibility.values = @[@1, @1, @0];
-        visibility.keyTimes = @[@0, @0.72, @1];
+        visibility.values = @[@1, @0, @0];
+        visibility.keyTimes = @[@0, @(VABExchangeHandoff), @1];
+        visibility.calculationMode = kCAAnimationDiscrete;
         visibility.duration = VABExchangeDuration;
         CAAnimationGroup *packetGroup = [CAAnimationGroup animation];
         packetGroup.animations = @[travel, visibility];
@@ -676,43 +1018,29 @@ typedef struct {
 
     }
 
-    // The concrete equality remains visible at rest. During exchange the ten
-    // small pieces visibly collect into one larger unit, or one splits into ten.
-    CGPoint sourceCenter = CGPointMake(0, 0);
-    for (VABUnitView *unit in self.exchangeSourceUnits) { sourceCenter.x += unit.center.x; sourceCenter.y += unit.center.y; }
-    if (self.exchangeSourceUnits.count) { sourceCenter.x /= self.exchangeSourceUnits.count; sourceCenter.y /= self.exchangeSourceUnits.count; }
-    for (VABUnitView *unit in self.exchangeDestinationUnits) {
-        if (carriesLeft) break;
-        CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
-        move.fromValue = [NSValue valueWithCGPoint:sourceCenter];
-        move.toValue = [NSValue valueWithCGPoint:unit.center];
-        move.duration = 0.76;
-        move.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [self addAnimation:move toLayer:unit.layer key:@"verticalConcreteExchange"];
+    // Running is one live representation, not a cross-fade between inventories.
+    // Every piece stays in its own countable slot. A grouping outline closes
+    // around the source set, then ownership changes at one shared media time.
+    // No parent gathers into another parent, shrinks, or fades before that handoff.
+    for (VABUnitView *unit in self.exchangeSourceUnits) {
+        [self addAnimation:[self concreteOwnershipAnimationForSource:YES] toLayer:unit.layer key:@"verticalConcreteGather"];
     }
-    if (carriesLeft && self.exchangeDestinationUnits.count) {
-        CGPoint destinationCenter = self.exchangeDestinationUnits.firstObject.center;
-        for (VABUnitView *unit in self.exchangeSourceUnits) {
-            CABasicAnimation *gather = [CABasicAnimation animationWithKeyPath:@"position"];
-            gather.fromValue = [NSValue valueWithCGPoint:unit.center];
-            gather.toValue = [NSValue valueWithCGPoint:destinationCenter];
-            gather.duration = 0.68;
-            gather.fillMode = kCAFillModeForwards;
-            gather.removedOnCompletion = NO;
-            CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-            fade.values = @[@1, @1, @0];
-            fade.keyTimes = @[@0, @0.68, @1];
-            fade.duration = VABExchangeDuration;
-            CAAnimationGroup *group = [CAAnimationGroup animation];
-            group.animations = @[gather, fade];
-            group.duration = VABExchangeDuration;
-            [self addAnimation:group toLayer:unit.layer key:@"verticalConcreteGather"];
-        }
-        CAKeyframeAnimation *bundle = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-        bundle.values = @[@0.7, @0.7, @1.12, @1];
-        bundle.keyTimes = @[@0, @0.55, @0.78, @1];
-        bundle.duration = VABExchangeDuration;
-        [self addAnimation:bundle toLayer:self.exchangeDestinationUnits.firstObject.layer key:@"verticalCountChange"];
+    for (VABUnitView *unit in self.exchangeDestinationUnits) {
+        [self addAnimation:[self concreteOwnershipAnimationForSource:NO] toLayer:unit.layer key:@"verticalConcreteExchange"];
+    }
+    for (NSNumber *sourceNumber in @[@YES, @NO]) {
+        BOOL source = sourceNumber.boolValue;
+        CAShapeLayer *outline = source ? self.exchangeSourceOutline : self.exchangeDestinationOutline;
+        CAKeyframeAnimation *closure = [CAKeyframeAnimation animationWithKeyPath:@"strokeEnd"];
+        closure.values = source ? @[@0, @1, @1] : @[@0, @0, @1];
+        closure.keyTimes = @[@0, @(VABExchangeHandoff), @1];
+        closure.duration = VABExchangeDuration;
+        CAAnimationGroup *group = [CAAnimationGroup animation];
+        group.animations = @[closure, [self concreteOwnershipAnimationForSource:source]];
+        group.duration = VABExchangeDuration;
+        group.fillMode = kCAFillModeForwards;
+        group.removedOnCompletion = NO;
+        [self addAnimation:group toLayer:outline key:@"verticalConcreteClosure"];
     }
     if (self.playsWrittenExchange) {
         for (NSNumber *columnNumber in @[@(step.sourceColumn), @(step.destinationColumn)]) {
@@ -730,13 +1058,15 @@ typedef struct {
             [self.gridView addSubview:before];
             [self.transientViews addObject:before];
             CAKeyframeAnimation *oldCount = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-            oldCount.values = @[@1, @1, @0];
-            oldCount.keyTimes = @[@0, @0.60, @1];
+            oldCount.values = @[@1, @0, @0];
+            oldCount.keyTimes = @[@0, @(VABExchangeHandoff), @1];
+            oldCount.calculationMode = kCAAnimationDiscrete;
             oldCount.duration = VABExchangeDuration;
             [self addAnimation:oldCount toLayer:before.layer key:@"verticalBeforeCount"];
             CAKeyframeAnimation *newCount = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-            newCount.values = @[@0, @0, @1];
-            newCount.keyTimes = @[@0, @0.60, @1];
+            newCount.values = @[@0, @1, @1];
+            newCount.keyTimes = @[@0, @(VABExchangeHandoff), @1];
+            newCount.calculationMode = kCAAnimationDiscrete;
             newCount.duration = VABExchangeDuration;
             [self addAnimation:newCount toLayer:label.layer key:@"verticalAfterCount"];
             CAKeyframeAnimation *emphasis = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
@@ -765,6 +1095,7 @@ typedef struct {
         [layer removeAnimationForKey:@"verticalUnitTransfer"];
         [layer removeAnimationForKey:@"verticalConcreteExchange"];
         [layer removeAnimationForKey:@"verticalConcreteGather"];
+        [layer removeAnimationForKey:@"verticalConcreteClosure"];
         [layer removeAnimationForKey:@"verticalCountChange"];
         [layer removeAnimationForKey:@"verticalBeforeCount"];
         [layer removeAnimationForKey:@"verticalAfterCount"];
@@ -773,6 +1104,9 @@ typedef struct {
     for (UIView *view in self.transientViews) [view removeFromSuperview];
     [self.transientViews removeAllObjects];
     self.animationEndTime = 0;
+    self.exchangeAnimationStartTime = 0;
+    self.exchangeModeLabel.text = [self exchangeComparisonText];
+    self.exchangeEqualsLabel.text = @"=";
 }
 
 - (void)stopForNotification:(NSNotification *)notification {
@@ -785,6 +1119,15 @@ typedef struct {
     self.needsSnapshotLayout = YES;
     [self invalidateIntrinsicContentSize];
     [self setNeedsLayout];
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if (![self.traitCollection.preferredContentSizeCategory isEqualToString:previousTraitCollection.preferredContentSizeCategory]) {
+        [self cancelAnimations];
+        self.needsSnapshotLayout = YES;
+        [self invalidateIntrinsicContentSize];
+        [self setNeedsLayout];
+    }
 }
 - (void)didMoveToWindow { [super didMoveToWindow]; if (!self.window) [self cancelAnimations]; }
 - (void)didMoveToSuperview { [super didMoveToSuperview]; if (!self.superview) [self cancelAnimations]; }

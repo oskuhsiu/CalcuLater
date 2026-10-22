@@ -17,11 +17,19 @@
 @interface GFTTestView : GroupingTeachingFocusView
 @property (nonatomic) BOOL testMotionAllowed;
 @property (nonatomic) BOOL testVisibility;
+/// Deliver a lifecycle callback at configure's layout boundary, before UIKit
+/// builds the new scene. Real pending-trait propagation has its own test below.
+@property (nonatomic, copy) void (^beforeNextLayout)(void);
 @end
 @implementation GFTTestView
 - (BOOL)motionAllowed { return self.testMotionAllowed; }
 - (BOOL)actuallyVisible { return self.testVisibility; }
 - (BOOL)applicationActive { return YES; }
+- (void)layoutIfNeeded {
+    void (^callback)(void) = self.beforeNextLayout; self.beforeNextLayout = nil;
+    if (callback) callback();
+    [super layoutIfNeeded];
+}
 @end
 @interface GroupingTeachingFocusViewTests : XCTestCase
 @property (nonatomic, strong) UIWindow *window;
@@ -36,7 +44,9 @@
     [self.window.rootViewController.view addSubview:self.focus];
 }
 - (void)tearDown {
-    [self.focus cancelPlayback]; [self.focus.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+    self.focus.beforeNextLayout = nil;
+    // Dispose of a failed scene without trying to render it a second time.
+    [self.focus configureWithAction:nil]; [self.focus.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
     [self.focus removeFromSuperview]; self.focus = nil;
     self.window.hidden = YES; self.window.rootViewController = nil; self.window = nil; [super tearDown];
 }
@@ -61,6 +71,36 @@
     NSInteger total = self.focus.displayedPoolCount + self.focus.inFlightCount;
     for (NSNumber *count in self.focus.displayedGroupCounts) total += count.integerValue;
     XCTAssertEqual(total, 23); XCTAssertGreaterThanOrEqual(self.focus.displayedPoolCount, 0); XCTAssertLessThanOrEqual(self.focus.inFlightCount, 1);
+}
+- (void)assertAfterSceneBelongsToAction:(GroupingTeachingAction *)action {
+    XCTAssertEqual(self.focus.action, action);
+    XCTAssertEqual(self.focus.displayedPoolCount, action.snapshot.poolCountAfter.integerValue);
+    XCTAssertEqualObjects(self.focus.displayedGroupCounts, action.snapshot.groupCountsAfter);
+    XCTAssertEqual(self.focus.inFlightCount, 0); XCTAssertFalse(self.focus.isShowingBeforeState);
+    NSDictionary *counters = [self.focus valueForKey:@"counters"];
+    NSDictionary *sources = [self.focus valueForKey:@"sourcePoints"];
+    NSDictionary *targets = [self.focus valueForKey:@"targetPoints"];
+    NSDictionary *owners = [self.focus valueForKey:@"targetGroups"];
+    NSMutableSet *expectedIDs = [NSMutableSet set], *sourceIDs = [NSMutableSet set], *movingIDs = [NSMutableSet set];
+    NSMutableDictionary *expectedOwners = [NSMutableDictionary dictionary];
+    for (NSInteger identity = 0; identity < action.snapshot.poolCountBefore.integerValue; identity++) {
+        [sourceIDs addObject:@(identity)]; [expectedIDs addObject:@(identity)];
+    }
+    for (NSNumber *group in action.snapshot.activeGroupIndices) for (NSNumber *identity in action.groupIdentitiesAfter[group.integerValue]) {
+        expectedOwners[identity] = group; [expectedIDs addObject:identity];
+        if ([sourceIDs containsObject:identity]) [movingIDs addObject:identity];
+    }
+    XCTAssertEqualObjects([NSSet setWithArray:counters.allKeys], expectedIDs);
+    XCTAssertEqualObjects([NSSet setWithArray:sources.allKeys], sourceIDs);
+    XCTAssertEqualObjects([NSSet setWithArray:targets.allKeys], [NSSet setWithArray:expectedOwners.allKeys]);
+    XCTAssertEqualObjects(owners, expectedOwners);
+    XCTAssertEqualObjects([NSSet setWithArray:[self.focus valueForKey:@"movingIDs"]], movingIDs);
+    for (NSNumber *identity in expectedIDs) {
+        UIView *counter = counters[identity];
+        CGPoint expected = expectedOwners[identity] ? [targets[identity] CGPointValue] : [sources[identity] CGPointValue];
+        XCTAssertTrue(CGPointEqualToPoint(counter.center, expected), @"identity %@ retained the wrong position", identity);
+    }
+    [self assertConservation];
 }
 - (NSArray<UILabel *> *)labels {
     NSMutableArray *labels = [NSMutableArray array]; for (UIView *view in self.focus.subviews) if ([view isKindOfClass:UILabel.class]) [labels addObject:view]; return labels;
@@ -116,6 +156,114 @@
             [self.focus showBeforeState]; [self assertTextAndCounterContainment]; [self assertConservation];
         }
     }
+}
+- (void)testReconfigurationWithPendingTextChangeDoesNotRenderPreviousBagOwners {
+    GroupingTeachingAction *lastBag = [self actionSharing:NO last:YES full:YES];
+    NSArray *nextActions = @[[self actionSharing:YES last:NO full:NO], [self actionSharing:NO last:NO full:YES]];
+    for (GroupingTeachingAction *next in nextActions) for (NSString *category in @[UIContentSizeCategoryAccessibilityExtraExtraExtraLarge, UIContentSizeCategoryLarge]) {
+        [self fitAction:lastBag width:361]; [self.focus showBeforeState];
+        XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@4, @4, @4, @4, @0]));
+        NSUInteger generation = self.focus.playbackGeneration;
+        // Do not read traitCollection or force layout between this override and
+        // configuration. This is the native re-entrant path in the retained crash.
+        self.focus.traitOverrides.preferredContentSizeCategory = category;
+        [self.focus configureWithAction:next];
+        XCTAssertEqualObjects(self.focus.traitCollection.preferredContentSizeCategory, category);
+        XCTAssertGreaterThan(self.focus.playbackGeneration, generation);
+        XCTAssertNil([self.focus valueForKey:@"clock"]);
+        [self assertAfterSceneBelongsToAction:next];
+        [self.focus cancelPlayback]; [self assertAfterSceneBelongsToAction:next];
+    }
+}
+- (void)testLifecycleReentryDuringActionReplacementCannotUsePreviousOwnerMaps {
+    GroupingTeachingAction *lastBag = [self actionSharing:NO last:YES full:YES];
+    NSArray *nextActions = @[[self actionSharing:NO last:NO full:YES], [self actionSharing:YES last:NO full:NO]];
+    for (GroupingTeachingAction *next in nextActions) for (NSString *notification in @[UIApplicationWillResignActiveNotification, UIAccessibilityReduceMotionStatusDidChangeNotification, UIContentSizeCategoryDidChangeNotification]) {
+        [self fitAction:lastBag width:361]; XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+        [self.focus renderElapsed:0.28 + 0.82 * 2.4]; XCTAssertEqual(self.focus.inFlightCount, 1);
+        CADisplayLink *old = [self.focus valueForKey:@"clock"]; NSUInteger generation = self.focus.playbackGeneration;
+        __block NSUInteger callbacks = 0;
+        BOOL reduceMotion = [notification isEqualToString:UIAccessibilityReduceMotionStatusDidChangeNotification];
+        __weak GFTTestView *weakFocus = self.focus;
+        self.focus.beforeNextLayout = ^{
+            GFTTestView *focus = weakFocus; callbacks++;
+            XCTAssertEqual(focus.action, next);
+            XCTAssertTrue(CGRectIsNull(focus.requiredActionRect));
+            XCTAssertEqual([[focus valueForKey:@"counters"] count], 0u);
+            if (reduceMotion) focus.testMotionAllowed = NO;
+            [NSNotificationCenter.defaultCenter postNotificationName:notification object:nil];
+            [focus tick:old generation:generation];
+        };
+        [self.focus configureWithAction:next];
+        XCTAssertEqual(callbacks, 1u); XCTAssertNil([self.focus valueForKey:@"clock"]);
+        XCTAssertGreaterThan(self.focus.playbackGeneration, generation);
+        XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]);
+        XCTAssertEqualObjects(self.focus.playbackState, reduceMotion ? @"reduced-motion" : @"settled");
+        [self assertAfterSceneBelongsToAction:next];
+        self.focus.testMotionAllowed = YES;
+        if (reduceMotion) [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+        XCTAssertEqualObjects(self.focus.playbackState, @"settled"); [self assertAfterSceneBelongsToAction:next];
+    }
+}
+- (void)testRestartFromLastPackingActionKeepsNewPlaybackIndependentOfOldClock {
+    [self fitAction:[self actionSharing:NO last:YES full:YES] width:361];
+    XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]); [self.focus renderElapsed:0.28 + 0.82 * 2.4];
+    CADisplayLink *old = [self.focus valueForKey:@"clock"]; NSUInteger oldGeneration = self.focus.playbackGeneration;
+    GroupingTeachingAction *firstBag = [self actionSharing:NO last:NO full:YES];
+    [self.focus configureWithAction:firstBag]; [self assertAfterSceneBelongsToAction:firstBag];
+    NSDictionary *counters = [[self.focus valueForKey:@"counters"] copy];
+    XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+    CADisplayLink *current = [self.focus valueForKey:@"clock"]; NSUInteger generation = self.focus.playbackGeneration;
+    XCTAssertNotEqual(old, current); XCTAssertGreaterThan(generation, oldGeneration);
+    [self.focus tick:old generation:oldGeneration]; [self.focus tick:old generation:generation]; [self.focus tick:current generation:oldGeneration];
+    XCTAssertEqual([self.focus valueForKey:@"clock"], current); XCTAssertEqualObjects(self.focus.playbackState, @"running");
+    XCTAssertEqual(self.focus.displayedPoolCount, 23); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@0]));
+    XCTAssertEqual(self.focus.inFlightCount, 0); XCTAssertTrue(self.focus.isShowingBeforeState);
+    [self.focus renderElapsed:20]; XCTAssertEqualObjects(self.focus.playbackState, @"completed"); [self assertAfterSceneBelongsToAction:firstBag];
+    [self.focus showBeforeState]; [self.focus showAfterState];
+    NSDictionary *now = [self.focus valueForKey:@"counters"];
+    for (NSNumber *identity in counters) XCTAssertEqual(counters[identity], now[identity]);
+    [self assertAfterSceneBelongsToAction:firstBag];
+}
+- (void)testNilAndZeroWidthReconfigurationDiscardPreviousSceneUntilLayoutIsReady {
+    [self fitAction:[self actionSharing:NO last:YES full:YES] width:361];
+    XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+    CADisplayLink *old = [self.focus valueForKey:@"clock"]; NSUInteger generation = self.focus.playbackGeneration;
+    [self.focus configureWithAction:nil];
+    XCTAssertNil(self.focus.action); XCTAssertNil([self.focus valueForKey:@"clock"]); XCTAssertTrue(CGRectIsNull(self.focus.requiredActionRect));
+    XCTAssertEqual(self.focus.subviews.count, 0u); XCTAssertEqual([[self.focus valueForKey:@"counters"] count], 0u);
+    XCTAssertEqual(self.focus.displayedPoolCount, 0); XCTAssertEqualObjects(self.focus.displayedGroupCounts, @[]);
+    XCTAssertEqualObjects(self.focus.spokenDescription, @""); XCTAssertNil(self.focus.accessibilityValue);
+    [self.focus tick:old generation:generation];
+    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+    GroupingTeachingAction *firstRecipient = [self actionSharing:YES last:NO full:NO];
+    self.focus.frame = CGRectZero; [self.focus configureWithAction:firstRecipient]; [self.focus showBeforeState];
+    XCTAssertEqual([[self.focus valueForKey:@"targetGroups"] count], 0u); XCTAssertTrue(CGRectIsNull(self.focus.requiredActionRect));
+    XCTAssertFalse([self.focus playInVisibleRect:CGRectMake(0, 0, 361, 900)]); XCTAssertNil([self.focus valueForKey:@"clock"]);
+    CGSize size = [self.focus sizeThatFits:CGSizeMake(361, CGFLOAT_MAX)];
+    self.focus.frame = CGRectMake(0, 0, size.width, size.height); [self.focus setNeedsLayout]; [self.focus layoutIfNeeded];
+    XCTAssertTrue(self.focus.isShowingBeforeState); XCTAssertEqual(self.focus.displayedPoolCount, 23);
+    XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@0, @0, @0, @0])); [self assertConservation];
+    [self.focus showAfterState]; [self assertAfterSceneBelongsToAction:firstRecipient];
+}
+- (void)testRenderingInvariantFailureStillClosesItsCoreAnimationTransaction {
+    GroupingTeachingAction *lastBag = [self actionSharing:NO last:YES full:YES]; [self fitAction:lastBag width:361];
+    NSMutableDictionary *owners = [self.focus valueForKey:@"targetGroups"];
+    NSNumber *identity = [[self.focus valueForKey:@"movingIDs"] firstObject], *owner = owners[identity];
+    // Deliberately violate the renderer invariant, not the immutable math model.
+    // The failure must remain visible rather than silently dropping a counter.
+    [CATransaction begin]; [CATransaction setDisableActions:NO];
+    @try {
+        owners[identity] = @(lastBag.snapshot.groupCountsAfter.count);
+        XCTAssertThrowsSpecificNamed([self.focus showAfterState], NSException, NSRangeException);
+        BOOL leakedTransaction = [CATransaction disableActions];
+        // Keep this regression itself isolated even if the finally is removed.
+        if (leakedTransaction) [CATransaction commit];
+        XCTAssertFalse(leakedTransaction, @"A failed render must not leave its inner transaction on the caller's stack.");
+    } @finally {
+        owners[identity] = owner; [CATransaction commit];
+    }
+    [self.focus showAfterState]; [self assertAfterSceneBelongsToAction:lastBag];
 }
 - (void)testRealActionGeometryFitsCompactAndMaximumTextPortraitButRejectsLandscape {
     self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge;

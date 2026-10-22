@@ -124,6 +124,56 @@
 }
 @end
 
+/// Footer text uses the child's full preferred size. If that complete title
+/// cannot fit, show its familiar symbol instead of truncating or shrinking it.
+/// VoiceOver and the system large-content viewer retain the complete action.
+@interface CLIntroActionButton : ChildButton
+@property (nonatomic) BOOL requiresCompactSymbol;
+- (BOOL)showsSymbolAtWidth:(CGFloat)width;
+@end
+@implementation CLIntroActionButton
++ (instancetype)buttonWithTitle:(NSString *)title backgroundColor:(UIColor *)color {
+    CLIntroActionButton *button = [self buttonWithType:UIButtonTypeCustom];
+    [button setTitle:title forState:UIControlStateNormal];
+    for (NSNumber *state in @[@(UIControlStateNormal), @(UIControlStateHighlighted), @(UIControlStateDisabled)]) {
+        [button setTitleColor:ChildUI.brownText forState:state.unsignedIntegerValue];
+    }
+    button.backgroundColor = color;
+    button.tintColor = ChildUI.brownText;
+    button.layer.cornerRadius = 20;
+    [ChildUI applySoftShadowOnLayer:button.layer];
+    button.titleLabel.textAlignment = NSTextAlignmentCenter;
+    button.titleLabel.adjustsFontSizeToFitWidth = NO;
+    button.showsLargeContentViewer = YES;
+    button.largeContentTitle = title;
+    [button addInteraction:[[UILargeContentViewerInteraction alloc] init]];
+    return button;
+}
+- (void)setRequiresCompactSymbol:(BOOL)requiresCompactSymbol {
+    if (_requiresCompactSymbol == requiresCompactSymbol) return;
+    _requiresCompactSymbol = requiresCompactSymbol;
+    [self setNeedsLayout];
+}
+- (BOOL)showsSymbolAtWidth:(CGFloat)width {
+    CGFloat titleWidth = [self.currentTitle sizeWithAttributes:@{NSFontAttributeName:self.titleLabel.font}].width;
+    return self.requiresCompactSymbol || self.currentTitle.length == 0 || ceil(titleWidth) + 16 > width;
+}
+- (CGRect)titleRectForContentRect:(CGRect)contentRect {
+    if ([self showsSymbolAtWidth:contentRect.size.width]) return CGRectZero;
+    return CGRectInset(contentRect, 8, 8);
+}
+- (CGRect)imageRectForContentRect:(CGRect)contentRect {
+    if (![self showsSymbolAtWidth:contentRect.size.width]) return CGRectZero;
+    return CGRectMake(CGRectGetMidX(contentRect) - 12, CGRectGetMidY(contentRect) - 12, 24, 24);
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    BOOL symbol = [self showsSymbolAtWidth:self.bounds.size.width];
+    self.titleLabel.hidden = symbol;
+    self.imageView.hidden = !symbol;
+}
+@end
+
 /// Each leg belongs to one original counter. The schedule has no overlapping
 /// transfer intervals, so a child can track and count every moved unit.
 @interface CLIntroTransferLeg : NSObject
@@ -164,6 +214,8 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 @property (nonatomic, strong) ChildButton *replayButton;
 @property (nonatomic, strong) ChildButton *startButton;
 @property (nonatomic, strong) ChildButton *readButton;
+@property (nonatomic, strong) NSLayoutConstraint *readButtonHeight;
+@property (nonatomic, strong) ChildButton *pinnedReadButton;
 @property (nonatomic, strong) CLIntroFrameView *firstFrame;
 @property (nonatomic, strong) CLIntroFrameView *secondFrame;
 @property (nonatomic, strong) UILabel *firstCountLabel;
@@ -184,6 +236,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 - (BOOL)prepareStageDots;
 - (void)settleStageAfterLayout;
 - (void)validatePlaybackVisibility;
+- (SpeechManager *)speechManager;
 @end
 
 /// CADisplayLink retains its target. The target must not retain this teaching
@@ -286,9 +339,31 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 
 - (ChildButton *)button:(NSString *)title color:(UIColor *)color action:(SEL)action identifier:(NSString *)identifier {
     ChildButton *button = [ChildButton buttonWithTitle:title backgroundColor:color];
-    button.titleLabel.font = [ChildUI scaledRoundedFontOfSize:18 weight:UIFontWeightBold textStyle:UIFontTextStyleBody maximumPointSize:22];
+    button.titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightBold]];
     button.titleLabel.adjustsFontForContentSizeCategory = YES;
+    button.titleLabel.adjustsFontSizeToFitWidth = NO;
+    button.titleLabel.numberOfLines = 0;
+    button.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    button.titleLabel.textAlignment = NSTextAlignmentCenter;
+    button.contentEdgeInsets = UIEdgeInsetsMake(12, 12, 12, 12);
     button.accessibilityIdentifier = identifier;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (ChildButton *)footerButton:(NSString *)title color:(UIColor *)color symbol:(NSString *)symbol
+    action:(SEL)action identifier:(NSString *)identifier {
+    CLIntroActionButton *button = [CLIntroActionButton buttonWithTitle:title backgroundColor:color];
+    button.titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightBold]];
+    button.titleLabel.adjustsFontForContentSizeCategory = YES;
+    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:
+        [UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightSemibold]]
+        forState:UIControlStateNormal];
+    button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    button.accessibilityIdentifier = identifier;
+    button.accessibilityLabel = title;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
 }
@@ -320,6 +395,10 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     self.problemLabel.accessibilityIdentifier = @"lessonIntro.equation";
     self.narration = [self labelWithSize:20 weight:UIFontWeightMedium];
     self.narration.accessibilityIdentifier = @"lessonIntro.narration";
+    // The complete explanation is scrollable. Never cap or shrink it to make
+    // the diagram fit; the fixed speaker shortcut remains available instead.
+    self.narration.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:20 weight:UIFontWeightMedium]];
     CLIntroStageView *stage = [[CLIntroStageView alloc] init];
     __weak typeof(self) weakSelf = self;
     stage.sizeDidLayout = ^{ [weakSelf settleStageAfterLayout]; };
@@ -333,7 +412,8 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     [self.problemLabel.heightAnchor constraintEqualToConstant:62].active = YES;
     self.stageHeight = [self.stage.heightAnchor constraintEqualToConstant:[self isTenStrategy] ? 292 : 244];
     self.stageHeight.active = YES;
-    [self.readButton.heightAnchor constraintGreaterThanOrEqualToConstant:60].active = YES;
+    self.readButtonHeight = [self.readButton.heightAnchor constraintEqualToConstant:60];
+    self.readButtonHeight.active = YES;
 
     self.firstFrame = [[CLIntroFrameView alloc] initWithFrame:CGRectZero];
     self.secondFrame = [[CLIntroFrameView alloc] initWithFrame:CGRectZero];
@@ -351,16 +431,25 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
         [self.stage addSubview:view];
     }
 
-    self.previousButton = [self button:@"上一步" color:ChildUI.lavender action:@selector(goToPreviousStep) identifier:@"lessonIntro.previous"];
-    self.nextButton = [self button:@"下一步" color:ChildUI.mintGreen action:@selector(goToNextStep) identifier:@"lessonIntro.next"];
-    self.replayButton = [self button:@"重看這步" color:ChildUI.lavender action:@selector(replayCurrentStep) identifier:@"lessonIntro.replay"];
+    self.previousButton = [self footerButton:@"上一步" color:ChildUI.lavender symbol:@"chevron.left" action:@selector(goToPreviousStep) identifier:@"lessonIntro.previous"];
+    self.nextButton = [self footerButton:@"下一步" color:ChildUI.mintGreen symbol:@"chevron.right" action:@selector(goToNextStep) identifier:@"lessonIntro.next"];
+    self.replayButton = [self footerButton:@"重看這步" color:ChildUI.lavender symbol:@"arrow.counterclockwise" action:@selector(replayCurrentStep) identifier:@"lessonIntro.replay"];
     self.replayButton.accessibilityLabel = @"重看這一步";
-    self.startButton = [self button:self.currentProblem ? @"回到題目" : @"開始練習" color:ChildUI.skyBlue
-        action:@selector(startTapped) identifier:@"lessonIntro.start"];
-    // Two equal pairs become a 2×2 footer on compact screens and a single row
-    // on wider ones. Every control stays available and at least 60 points tall.
+    self.replayButton.largeContentTitle = self.replayButton.accessibilityLabel;
+    self.startButton = [self footerButton:self.currentProblem ? @"回到題目" : @"開始練習" color:ChildUI.skyBlue
+        symbol:self.currentProblem ? @"arrow.uturn.backward" : @"play.fill" action:@selector(startTapped) identifier:@"lessonIntro.start"];
+    // Keep the labeled listening action with the explanation, and offer the
+    // same explicit action beside Back/Next while the child inspects the dots.
+    // A symbol fits the existing footer height without squeezing the diagram.
+    self.pinnedReadButton = [self footerButton:@"" color:ChildUI.skyBlue symbol:@"speaker.wave.2.fill"
+        action:@selector(readCurrentStep) identifier:@"lessonIntro.readPinned"];
+    self.pinnedReadButton.accessibilityLabel = @"聽聽這一步";
+    self.pinnedReadButton.accessibilityHint = @"朗讀這一步，不會換步或移動畫面。";
+    self.pinnedReadButton.largeContentTitle = self.pinnedReadButton.accessibilityLabel;
+    // Back/listen/Next above Replay/Return reuses the original two-row footer.
+    // Wide screens keep one row; every control is at least 60 points tall.
     NSMutableArray<UIStackView *> *pairs = [NSMutableArray array];
-    for (NSArray<UIButton *> *buttons in @[@[self.previousButton, self.nextButton], @[self.replayButton, self.startButton]]) {
+    for (NSArray<UIButton *> *buttons in @[@[self.previousButton, self.pinnedReadButton, self.nextButton], @[self.replayButton, self.startButton]]) {
         UIStackView *pair = [[UIStackView alloc] initWithArrangedSubviews:buttons];
         pair.axis = UILayoutConstraintAxisHorizontal;
         pair.distribution = UIStackViewDistributionFillEqually;
@@ -419,21 +508,54 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 
 - (void)layoutVisibilityInstruction {
+    NSString *text = @"滑動看圖，前後步比一比。";
+    CGFloat width = MAX(1, self.bounds.size.width - 32);
+    CGFloat fullHeight = ceil([text boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
+        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+        attributes:@{NSFontAttributeName:self.visibilityInstruction.font} context:nil].size.height) + 8;
+    // On a very short large-text surface the full recovery sentence itself can
+    // consume the remaining viewport. Keep a complete short instruction there;
+    // its spoken label still explains listening and static before/after review.
+    CGFloat available = self.bounds.size.height - self.buttonStackHeight.constant - 44;
+    if (fullHeight > MAX(0, available - 32)) text = @"滑動看圖";
+    if (![self.visibilityInstruction.text isEqualToString:text]) self.visibilityInstruction.text = text;
+    self.visibilityInstruction.accessibilityLabel = @"滑動看圖，按喇叭聽這一步，用前後步比一比。";
     CGFloat height = self.visibilityInstruction.hidden ? 0 : ceil([self.visibilityInstruction
-        sizeThatFits:CGSizeMake(MAX(1, self.bounds.size.width - 32), CGFLOAT_MAX)].height) + 8;
+        sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)].height) + 8;
     self.scrollBottomSpacing.constant = -12 - height;
 }
 - (void)layoutSubviews {
-    [self layoutVisibilityInstruction];
-    CGFloat titleWidth = 0, lineHeight = 0;
+    CGFloat titleWidth = 0;
     for (UIButton *button in @[self.previousButton, self.nextButton, self.replayButton, self.startButton]) {
-        titleWidth = MAX(titleWidth, [button.titleLabel.text sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}].width);
-        lineHeight = MAX(lineHeight, button.titleLabel.font.lineHeight);
+        titleWidth = MAX(titleWidth, [button.currentTitle sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}].width);
     }
-    BOOL stackVertically = self.bounds.size.width - 32 < 4 * MAX(112, titleWidth + 24) + 36;
-    CGFloat buttonHeight = MAX(60, ceil(lineHeight) + 24);
+    CGFloat footerWidth = MAX(1, self.bounds.size.width - 32);
+    BOOL stackVertically = footerWidth < 4 * MAX(112, titleWidth + 24) + 36;
+    CGFloat groupWidth = stackVertically ? footerWidth : (footerWidth - 12) / 2;
+    CGFloat buttonHeight = 60;
+    for (CLIntroActionButton *button in @[self.previousButton, self.nextButton, self.replayButton, self.startButton]) {
+        button.requiresCompactSymbol = NO;
+        BOOL firstRow = button == self.previousButton || button == self.nextButton;
+        CGFloat width = firstRow ? (groupWidth - 24) / 3 : (groupWidth - 12) / 2;
+        if (![button showsSymbolAtWidth:width]) buttonHeight = MAX(buttonHeight, ceil(button.titleLabel.font.lineHeight) + 24);
+    }
+    CGFloat footerHeight = stackVertically ? buttonHeight * 2 + 12 : buttonHeight;
+    if (footerHeight > self.bounds.size.height - 44 - 80) {
+        // Keep usable inspection space rather than compressing a preferred font
+        // or letting large labels push the entire diagram out of the viewport.
+        for (CLIntroActionButton *button in @[self.previousButton, self.nextButton, self.replayButton, self.startButton]) {
+            button.requiresCompactSymbol = YES;
+        }
+        footerHeight = stackVertically ? 132 : 60;
+    }
     self.buttonStack.axis = stackVertically ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
-    self.buttonStackHeight.constant = stackVertically ? buttonHeight * 2 + 12 : buttonHeight;
+    self.buttonStackHeight.constant = footerHeight;
+    [self layoutVisibilityInstruction];
+    CGFloat readWidth = MAX(1, self.bounds.size.width - 32 - 24);
+    CGSize readText = [self.readButton.currentTitle boundingRectWithSize:CGSizeMake(readWidth, CGFLOAT_MAX)
+        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+        attributes:@{NSFontAttributeName:self.readButton.titleLabel.font} context:nil].size;
+    self.readButtonHeight.constant = MAX(60, ceil(readText.height) + 24);
     BOOL sideBySide = [self usesSideBySideTenFramesAtWidth:self.bounds.size.width - 32];
     BOOL compactMakeTen = self.lessonKind == LessonKindMakeTen && !sideBySide;
     // The source annotation sits below its frame, leaving the inter-frame gap
@@ -508,7 +630,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     // Invalidate first. Neither a queued natural-end callback nor restored
     // visibility may revive this generation. Never chase a child's scrolling.
     [self cancelStepAnimation];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     self.playbackState = [self isEffectivelyVisible] ? LessonIntroPlaybackStateVisibilityPaused
         : LessonIntroPlaybackStateCancelled;
     [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
@@ -530,12 +652,12 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 - (void)stopPlayback {
     [self cancelStepAnimation];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     [self renderStepAnimated:NO];
 }
 - (void)settleStageAfterLayout {
     [self cancelStepAnimation];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     if (![self prepareStageDots]) return;
     // The child owns only its manual diagram layout. Do not reassign sibling
     // labels/buttons here: that can invalidate the surrounding stack mid-pass.
@@ -603,7 +725,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 - (void)startTapped {
     if (self.finished) return;
     self.finished = YES;
-    for (UIButton *button in @[self.previousButton, self.nextButton, self.replayButton, self.startButton, self.readButton]) button.enabled = NO;
+    for (UIButton *button in @[self.previousButton, self.nextButton, self.replayButton, self.startButton, self.readButton, self.pinnedReadButton]) button.enabled = NO;
     [self stopPlayback];
     [self.delegate lessonIntroDidFinish:self];
 }
@@ -630,7 +752,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 - (void)goToPreviousStep {
     if (self.finished || self.step == 0) return;
     [self cancelStepAnimation];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     self.step--;
     [self renderStepAnimated:NO];
     // This is an in-place step change. Moving VoiceOver focus to narration
@@ -641,7 +763,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     if (self.finished) return;
     if (self.step == [self lastStep]) { [self startTapped]; return; }
     [self cancelStepAnimation];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     self.step++;
     [self renderStepAnimated:YES frameNewStep:YES];
     [SoundManager.sharedInstance play:self.step == [self lastStep] ? SoundEffectCheer : SoundEffectReveal];
@@ -650,12 +772,13 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 - (void)replayCurrentStep {
     if (self.finished) return;
     [self cancelStepAnimation];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     [self renderStepAnimated:YES];
     UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentNarration);
 }
+- (SpeechManager *)speechManager { return SpeechManager.sharedInstance; }
 - (void)readCurrentStep {
-    if (!self.finished) [SpeechManager.sharedInstance speak:self.currentNarration];
+    if (!self.finished) [[self speechManager] speak:self.currentNarration];
 }
 
 #pragma mark - One countable renderer
@@ -669,6 +792,11 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     self.progressLabel.text = [NSString stringWithFormat:@"第 %ld 小步 · 共 %ld 步 · 不用急", (long)self.step + 1, (long)self.numberOfSteps];
     self.previousButton.enabled = self.step > 0 && !self.finished;
     [self.nextButton setTitle:self.step == [self lastStep] ? @"完成" : @"下一步" forState:UIControlStateNormal];
+    self.nextButton.accessibilityLabel = self.nextButton.currentTitle;
+    self.nextButton.largeContentTitle = self.nextButton.currentTitle;
+    [self.nextButton setImage:[UIImage systemImageNamed:self.step == [self lastStep] ? @"checkmark" : @"chevron.right"
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightSemibold]]
+        forState:UIControlStateNormal];
     self.firstCountLabel.text = [NSString stringWithFormat:@"先有 %ld", (long)a];
     self.secondCountLabel.text = [NSString stringWithFormat:@"再加 %ld", (long)b];
     switch (self.lessonKind) {
@@ -941,15 +1069,35 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     return bounds;
 }
 
+/// Pedagogical framing is not motion admission. Long narration must never
+/// make an otherwise fully visible causal action fail its independent gate.
+/// All bounds are actual laid-out rectangles in the stage's coordinate space;
+/// narration/listen are siblings, not additions to requiredActionBounds.
+- (CGRect)explanationFramingBoundsForScene:(CGRect)scene {
+    if (![self isTenStrategy] || CGRectIsNull(scene) || CGRectIsEmpty(scene)) return CGRectNull;
+    CGRect viewport = [self visibleStageRect];
+    if (CGRectIsNull(viewport) || CGRectIsEmpty(viewport)) return CGRectNull;
+    CGRect explanation = CGRectUnion(scene, [self.narration convertRect:self.narration.bounds toView:self.stage]);
+    CGRect withRead = CGRectUnion(explanation, [self.readButton convertRect:self.readButton.bounds toView:self.stage]);
+    for (NSValue *candidate in @[[NSValue valueWithCGRect:withRead], [NSValue valueWithCGRect:explanation]]) {
+        CGRect bounds = candidate.CGRectValue;
+        if (bounds.size.width <= viewport.size.width && bounds.size.height <= viewport.size.height) return bounds;
+    }
+    return CGRectNull; // The fixed speaker still reads the full current text.
+}
+
 - (void)frameNewStepScene:(CGRect)scene frames:(CGRect)frames counters:(CGRect)counters {
-    // An already safe child-chosen viewport must be exactly preserved. Initial
-    // static presentation may try smaller snapshots; motion passes the complete
-    // action for all three candidates, never dropping a frame or count label.
-    if ([self stageRectIsFullyVisible:scene]) return;
+    // New steps prefer the complete explanation even when the diagram alone
+    // already fits. Replay reaches this method only if its action was clipped,
+    // preserving every already-safe inspection offset exactly. Initial static
+    // presentation retains its smaller fallbacks; motion never drops context.
+    CGRect explanation = [self explanationFramingBoundsForScene:scene];
+    CGRect preferred = CGRectIsNull(explanation) ? scene : explanation;
+    if ([self stageRectIsFullyVisible:preferred]) return;
     CGRect actualViewport = [self visibleStageRect];
     if (CGRectIsNull(actualViewport) || CGRectIsEmpty(actualViewport)) return;
-    for (NSValue *candidate in @[[NSValue valueWithCGRect:scene], [NSValue valueWithCGRect:frames],
-        [NSValue valueWithCGRect:counters]]) {
+    for (NSValue *candidate in @[[NSValue valueWithCGRect:explanation], [NSValue valueWithCGRect:scene],
+        [NSValue valueWithCGRect:frames], [NSValue valueWithCGRect:counters]]) {
         CGRect bounds = candidate.CGRectValue;
         if (CGRectIsNull(bounds) || CGRectIsEmpty(bounds)) continue;
         if (bounds.size.width > actualViewport.size.width || bounds.size.height > actualViewport.size.height) continue;
@@ -1009,8 +1157,9 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     if (animated && transferLegs.count) required = CGRectUnion(required, [self makeTenTransferBounds:transferLegs]);
     self.requiredActionBounds = required;
     if (animated && (frameNewStep || ([self isTenStrategy] && ![self isRequiredActionVisible]))) {
-        // Intentional Replay contract: only an explicit request may minimally
-        // reframe a clipped causal scene. A fully visible Replay never scrolls.
+        // Only explicit selection may frame the teaching unit. A fully visible
+        // causal Replay retains its exact offset, including deliberate text
+        // inspection; the fixed speaker never requires a corrective scroll.
         [self frameNewStepScene:required frames:[self isTenStrategy] ? required : frames
             counters:[self isTenStrategy] ? required : counters];
     }

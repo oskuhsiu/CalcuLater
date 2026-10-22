@@ -51,9 +51,10 @@ typedef NS_ENUM(NSInteger, LessonIntroPlaybackState) {
 - (void)goToPreviousStep;
 - (void)goToNextStep;
 /// Reconstructs this step's own before-state, without restarting the lesson.
-/// Keeps an already visible scene at the exact chosen offset. If clipped, this
-/// explicit action may minimally frame the complete scene; an impossible fit
-/// stays static with an instruction, never running a hidden demonstration.
+/// Keeps an already visible causal scene at the exact chosen offset. If clipped,
+/// this explicit action may frame the diagram and its explanation when they fit.
+/// An impossible action fit stays static with an instruction and reachable
+/// listening, never running a hidden demonstration.
 - (void)replayCurrentStep;
 
 /// Cancels motion and speech and settles the selected state, never a future

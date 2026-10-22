@@ -327,6 +327,11 @@
     NSString *variation = self.app.staticTexts[@"concept.variation"].label;
     XCTAssertTrue([stage hasPrefix:@"3 / 3"]);
     XCTAssertTrue([variation containsString:@"2 / 3"]);
+    XCTAssertTrue([stage containsString:@"學習階段"]);
+    XCTAssertTrue([variation containsString:@"數字組別"]);
+    XCTAssertEqualObjects(self.app.buttons[@"concept.previous"].label, @"上一階段");
+    XCTAssertEqualObjects(self.app.buttons[@"concept.previousNumbers"].label, @"上一組數字");
+    XCTAssertEqualObjects(self.app.buttons[@"concept.change"].label, @"下一組數字");
     [self tapConcept:@"concept.teach"];
     NSString *next = [prefix stringByAppendingString:@".next"];
     XCTAssertTrue([self.app.buttons[next] waitForExistenceWithTimeout:5]);
@@ -347,9 +352,36 @@
     XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, stage);
     XCTAssertEqualObjects(self.app.staticTexts[@"concept.variation"].label, variation);
 }
+- (void)listenToCurrentQuestionWithoutOpeningTeaching:(NSString *)captureName {
+    NSString *equation = self.app.staticTexts[@"concept.equation"].label;
+    NSString *question = self.app.staticTexts[@"concept.question"].label;
+    NSString *stage = self.app.staticTexts[@"concept.stage"].label;
+    XCUIElement *read = self.app.buttons[@"concept.read"];
+    [self revealConceptButton:read];
+    XCTAssertEqualObjects(read.label, @"聽題目");
+    [read tap];
+    // Native synthesis may already have finished when XCTest observes it.
+    // These UI states prove the explicit action was handled, not audio quality;
+    // exact requested text and cancellation are tested with a silent speech spy.
+    NSPredicate *requested = [NSPredicate predicateWithFormat:@"label IN %@", @[@"停止朗讀", @"再聽一次"]];
+    XCTNSPredicateExpectation *handled = [[XCTNSPredicateExpectation alloc] initWithPredicate:requested object:read];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[handled] timeout:3], XCTWaiterResultCompleted);
+    [self revealConceptButton:read]; // The changed title also needs its complete real viewport target.
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, equation);
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.question"].label, question);
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, stage);
+    XCTAssertFalse(self.app.buttons[@"teaching.next"].exists);
+    XCTAssertFalse(self.app.buttons[@"grouping.next"].exists);
+    for (NSUInteger choice = 0; choice < 4; choice++) {
+        XCTAssertFalse((self.app.buttons[[NSString stringWithFormat:@"answer.%lu", (unsigned long)choice]].exists));
+    }
+    XCTAssertFalse(self.app.buttons[@"session.next"].exists);
+    [self capture:captureName];
+}
 - (void)testCarryDiscoveryKeepsQuestionsAcrossTeachingBackAndChangedNumbers {
     [self openPath:@"carry"];
     XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"27 + 15 = ?");
+    [self listenToCurrentQuestionWithoutOpeningTeaching:@"concept-carry-listen-before-demonstration"];
     [self tapConcept:@"concept.teach"];
     XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
     XCTAssertTrue([[self boardValue:@"verticalTeachingBoard"] containsString:@"答案還沒寫"]);
@@ -373,6 +405,14 @@
     XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"43 + 16 = ?");
     [self tapConcept:@"concept.change"];
     XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"43 + 17 = ?");
+    NSString *explorationStage = self.app.staticTexts[@"concept.stage"].label;
+    [self tapConcept:@"concept.previousNumbers"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"43 + 16 = ?");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, explorationStage);
+    XCTAssertTrue([self.app.staticTexts[@"concept.variation"].label containsString:@"1 / 3"]);
+    [self tapConcept:@"concept.change"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"43 + 17 = ?");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, explorationStage);
     [self checkChangedVariation:@"43 + 17 = ?" prefix:@"teaching" board:@"verticalTeachingBoard" fragments:@[@"43 加 17。"] narration:nil];
     [self capture:@"concept-carry-retained-exploration"];
     [self tapConcept:@"concept.change"];
@@ -381,6 +421,64 @@
     XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"43 + 16 = ?");
     [self.app.buttons[@"concept.close"] tap];
     XCTAssertTrue([self.app.collectionViews[@"lessons.catalog"] waitForExistenceWithTimeout:5]);
+}
+- (void)testQuestionListeningAndReversibleNumbersKeepTheSelectedStory {
+    // This uses the actual simulator's content-size setting. The conceptCore
+    // and conceptCoreMaximumText lanes select this case; no launch-only font fake.
+    [self openPath:@"sharing"];
+    [self listenToCurrentQuestionWithoutOpeningTeaching:@"concept-sharing-listen-to-story"];
+    [self tapConcept:@"concept.next"];
+    XCTAssertEqualObjects(self.app.buttons[@"concept.read"].label, @"聽題目");
+    [self tapConcept:@"concept.next"];
+    [self tapConcept:@"concept.change"];
+    NSString *stage = self.app.staticTexts[@"concept.stage"].label;
+    NSString *question = self.app.staticTexts[@"concept.question"].label;
+    NSString *variation = self.app.staticTexts[@"concept.variation"].label;
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"18 ÷ 4 = ?");
+    XCTAssertTrue([question containsString:@"平均分給 4 個小朋友"]);
+    [self listenToCurrentQuestionWithoutOpeningTeaching:@"concept-sharing-listen-to-current-variation"];
+    [self tapConcept:@"concept.previousNumbers"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"17 ÷ 4 = ?");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, stage);
+    XCTAssertEqualObjects(self.app.buttons[@"concept.read"].label, @"聽題目");
+    [self tapConcept:@"concept.previousNumbers"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"19 ÷ 4 = ?");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, stage);
+    [self tapConcept:@"concept.change"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"17 ÷ 4 = ?");
+    [self tapConcept:@"concept.change"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"18 ÷ 4 = ?");
+    [self tapConcept:@"concept.previous"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"13 ÷ 3 = ?");
+    [self tapConcept:@"concept.next"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"18 ÷ 4 = ?");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.question"].label, question);
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.variation"].label, variation);
+    [self tapConcept:@"concept.read"];
+    [XCUIDevice.sharedDevice pressButton:XCUIDeviceButtonHome];
+    [self.app activate];
+    XCTAssertNotEqualObjects(self.app.buttons[@"concept.read"].label, @"停止朗讀");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.equation"].label, @"18 ÷ 4 = ?");
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.question"].label, question);
+    [self tapConcept:@"concept.teach"];
+    XCTAssertTrue([self.app.buttons[@"grouping.next"] waitForExistenceWithTimeout:5]);
+    [self waitForBoard:@"groupingTeachingBoard" fragments:@[@"平均分給 4 個小朋友", @"待分的糖果：18 顆", @"答案還沒寫"]];
+    // Exercise the system sheet-dismiss gesture, separately from the original
+    // explicit Close-button route. Coordinates come from the actual sheet.
+    XCUIElement *sheet = [self element:@"grouping.screen"];
+    CGRect sheetFrame = [self checkedFrame:sheet];
+    XCUICoordinate *top = [sheet coordinateWithNormalizedOffset:CGVectorMake(0.5, 0)];
+    XCUICoordinate *grabber = [top coordinateWithOffset:CGVectorMake(0, 12)];
+    XCUICoordinate *down = [top coordinateWithOffset:CGVectorMake(0, sheetFrame.size.height * 0.8)];
+    [grabber pressForDuration:0.05 thenDragToCoordinate:down
+        withVelocity:XCUIGestureVelocitySlow thenHoldForDuration:0.2];
+    [self assertReturnedFromTeaching:@"grouping.next" equation:@"18 ÷ 4 = ?"];
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.question"].label, question);
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.stage"].label, stage);
+    XCTAssertEqualObjects(self.app.staticTexts[@"concept.variation"].label, variation);
+    XCTAssertNotEqualObjects(self.app.buttons[@"concept.read"].label, @"停止朗讀");
+    [self revealConceptButton:self.app.buttons[@"concept.previousNumbers"]];
+    [self capture:@"concept-sharing-reversible-variation-retained-after-sheet-dismissal"];
 }
 - (void)testBorrowingDirectlyExposesZeroRegrouping {
     [self openPath:@"borrow"];

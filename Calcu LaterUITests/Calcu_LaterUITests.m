@@ -777,7 +777,52 @@
     [self.app.buttons[@"lessonIntro.replay"] tap];
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
 }
+- (void)assertTenFrameListeningIsReachable {
+    XCUIElement *listen = self.app.buttons[@"lessonIntro.readPinned"];
+    XCUIElement *scroll = self.app.scrollViews[@"lessonIntro.content"];
+    CGRect window = self.app.windows.firstMatch.frame;
+    XCTAssertTrue(listen.exists && listen.enabled && listen.hittable);
+    XCTAssertEqualObjects(listen.label, @"聽聽這一步");
+    XCTAssertGreaterThanOrEqual(listen.frame.size.width, 60);
+    XCTAssertGreaterThanOrEqual(listen.frame.size.height, 60);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(window, -0.5, -0.5), listen.frame));
+    XCTAssertFalse(CGRectIntersectsRect(listen.frame, scroll.frame));
+    for (NSString *identifier in @[@"lessonIntro.previous", @"lessonIntro.next", @"lessonIntro.replay", @"lessonIntro.start"]) {
+        XCTAssertFalse(CGRectIntersectsRect(listen.frame, self.app.buttons[identifier].frame));
+    }
+}
+- (void)assertTenFrameExplanationIsVisibleWhenItFits {
+    // This observation must precede any inspection scroll. Existence or a
+    // sliver of hittable text does not establish a readable causal explanation.
+    [self assertTenFrameListeningIsReachable];
+    XCUIElement *stage = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"];
+    XCUIElement *narration = self.app.staticTexts[@"lessonIntro.narration"];
+    XCUIElement *read = self.app.buttons[@"lessonIntro.read"];
+    CGRect viewport = self.app.scrollViews[@"lessonIntro.content"].frame;
+    CGRect window = self.app.windows.firstMatch.frame;
+    XCTAssertTrue(stage.exists && narration.exists && read.exists);
+    for (NSValue *value in @[[NSValue valueWithCGRect:stage.frame], [NSValue valueWithCGRect:narration.frame],
+        [NSValue valueWithCGRect:read.frame]]) {
+        CGRect rect = value.CGRectValue;
+        XCTAssertTrue(isfinite(rect.origin.x) && isfinite(rect.origin.y)
+            && isfinite(rect.size.width) && isfinite(rect.size.height));
+        XCTAssertGreaterThan(rect.size.width, 0);
+        XCTAssertGreaterThan(rect.size.height, 0);
+    }
+    CGRect explanation = CGRectUnion(stage.frame, narration.frame);
+    CGRect withRead = CGRectUnion(explanation, read.frame);
+    BOOL wholeUnitFits = withRead.size.width <= viewport.size.width && withRead.size.height <= viewport.size.height;
+    BOOL explanationFits = explanation.size.width <= viewport.size.width && explanation.size.height <= viewport.size.height;
+    if (wholeUnitFits || explanationFits) {
+        CGRect required = wholeUnitFits ? withRead : explanation;
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -0.5, -0.5), required),
+            @"The full explanation %@ fits %@ and must already be framed without test scrolling.",
+            NSStringFromCGRect(required), NSStringFromCGRect(viewport));
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(window, -0.5, -0.5), required));
+    }
+}
 - (void)assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused {
+    [self assertTenFrameListeningIsReachable];
     XCUIElement *stage = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"];
     XCUIElement *scroll = self.app.scrollViews[@"lessonIntro.content"];
     XCTAssertTrue(stage.exists && scroll.exists);
@@ -823,25 +868,40 @@
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 2 個，第二框 9 個"]);
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"41a-make-ten-incoming-first-play-before-inspection"];
     [self inspectTenFrameStage];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"41-make-ten-all-nine-incoming-dots"];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"lessonIntro.narration"].label containsString:@"9 拆成 8 和 1"]);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"42-make-ten-select-eight-leave-one"];
     NSUInteger beforeFirstTransfer = [self tenFramePlaybackGeneration];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     NSString *progress = self.app.staticTexts[@"lessonIntro.progress"].label;
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"43a-make-ten-transfer-first-play-before-inspection"];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeFirstTransfer step:3];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"43b-make-ten-first-play-naturally-completed"];
+    CGRect diagramBeforeListening = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"].frame;
+    NSUInteger generationBeforeListening = [self tenFramePlaybackGeneration];
+    [self.app.buttons[@"lessonIntro.readPinned"] tap];
+    XCTAssertEqual([self tenFramePlaybackGeneration], generationBeforeListening);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.progress"].label, progress);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    XCTAssertTrue(CGRectEqualToRect([self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"].frame,
+        diagramBeforeListening));
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     NSUInteger beforeReplay = [self tenFramePlaybackGeneration];
     [self inspectTenFrameStage];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeReplay step:3];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.progress"].label, progress);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"43-make-ten-transfer-eight-existing-dots"];
     [self.app.buttons[@"lessonIntro.previous"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 2 個，第二框 9 個"]);
@@ -850,6 +910,7 @@
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeBackNext step:3];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"43c-make-ten-back-next-naturally-completed"];
     // A separate fourth playback attempts an interruption. It must not stand
     // in for any complete transfer above. XCUITest may idle until it finishes
@@ -915,22 +976,27 @@
     NSString *question = [self openTenFrameLesson:@"L5" title:@"破十法（退位減）" scenario:@"break-ten-nine"];
     XCTAssertEqualObjects(question, @"18 − 9 = ?");
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"45a-break-ten-initial-before-inspection"];
     // Initial presentation, not only Next, must show both original quantities
     // when the complete stage fits. Inspect/Replay may not repair this assertion.
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
     [self inspectTenFrameStage];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"45-break-ten-ten-and-eight-original-ones"];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"劃掉 9 個"]);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"46-break-ten-cross-nine-only-from-ten"];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 1 個，第二框 8 個"]);
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"47a-break-ten-removal-first-play-before-inspection"];
     [self.app.buttons[@"lessonIntro.previous"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個；劃掉 9 個"]);
     [self.app.buttons[@"lessonIntro.next"] tap];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self inspectTenFrameStage];
     NSString *progress = self.app.staticTexts[@"lessonIntro.progress"].label;
     [[XCUIDevice sharedDevice] pressButton:XCUIDeviceButtonHome];
@@ -939,6 +1005,7 @@
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 1 個，第二框 8 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
     XCTAssertTrue(self.app.buttons[@"lessonIntro.start"].hittable);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"47-break-ten-original-eight-survive-background"];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, @"18 − 9 = 9");
@@ -951,24 +1018,30 @@
     XCTAssertEqualObjects(question, @"9 + 9 = ?");
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 9 個，第二框 9 個"]);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self inspectTenFrameStage];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"48-make-ten-eighteen-countable-dots"];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"lessonIntro.narration"].label containsString:@"9 拆成 1 和 8"]);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"48a-make-ten-select-one-leave-eight-in-original-slots"];
     NSUInteger beforeTransfer = [self tenFramePlaybackGeneration];
     [self.app.buttons[@"lessonIntro.next"] tap];
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"48b-make-ten-one-transfer-first-play-before-inspection"];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeTransfer step:3];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"48c-make-ten-one-arrived-eight-remainders-still-in-original-slots"];
     NSUInteger beforeReplay = [self tenFramePlaybackGeneration];
     [self inspectTenFrameStage];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeReplay step:3];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"48d-make-ten-one-transfer-replay-naturally-completed"];
     [self.app.buttons[@"lessonIntro.previous"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 9 個，第二框 9 個"]);
@@ -978,6 +1051,7 @@
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeBackNext step:3];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
     [self capture:@"48e-make-ten-one-transfer-back-next-eight-original-remainders"];
     [self.app.buttons[@"explanation.vertical"] tap];
     XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);

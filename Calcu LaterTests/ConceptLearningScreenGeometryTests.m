@@ -108,6 +108,16 @@
     XCTAssertTrue(label.adjustsFontForContentSizeCategory);
     XCTAssertEqualObjects(label.traitCollection.preferredContentSizeCategory,
                           self.controller.traitCollection.preferredContentSizeCategory);
+    NSDictionary<NSString *, NSNumber *> *baseSizes = @{@"concept.title": @26, @"concept.unscored": @17,
+        @"concept.stage": @21, @"concept.invitation": @19, @"concept.question": @22,
+        @"concept.equation": @30, @"concept.focus": @19, @"concept.variation": @17};
+    CGFloat baseSize = baseSizes[label.accessibilityIdentifier].doubleValue;
+    XCTAssertGreaterThan(baseSize, 0);
+    UIFont *expected = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:baseSize weight:UIFontWeightRegular]
+        compatibleWithTraitCollection:self.controller.traitCollection];
+    XCTAssertEqualWithAccuracy(label.font.pointSize, expected.pointSize, 0.01,
+                               @"%@ must use the active category's uncapped UIFontMetrics scale", label.accessibilityIdentifier);
     CGRect frame = [label convertRect:label.bounds toView:scroll];
     XCTAssertGreaterThan(frame.size.width, 0, @"%@", label.accessibilityIdentifier);
     XCTAssertGreaterThan(frame.size.height, 0, @"%@", label.accessibilityIdentifier);
@@ -126,12 +136,26 @@
     XCTAssertGreaterThanOrEqual(button.bounds.size.height, 44);
     XCTAssertFalse(button.hasAmbiguousLayout, @"%@", button.accessibilityIdentifier);
     XCTAssertFalse(button.titleLabel.adjustsFontSizeToFitWidth);
-    CGSize fullTitle = [button.titleLabel sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+    XCTAssertEqual(button.titleLabel.numberOfLines, 0);
+    XCTAssertTrue(button.titleLabel.adjustsFontForContentSizeCategory);
+    UIFont *expected = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:20 weight:UIFontWeightBold]
+        compatibleWithTraitCollection:self.controller.traitCollection];
+    XCTAssertEqualWithAccuracy(button.titleLabel.font.pointSize, expected.pointSize, 0.01);
     CGFloat availableWidth = button.bounds.size.width - button.contentEdgeInsets.left - button.contentEdgeInsets.right;
     CGFloat availableHeight = button.bounds.size.height - button.contentEdgeInsets.top - button.contentEdgeInsets.bottom;
+    // The design deliberately replaces the old 28pt/single-line cap with a
+    // full-size wrapped title. Measure every line at its real available width.
+    CGSize fullTitle = [button.titleLabel sizeThatFits:CGSizeMake(availableWidth, CGFLOAT_MAX)];
+    XCTAssertEqualObjects(button.titleLabel.text, button.currentTitle);
+    XCTAssertGreaterThan(availableWidth, 0);
     XCTAssertLessThanOrEqual(fullTitle.width, availableWidth + 1, @"%@ title must not truncate", button.accessibilityIdentifier);
     XCTAssertLessThanOrEqual(fullTitle.height, availableHeight + 1, @"%@ title must not clip vertically", button.accessibilityIdentifier);
     XCTAssertTrue(CGRectContainsRect(CGRectInset(button.bounds, -1, -1), button.titleLabel.frame));
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(UIEdgeInsetsInsetRect(button.bounds, button.contentEdgeInsets), -1, -1), button.titleLabel.frame));
+    CGSize requiredInLabel = [button.titleLabel sizeThatFits:CGSizeMake(button.titleLabel.bounds.size.width, CGFLOAT_MAX)];
+    XCTAssertLessThanOrEqual(requiredInLabel.height, button.titleLabel.bounds.size.height + 1,
+                            @"%@ must show every line inside the actual title label, not only a large button", button.accessibilityIdentifier);
 }
 
 - (void)assertScreenAtStage:(NSUInteger)stage navigationAxis:(UILayoutConstraintAxis)axis {
@@ -141,6 +165,7 @@
     UIButton *previous = (UIButton *)[self viewWithIdentifier:@"concept.previous"];
     UIButton *next = (UIButton *)[self viewWithIdentifier:@"concept.next"];
     UIStackView *navigation = (UIStackView *)previous.superview;
+    UIStackView *numberNavigation = (UIStackView *)[self viewWithIdentifier:@"concept.change"].superview;
     UILabel *question = (UILabel *)[self viewWithIdentifier:@"concept.question"];
     UIStackView *content = (UIStackView *)question.superview;
     XCTAssertTrue([scroll isKindOfClass:UIScrollView.class]);
@@ -156,6 +181,9 @@
     XCTAssertFalse(scroll.hasAmbiguousLayout);
     XCTAssertFalse(content.hasAmbiguousLayout);
     XCTAssertFalse(navigation.hasAmbiguousLayout);
+    XCTAssertFalse(numberNavigation.hasAmbiguousLayout);
+    XCTAssertEqual(numberNavigation.axis, axis);
+    XCTAssertEqual(numberNavigation.hidden, stage != 2);
     XCTAssertEqualWithAccuracy(content.bounds.size.width, scroll.bounds.size.width - 32, 1);
 
     XCTAssertEqual(close.superview, self.controller.view, @"Close must remain outside the scrolling content");
@@ -193,9 +221,10 @@
 
     // Each action must be reachable individually. The tall lesson is deliberately
     // scrollable; requiring the whole page in one viewport would be incorrect.
-    for (NSString *identifier in @[@"concept.teach", @"concept.change", @"concept.previous", @"concept.next"]) {
+    for (NSString *identifier in @[@"concept.read", @"concept.teach", @"concept.previousNumbers", @"concept.change", @"concept.previous", @"concept.next"]) {
         UIButton *button = (UIButton *)[self viewWithIdentifier:identifier];
-        XCTAssertEqual(button.hidden, [identifier isEqualToString:@"concept.change"] && stage != 2);
+        BOOL numberAction = [identifier isEqualToString:@"concept.change"] || [identifier isEqualToString:@"concept.previousNumbers"];
+        XCTAssertEqual(button.hidden, numberAction && stage != 2);
         if (button.hidden) continue;
         [self assertButtonFits:button];
         XCTAssertTrue([button isDescendantOfView:scroll]);
@@ -225,9 +254,9 @@
         UIButton *teach = (UIButton *)[self viewWithIdentifier:@"concept.teach"];
         // Check the fixture truly exercises scaled fonts, not just a trait string.
         XCTAssertGreaterThan(question.font.pointSize, 22);
-        XCTAssertLessThanOrEqual(question.font.pointSize, 22 * 1.6 + 0.5);
+        XCTAssertGreaterThan(question.font.pointSize, 22 * 1.6 + 0.5, @"The former label cap must no longer constrain AX5 text.");
         XCTAssertGreaterThan(teach.titleLabel.font.pointSize, 20);
-        XCTAssertLessThanOrEqual(teach.titleLabel.font.pointSize, 28.5);
+        XCTAssertGreaterThan(teach.titleLabel.font.pointSize, 28.5, @"The former action cap must no longer constrain AX5 text.");
         for (NSUInteger stage = 0; stage < 3; stage++) {
             [self assertScreenAtStage:stage navigationAxis:UILayoutConstraintAxisVertical];
             XCTAssertEqualObjects(question.text, self.controller.currentExample.questionText);

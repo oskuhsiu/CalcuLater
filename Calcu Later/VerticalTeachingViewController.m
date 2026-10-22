@@ -12,6 +12,17 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     VTInspectionAnchorFeedback, VTInspectionAnchorChoices, VTInspectionAnchorNotice
 };
 
+/// VoiceOver scrolling is deliberate inspection too, but need not begin a pan.
+@interface VTInspectionScrollView : UIScrollView
+@property (nonatomic, copy) void (^inspectionBegan)(void);
+@end
+@implementation VTInspectionScrollView
+- (BOOL)accessibilityScroll:(UIAccessibilityScrollDirection)direction {
+    if (self.inspectionBegan) self.inspectionBegan();
+    return [super accessibilityScroll:direction];
+}
+@end
+
 @interface VerticalTeachingViewController () <UIScrollViewDelegate>
 @property (nonatomic, strong) ArithmeticTeachingSequence *sequence;
 @property (nonatomic, strong) WordProblem *wordProblem;
@@ -43,7 +54,13 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
 @property (nonatomic) BOOL hasMeasuredContentGeometry;
 @property (nonatomic) CGRect lastBoardFrameInScroll;
 @property (nonatomic) CGSize lastContentSize;
+@property (nonatomic) NSUInteger semanticReframeGeneration;
+#if DEBUG
+@property (nonatomic, strong) NSMutableArray<NSString *> *playbackLayoutObservations;
+#endif
 - (BOOL)frameCurrentTransformation;
+- (void)beginManualInspection;
+- (void)recordPlaybackLayoutEvent:(NSString *)event;
 @end
 
 @implementation VerticalTeachingViewController
@@ -130,7 +147,10 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     [navigation addArrangedSubview:self.nextButton];
     [self.view addSubview:navigation];
 
-    self.scroll = [[UIScrollView alloc] init];
+    VTInspectionScrollView *scroll = [[VTInspectionScrollView alloc] init];
+    __weak typeof(self) weakSelf = self;
+    scroll.inspectionBegan = ^{ [weakSelf beginManualInspection]; };
+    self.scroll = scroll;
     self.scroll.translatesAutoresizingMaskIntoConstraints = NO;
     self.scroll.alwaysBounceVertical = YES;
     self.scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
@@ -219,6 +239,7 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     return self.sequence.isValid && self.stepIndex < self.sequence.steps.count ? self.sequence.steps[self.stepIndex] : nil;
 }
 - (void)showCurrentStepAnimated:(BOOL)animated {
+    self.semanticReframeGeneration++;
     [SpeechManager.sharedInstance stop];
     [self.playbackNotice removeFromSuperview];
     self.inspectionAnchor = VTInspectionAnchorHeading;
@@ -256,8 +277,9 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     self.framingContent = YES;
     [self.scroll setContentOffset:CGPointZero animated:NO];
     self.framingContent = NO;
-    // Fit the selected snapshot before animation. A later size change rightly
-    // cancels board motion, so animation must start only after final layout.
+    // Set this snapshot's measured height BEFORE asking the stack to lay out.
+    // A genuine later resize must still interrupt motion, not silently replay it.
+    [self updateBoardHeight];
     [self.view setNeedsLayout];
     [self.view layoutIfNeeded];
     [self updateBoardHeight];
@@ -345,10 +367,13 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) [self frameCurrentTransformation];
     else [self frameRect:action inView:self.board];
     CGRect visible = [self.scroll convertRect:self.unobscuredViewport toView:self.board];
+    [self recordPlaybackLayoutEvent:@"admission-before"];
     if ([self.board playCurrentActionInVisibleRect:visible]) {
+        [self recordPlaybackLayoutEvent:@"admission-accepted"];
         [self updateFocusButton];
         return YES;
     }
+    [self recordPlaybackLayoutEvent:@"admission-refused"];
     // Never start a partially visible action. Everything remains inspectable.
     self.playbackNotice.text = @"畫面放不下完整動作，先停在這一步。\n直拿手機後按「重看」，或用上方按鈕慢慢看。";
     if (!self.playbackNotice.superview) [self.content insertArrangedSubview:self.playbackNotice
@@ -457,6 +482,7 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     ArithmeticTeachingStep *step = self.currentStep;
     if (step.kind != ArithmeticTeachingStepKindPrediction || !button.enabled
         || ![self.choices.arrangedSubviews containsObject:button] || [self.answeredSteps containsIndex:self.stepIndex]) return;
+    self.semanticReframeGeneration++;
     NSNumber *key = @(self.stepIndex);
     NSMutableSet<NSNumber *> *attempts = self.attemptedValues[key];
     if (!attempts) self.attemptedValues[key] = attempts = [NSMutableSet set];
@@ -486,10 +512,12 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     [self showCurrentStepAnimated:NO];
 }
 - (void)replay {
+    self.semanticReframeGeneration++;
     [SpeechManager.sharedInstance stop];
     // Replay recovers semantic focus, not an obsolete numerical offset.
     [self.playbackNotice removeFromSuperview];
     [self.board showStepAtIndex:self.stepIndex animated:NO];
+    [self updateBoardHeight];
     [self.view layoutIfNeeded];
     [self updateBoardHeight];
     [self.view layoutIfNeeded];
@@ -526,15 +554,47 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     else [self dismissViewControllerAnimated:YES completion:nil];
 }
 - (void)pausePlayback {
+    self.semanticReframeGeneration++;
+    [self recordPlaybackLayoutEvent:@"pause-request"];
     [self.board cancelAnimations];
     [SpeechManager.sharedInstance stop];
 }
+- (void)reframeCurrentInspection {
+    if (self.hasManualInspection) return;
+    if (self.inspectionAnchor == VTInspectionAnchorAction) {
+        if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) [self frameCurrentTransformation];
+        else [self frameRect:self.board.currentActionRect inView:self.board];
+    } else if (self.inspectionAnchor == VTInspectionAnchorFeedback) [self framePredictionFeedback];
+    else if (self.inspectionAnchor == VTInspectionAnchorChoices) [self framePredictionChoices];
+    else if (self.inspectionAnchor == VTInspectionAnchorWritten) [self frameRect:self.board.currentWrittenRect inView:self.board];
+    else if (self.inspectionAnchor == VTInspectionAnchorNotice) [self frameRect:self.playbackNotice.bounds inView:self.playbackNotice];
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [self pausePlayback];
+    NSUInteger generation = self.semanticReframeGeneration;
+    __weak typeof(self) weakSelf = self;
+    [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.semanticReframeGeneration || self.hasManualInspection || !self.view.window) return;
+        // UIKit can finish changing contentOffset after the first size/layout
+        // callback, without changing either content-space geometry signature.
+        // Own exactly this transition's completion, never every later scroll.
+        [self.view layoutIfNeeded];
+        [self.scroll layoutIfNeeded];
+        [self reframeCurrentInspection];
+        [self recordPlaybackLayoutEvent:@"transition-completed-reframe"];
+    }];
+}
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    if (self.board.isPlaying || self.board.playbackState == VerticalArithmeticPlaybackStateInterrupted)
+        [self recordPlaybackLayoutEvent:@"layout-observed"];
     [self updateBoardHeight];
     BOOL largeText = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
     self.choices.axis = largeText ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
     if (!CGSizeEqualToSize(self.lastViewportSize, self.scroll.bounds.size)) {
+        [self recordPlaybackLayoutEvent:@"viewport-size-changed"];
         self.lastViewportSize = self.scroll.bounds.size;
         self.needsSemanticReframe = YES;
         [self.board cancelAnimations];
@@ -547,38 +607,68 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     if (!self.framingContent && fabs(self.board.bounds.size.height - self.boardHeight.constant) < 0.5) {
         [self.board layoutIfNeeded];
         CGRect boardFrame = [self.board convertRect:self.board.bounds toView:self.scroll];
-        BOOL contentChanged = !self.hasMeasuredContentGeometry
-            || !CGRectEqualToRect(self.lastBoardFrameInScroll, boardFrame)
+        BOOL boardChanged = self.hasMeasuredContentGeometry
+            && !CGRectEqualToRect(self.lastBoardFrameInScroll, boardFrame);
+        BOOL contentChanged = !self.hasMeasuredContentGeometry || boardChanged
             || !CGSizeEqualToSize(self.lastContentSize, self.scroll.contentSize);
+        if (contentChanged) [self recordPlaybackLayoutEvent:boardChanged ? @"board-geometry-changed" : @"content-size-settled"];
         self.hasMeasuredContentGeometry = YES;
         self.lastBoardFrameInScroll = boardFrame;
         self.lastContentSize = self.scroll.contentSize;
         if (contentChanged) {
             self.needsSemanticReframe = YES;
-            [self.board cancelAnimations];
+            // A footer's wrapped height or delayed contentSize update cannot
+            // invalidate a stationary, fully visible action. Real board motion
+            // still cancels, including upstream rewrapping at unchanged size.
+            if (boardChanged) [self.board cancelAnimations];
         }
         if (self.needsSemanticReframe) {
             self.needsSemanticReframe = NO;
-            if (!self.hasManualInspection) {
-                if (self.inspectionAnchor == VTInspectionAnchorAction) {
-                    if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) [self frameCurrentTransformation];
-                    else [self frameRect:self.board.currentActionRect inView:self.board];
-                } else if (self.inspectionAnchor == VTInspectionAnchorFeedback) [self framePredictionFeedback];
-                else if (self.inspectionAnchor == VTInspectionAnchorChoices) [self framePredictionChoices];
-                else if (self.inspectionAnchor == VTInspectionAnchorWritten) [self frameRect:self.board.currentWrittenRect inView:self.board];
-                else if (self.inspectionAnchor == VTInspectionAnchorNotice) [self frameRect:self.playbackNotice.bounds inView:self.playbackNotice];
+            // A content-size correction may also clamp the offset. Do not hide
+            // an already-clipped playback by reframing it before checking.
+            if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) {
+                [self recordPlaybackLayoutEvent:@"reframe-playback-outside-viewport"];
+                [self.board cancelAnimations];
             }
+            [self reframeCurrentInspection];
         }
     }
     // Wrapping can displace an action without changing the viewport size.
-    if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) [self.board cancelAnimations];
+    if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) {
+        [self recordPlaybackLayoutEvent:@"layout-playback-outside-viewport"];
+        [self.board cancelAnimations];
+    }
 }
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    [self beginManualInspection];
+}
+- (void)beginManualInspection {
     self.hasManualInspection = YES;
     [self pausePlayback];
 }
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
-    if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) [self.board cancelAnimations];
+    if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) {
+        [self recordPlaybackLayoutEvent:@"scroll-playback-outside-viewport"];
+        [self.board cancelAnimations];
+    }
+}
+- (void)recordPlaybackLayoutEvent:(NSString *)event {
+#if DEBUG
+    if (![NSProcessInfo.processInfo.arguments containsObject:@"-CalcuLaterVerticalPlaybackDiagnostics"]) return;
+    if (!self.playbackLayoutObservations) self.playbackLayoutObservations = [NSMutableArray array];
+    [self.playbackLayoutObservations addObject:[NSString stringWithFormat:
+        @"uptime=%.6f event=%@ step=%lu state=%ld viewport=%@ board=%@ priorBoard=%@ fittedHeight=%.3f contentSize=%@ priorContentSize=%@ offset=%@ action=%@ manual=%d generation=%lu",
+        NSProcessInfo.processInfo.systemUptime, event, (unsigned long)self.stepIndex, (long)self.board.playbackState,
+        NSStringFromCGRect(self.unobscuredViewport), NSStringFromCGRect([self.board convertRect:self.board.bounds toView:self.scroll]),
+        NSStringFromCGRect(self.lastBoardFrameInScroll), self.boardHeight.constant,
+        NSStringFromCGSize(self.scroll.contentSize),
+        NSStringFromCGSize(self.lastContentSize), NSStringFromCGPoint(self.scroll.contentOffset),
+        NSStringFromCGRect(self.board.currentPlaybackRect), self.hasManualInspection, (unsigned long)self.semanticReframeGeneration]];
+    if (self.playbackLayoutObservations.count > 32) [self.playbackLayoutObservations removeObjectAtIndex:0];
+    // Opt-in test observations belong to the scroll container, never to the
+    // exchange's spoken quantity/lifecycle value or its exact completion suffix.
+    self.scroll.accessibilityValue = [self.playbackLayoutObservations componentsJoinedByString:@"\n"];
+#endif
 }
 - (void)updateBoardHeight {
     CGFloat width = self.board.bounds.size.width;

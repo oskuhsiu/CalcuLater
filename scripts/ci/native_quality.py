@@ -51,6 +51,7 @@ CONCEPT_CORE_TESTS = [
     "Calcu LaterUITests/ConceptDiscoveryUITests/testCarryDiscoveryKeepsQuestionsAcrossTeachingBackAndChangedNumbers",
     "Calcu LaterUITests/ConceptDiscoveryUITests/testBorrowingDirectlyExposesZeroRegrouping",
     "Calcu LaterUITests/ConceptDiscoveryUITests/testEqualGroupsDiscoveryDoesNotRequireOpeningTheMultiplicationTable",
+    "Calcu LaterUITests/ConceptDiscoveryUITests/testQuestionListeningAndReversibleNumbersKeepTheSelectedStory",
 ]
 CONCEPT_DIVISION_TESTS = [
     "Calcu LaterUITests/ConceptDiscoveryUITests/testSharingAndPackingKeepDifferentQuestionsForTheSameNumbers",

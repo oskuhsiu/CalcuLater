@@ -2,6 +2,8 @@
 #import "VerticalTeachingViewController.h"
 #import "VerticalArithmeticBoardView.h"
 #import "ArithmeticProblem.h"
+#import <QuartzCore/QuartzCore.h>
+#import <math.h>
 
 @interface VerticalTeachingViewController (ControllerTesting)
 - (void)showCurrentStepAnimated:(BOOL)animated;
@@ -10,10 +12,56 @@
 - (void)replay;
 - (void)restart;
 - (void)focusCurrentContent;
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView;
+@end
+
+// This drives the registered completion deterministically; it does not rotate
+// a device. The original XCUITest scenarios remain the actual rotation gate.
+@interface VTCompletionCoordinator : NSObject <UIViewControllerTransitionCoordinator>
+@property (nonatomic, copy) void (^completion)(id<UIViewControllerTransitionCoordinatorContext> context);
+@property (nonatomic, strong) UIView *testContainer;
+- (void)complete;
+@end
+@implementation VTCompletionCoordinator
+- (BOOL)animateAlongsideTransition:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))animation
+                        completion:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))completion {
+    self.completion = completion;
+    if (animation) animation(self);
+    return YES;
+}
+- (BOOL)animateAlongsideTransitionInView:(UIView *)view animation:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))animation
+                              completion:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))completion {
+    return [self animateAlongsideTransition:animation completion:completion];
+}
+- (void)notifyWhenInteractionEndsUsingBlock:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))handler {}
+- (void)notifyWhenInteractionChangesUsingBlock:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))handler {}
+- (BOOL)isAnimated { return YES; }
+- (BOOL)initiallyInteractive { return NO; }
+- (BOOL)isInteractive { return NO; }
+- (BOOL)isInterruptible { return YES; }
+- (BOOL)isCancelled { return NO; }
+- (UIModalPresentationStyle)presentationStyle { return UIModalPresentationNone; }
+- (NSTimeInterval)transitionDuration { return 0.3; }
+- (CGFloat)percentComplete { return 1; }
+- (CGFloat)completionVelocity { return 1; }
+- (UIViewAnimationCurve)completionCurve { return UIViewAnimationCurveEaseInOut; }
+- (CGAffineTransform)targetTransform { return CGAffineTransformIdentity; }
+- (UIView *)containerView {
+    if (!self.testContainer) self.testContainer = [[UIView alloc] init];
+    return self.testContainer;
+}
+- (UIViewController *)viewControllerForKey:(UITransitionContextViewControllerKey)key { return nil; }
+- (UIView *)viewForKey:(UITransitionContextViewKey)key { return nil; }
+- (void)complete {
+    void (^completion)(id<UIViewControllerTransitionCoordinatorContext>) = self.completion;
+    self.completion = nil;
+    if (completion) completion(self);
+}
 @end
 
 @interface VerticalTeachingControllerTests : XCTestCase
 @property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) UIWindow *previousKeyWindow;
 @property (nonatomic, strong) VerticalTeachingViewController *controller;
 @end
 
@@ -22,12 +70,21 @@
     VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
     [board cancelAnimations];
     [self.controller.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+    [self.window.rootViewController dismissViewControllerAnimated:NO completion:nil];
     [self.controller.view removeFromSuperview];
     [self.controller removeFromParentViewController];
     self.controller = nil;
     self.window.hidden = YES;
     self.window.rootViewController = nil;
     self.window = nil;
+    if (self.previousKeyWindow) {
+        UIWindow *previous = self.previousKeyWindow;
+        self.previousKeyWindow = nil;
+        XCTAssertFalse(previous.hidden);
+        XCTAssertEqual(previous.windowScene.activationState, UISceneActivationStateForegroundActive);
+        [previous makeKeyWindow];
+        XCTAssertTrue(previous.isKeyWindow);
+    }
     [super tearDown];
 }
 - (void)open:(NSInteger)first second:(NSInteger)second operation:(NSString *)operation {
@@ -59,6 +116,246 @@
 - (void)select:(NSUInteger)index animated:(BOOL)animated {
     [self.controller setValue:@(index) forKey:@"stepIndex"];
     [self.controller showCurrentStepAnimated:animated];
+}
+- (BOOL)openCarryInForegroundScene {
+    UIWindowScene *foreground = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] || scene.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+            if (candidate.isKeyWindow && !candidate.hidden && candidate.alpha > 0) {
+                foreground = (UIWindowScene *)scene;
+                self.previousKeyWindow = candidate;
+                break;
+            }
+        }
+        if (foreground) break;
+    }
+    XCTAssertNotNil(foreground, @"This is a real-scene test, not an unattached synthetic-window substitute.");
+    XCTAssertNotNil(self.previousKeyWindow);
+    XCTAssertEqual(UIApplication.sharedApplication.applicationState, UIApplicationStateActive);
+    XCTAssertFalse(UIAccessibilityIsReduceMotionEnabled(), @"Natural motion needs the ordinary-motion native test configuration.");
+    if (!foreground || !self.previousKeyWindow || UIAccessibilityIsReduceMotionEnabled()) return NO;
+    CGRect bounds = foreground.coordinateSpace.bounds;
+    BOOL usable = isfinite(bounds.origin.x) && isfinite(bounds.origin.y)
+        && isfinite(bounds.size.width) && isfinite(bounds.size.height) && !CGRectIsEmpty(bounds);
+    XCTAssertTrue(usable);
+    if (!usable) return NO;
+    self.window = [[UIWindow alloc] initWithWindowScene:foreground];
+    self.window.frame = bounds;
+    self.window.rootViewController = [[UIViewController alloc] init];
+    [self.window makeKeyAndVisible];
+    [self.window layoutIfNeeded];
+    [self.window.rootViewController.view layoutIfNeeded];
+    ArithmeticProblem *problem = [[ArithmeticProblem alloc] initWithNumber1:27 number2:15 operator:@"+" answer:42];
+    self.controller = [[VerticalTeachingViewController alloc] initWithProblem:problem wordProblem:nil];
+    __block BOOL presentationCompleted = NO;
+    [self.window.rootViewController presentViewController:self.controller animated:NO completion:^{ presentationCompleted = YES; }];
+    [self.controller.view layoutIfNeeded];
+    XCTAssertTrue([foreground.windows containsObject:self.window]);
+    XCTAssertTrue(self.window.isKeyWindow, @"The test window must be in front, then restore the original key window in tearDown.");
+    XCTAssertFalse(self.window.hidden);
+    XCTAssertEqual(self.window.rootViewController.view.window, self.window);
+    XCTAssertEqual(self.window.windowScene.activationState, UISceneActivationStateForegroundActive);
+    XCTAssertTrue(CGRectEqualToRect(self.window.frame, bounds));
+    NSPredicate *presented = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        CALayer *visible = self.controller.view.layer.presentationLayer;
+        return presentationCompleted && self.window.isKeyWindow && self.controller.view.window == self.window
+            && self.window.windowScene.activationState == UISceneActivationStateForegroundActive
+            && visible && !visible.hidden && visible.opacity > 0;
+    }];
+    XCTNSPredicateExpectation *ready = [[XCTNSPredicateExpectation alloc] initWithPredicate:presented object:nil];
+    XCTWaiterResult result = [XCTWaiter waitForExpectations:@[ready] timeout:3];
+    XCTAssertEqual(result, XCTWaiterResultCompleted, @"Wait for the real initial presentation, not a fabricated model-only visible window.");
+    XCTAssertEqual(self.controller.presentingViewController, self.window.rootViewController);
+    XCTAssertEqual(self.controller.view.window, self.window);
+    XCTAssertTrue(CGRectContainsRect(self.window.bounds, [self.controller.view convertRect:self.controller.view.bounds toView:self.window]),
+        @"Use the system's actual page-sheet bounds inside this scene; never enlarge the window to fit the fixture.");
+    return result == XCTWaiterResultCompleted;
+}
+- (VerticalArithmeticBoardView *)startFirstCarryWithControllerActions {
+    [self.controller next]; // Optional prediction.
+    [self.controller next]; // Column calculation.
+    [self.controller next]; // First carry, without Replay or an extra resize pass.
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqual(board.currentStep.kind, ArithmeticTeachingStepKindRegroup);
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStatePlaying);
+    XCTAssertNotNil([board valueForKey:@"animationDisplayLink"]);
+    XCTAssertTrue(CGRectContainsRect(self.window.bounds, [board convertRect:board.currentPlaybackRect toView:self.window]));
+    return board;
+}
+- (void)assertNaturalCompletion:(VerticalArithmeticBoardView *)board {
+    NSPredicate *finished = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        return board.playbackState == VerticalArithmeticPlaybackStateCompleted;
+    }];
+    XCTNSPredicateExpectation *completed = [[XCTNSPredicateExpectation alloc] initWithPredicate:finished object:nil];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[completed] timeout:3], XCTWaiterResultCompleted,
+        @"Only real display-link completion counts; Still, Interrupted and Reduced Motion are not success.");
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateCompleted);
+    XCTAssertNil([board valueForKey:@"animationDisplayLink"]);
+    XCTAssertEqual([[board valueForKey:@"animatedLayers"] count], 0u);
+}
+- (UIView *)addStackSpacer:(CGFloat)height beforeBoard:(BOOL)beforeBoard {
+    UIStackView *content = [self.controller valueForKey:@"content"];
+    UIView *board = [self.controller valueForKey:@"board"];
+    UIView *spacer = [[UIView alloc] init];
+    [spacer.heightAnchor constraintEqualToConstant:height].active = YES;
+    if (beforeBoard) [content insertArrangedSubview:spacer atIndex:[content.arrangedSubviews indexOfObject:board]];
+    else [content addArrangedSubview:spacer];
+    [self.controller.view setNeedsLayout];
+    [self.controller.view layoutIfNeeded];
+    return spacer;
+}
+- (void)testForegroundSceneControllerFirstCarryNaturallyCompletesWithoutReplayOrSyntheticResize {
+    if (![self openCarryInForegroundScene]) return;
+    VerticalArithmeticBoardView *board = [self startFirstCarryWithControllerActions];
+    NSString *snapshot = board.accessibilityValue;
+    [self assertNaturalCompletion:board];
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+}
+- (void)testForegroundControllerDownstreamStackGrowthDoesNotInterruptAStationaryVisibleAction {
+    if (![self openCarryInForegroundScene]) return;
+    VerticalArithmeticBoardView *board = [self startFirstCarryWithControllerActions];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    CGRect frame = [board convertRect:board.bounds toView:scroll];
+    CGSize contentSize = scroll.contentSize;
+    CGPoint offset = scroll.contentOffset;
+    [self addStackSpacer:80 beforeBoard:NO];
+    XCTAssertTrue(CGRectEqualToRect(frame, [board convertRect:board.bounds toView:scroll]));
+    XCTAssertGreaterThan(scroll.contentSize.height, contentSize.height);
+    XCTAssertTrue(CGPointEqualToPoint(offset, scroll.contentOffset));
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStatePlaying);
+    [self assertNaturalCompletion:board];
+}
+- (void)testForegroundControllerUpstreamStackMovementInterruptsWithoutResumingOrCompleting {
+    if (![self openCarryInForegroundScene]) return;
+    VerticalArithmeticBoardView *board = [self startFirstCarryWithControllerActions];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    CGRect frame = [board convertRect:board.bounds toView:scroll];
+    NSString *snapshot = board.accessibilityValue;
+    [self addStackSpacer:30 beforeBoard:YES];
+    XCTAssertGreaterThan(CGRectGetMinY([board convertRect:board.bounds toView:scroll]), CGRectGetMinY(frame));
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    [self.controller.view setNeedsLayout];
+    [self.controller.view layoutIfNeeded];
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    XCTAssertNil([board valueForKey:@"animationDisplayLink"]);
+    XCTAssertEqual([[board valueForKey:@"animatedLayers"] count], 0u);
+}
+- (void)testModeledContentSizeSettlementCannotConcealAnAlreadyClippedPlayback {
+    if (![self openCarryInForegroundScene]) return;
+    VerticalArithmeticBoardView *board = [self startFirstCarryWithControllerActions];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    NSString *snapshot = board.accessibilityValue;
+    // Isolate the layout cancellation path from the independently covered scroll
+    // delegate. This models an offset clamp without claiming UIKit callback order.
+    id<UIScrollViewDelegate> delegate = scroll.delegate;
+    scroll.delegate = nil;
+    scroll.contentSize = CGSizeMake(scroll.contentSize.width, scroll.contentSize.height + scroll.bounds.size.height * 2);
+    [scroll setContentOffset:CGPointMake(0, scroll.contentOffset.y + scroll.bounds.size.height) animated:NO];
+    XCTAssertFalse(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), [board convertRect:board.currentPlaybackRect toView:scroll]));
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStatePlaying);
+    [self.controller viewDidLayoutSubviews];
+    scroll.delegate = delegate;
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    XCTAssertNil([board valueForKey:@"animationDisplayLink"]);
+}
+- (void)testForegroundControllerViewportAndBoardResizeInterruptsWithoutAutomaticReplay {
+    if (![self openCarryInForegroundScene]) return;
+    VerticalArithmeticBoardView *board = [self startFirstCarryWithControllerActions];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    CGSize viewport = scroll.bounds.size, boardSize = board.bounds.size;
+    NSString *snapshot = board.accessibilityValue;
+    // A real Auto Layout size change inside the actual scene, not an orientation
+    // claim. The XCUITest still owns actual device rotation and its timing.
+    CGFloat horizontalInset = MAX(20, (self.controller.view.bounds.size.width - 280) / 2);
+    self.controller.additionalSafeAreaInsets = UIEdgeInsetsMake(0, horizontalInset, 20, horizontalInset);
+    [self.controller.view layoutIfNeeded];
+    XCTAssertFalse(CGSizeEqualToSize(scroll.bounds.size, viewport));
+    XCTAssertLessThan(board.bounds.size.width, boardSize.width);
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    [self.controller.view layoutIfNeeded];
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    XCTAssertNil([board valueForKey:@"animationDisplayLink"]);
+}
+- (VTCompletionCoordinator *)beginModeledLandscapeTransition {
+    VTCompletionCoordinator *coordinator = [[VTCompletionCoordinator alloc] init];
+    [self.controller viewWillTransitionToSize:CGSizeMake(852, 393) withTransitionCoordinator:coordinator];
+    XCTAssertNotNil(coordinator.completion, @"The production controller must register a real transition-completion callback.");
+    [self resize:CGSizeMake(852, 393)];
+    return coordinator;
+}
+- (void)testTransitionCompletionReframesAnOffsetOnlyDisplacementWithoutReplaying {
+    [self open:27 second:15 operation:@"+"];
+    self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self select:3 animated:YES];
+    VTCompletionCoordinator *coordinator = [self beginModeledLandscapeTransition];
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    CGRect frame = [board convertRect:board.bounds toView:scroll];
+    CGSize contentSize = scroll.contentSize;
+    NSString *snapshot = board.accessibilityValue;
+    VerticalArithmeticPlaybackState state = board.playbackState;
+    // Model a late UIKit offset adjustment after its first semantic reframe.
+    [scroll setContentOffset:CGPointMake(0, scroll.contentOffset.y + 90) animated:NO];
+    CGPoint displaced = scroll.contentOffset;
+    [self.controller viewDidLayoutSubviews];
+    XCTAssertTrue(CGRectEqualToRect(frame, [board convertRect:board.bounds toView:scroll]));
+    XCTAssertTrue(CGSizeEqualToSize(contentSize, scroll.contentSize));
+    XCTAssertFalse(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), [board convertRect:board.currentActionRect toView:scroll]));
+    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, displaced), @"An ordinary offset-only scroll is not a new auto-framing request.");
+    [coordinator complete];
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), [board convertRect:board.currentActionRect toView:scroll]));
+    XCTAssertFalse(CGPointEqualToPoint(scroll.contentOffset, displaced));
+    XCTAssertEqual(board.playbackState, state);
+    XCTAssertFalse(board.isPlaying);
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    XCTAssertNil([board valueForKey:@"animationDisplayLink"]);
+}
+- (void)testTransitionCompletionPreservesPanAndAccessibilityInspection {
+    [self open:27 second:15 operation:@"+"];
+    self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self select:3 animated:YES];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    for (NSNumber *accessibility in @[@NO, @YES]) {
+        [self.controller replay];
+        VTCompletionCoordinator *coordinator = [self beginModeledLandscapeTransition];
+        if (accessibility.boolValue) [scroll accessibilityScroll:UIAccessibilityScrollDirectionDown];
+        else [self.controller scrollViewWillBeginDragging:scroll];
+        XCTAssertTrue([[self.controller valueForKey:@"hasManualInspection"] boolValue]);
+        [scroll setContentOffset:CGPointMake(0, scroll.contentOffset.y + 40) animated:NO];
+        CGPoint inspection = scroll.contentOffset;
+        [coordinator complete];
+        XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, inspection));
+        XCTAssertFalse(board.isPlaying);
+        XCTAssertEqual(board.currentStepIndex, 3);
+    }
+}
+- (void)testSupersededTransitionCompletionCannotReframeANewerVisitOfTheSameStep {
+    [self open:27 second:15 operation:@"+"];
+    self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self select:3 animated:YES];
+    VTCompletionCoordinator *coordinator = [self beginModeledLandscapeTransition];
+    [self.controller previous];
+    [self.controller next];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    [scroll setContentOffset:CGPointMake(0, scroll.contentOffset.y + 90) animated:NO];
+    CGPoint newerVisit = scroll.contentOffset;
+    VerticalArithmeticPlaybackState state = board.playbackState;
+    [coordinator complete];
+    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, newerVisit));
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqual(board.playbackState, state);
 }
 - (UIButton *)choice:(NSInteger)value {
     UIStackView *choices = [self.controller valueForKey:@"choices"];
@@ -133,12 +430,20 @@
 }
 - (void)testActualControllerReframesAfterResizeAndReplayRetainsTheSelectedSnapshot {
     [self open:27 second:15 operation:@"+"];
+    self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self resize:CGSizeMake(393, 852)];
     [self select:3 animated:YES];
     VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
     UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
     NSString *snapshot = board.accessibilityValue;
     [self resize:CGSizeMake(852, 393)];
     XCTAssertFalse(board.isPlaying, @"Rotation must not silently begin another playback.");
+    CGRect beforeInspection = [board convertRect:board.currentConcreteTransformationRect toView:scroll];
+    XCTAssertLessThanOrEqual(beforeInspection.size.height, scroll.bounds.size.height - 16);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), beforeInspection),
+        @"Rotation itself must frame the feasible exchange after text rewraps, before Focus or Replay can repair it.");
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
     [self.controller focusCurrentContent];
     [self.controller replay];
     CGRect concrete = [board convertRect:board.currentConcreteTransformationRect toView:scroll];
@@ -146,6 +451,84 @@
     XCTAssertEqual(board.currentStepIndex, 3);
     XCTAssertEqualObjects(board.accessibilityValue, snapshot);
     XCTAssertTrue([snapshot containsString:@"答案還沒寫"]);
+}
+- (UIView *)insertUpstreamSpacer:(CGFloat)height {
+    UIStackView *content = [self.controller valueForKey:@"content"];
+    UIView *board = [self.controller valueForKey:@"board"];
+    UIView *spacer = [[UIView alloc] init];
+    [spacer.heightAnchor constraintEqualToConstant:height].active = YES;
+    [content insertArrangedSubview:spacer atIndex:[content.arrangedSubviews indexOfObject:board]];
+    [self resize:self.controller.view.bounds.size];
+    return spacer;
+}
+- (void)testLaterUpstreamLayoutPassReframesTheActionWithoutAViewportResize {
+    [self open:27 second:15 operation:@"+"];
+    self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self resize:CGSizeMake(852, 393)];
+    [self select:3 animated:NO];
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    // Reproduce the second-pass displacement independently of UIKit's current
+    // wrapping order. The board and viewport keep exactly the same dimensions.
+    UIView *spacer = [self insertUpstreamSpacer:120];
+    [self.controller replay];
+    CGSize viewportSize = scroll.bounds.size, boardSize = board.bounds.size;
+    CGRect before = [board convertRect:board.currentConcreteTransformationRect toView:scroll];
+    CGPoint offset = scroll.contentOffset;
+    NSString *snapshot = board.accessibilityValue;
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), before));
+    [spacer removeFromSuperview];
+    [self resize:self.controller.view.bounds.size];
+    CGRect after = [board convertRect:board.currentConcreteTransformationRect toView:scroll];
+    XCTAssertTrue(CGSizeEqualToSize(scroll.bounds.size, viewportSize));
+    XCTAssertTrue(CGSizeEqualToSize(board.bounds.size, boardSize));
+    XCTAssertEqualWithAccuracy(CGRectGetMinY(before) - CGRectGetMinY(after), 134, 1,
+        @"Removing the 120-point arranged view also removes one 14-point stack spacing.");
+    XCTAssertLessThan(scroll.contentOffset.y, offset.y);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), after));
+    XCTAssertFalse(board.isPlaying, @"A late layout correction cancels motion, never restarts it.");
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    XCTAssertEqual([[board valueForKey:@"animatedLayers"] count], 0u);
+    XCTAssertNil([board valueForKey:@"animationDisplayLink"]);
+    CGPoint settled = scroll.contentOffset;
+    [self resize:self.controller.view.bounds.size];
+    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, settled), @"Stable geometry must not keep moving the viewport.");
+}
+- (void)testLateLayoutDoesNotOverrideManualInspectionOrPredictionState {
+    [self open:27 second:15 operation:@"+"];
+    self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self resize:CGSizeMake(393, 852)];
+    [self select:1 animated:NO];
+    [[self choice:11] sendActionsForControlEvents:UIControlEventTouchUpInside];
+    [[self choice:12] sendActionsForControlEvents:UIControlEventTouchUpInside];
+    [self.controller next];
+    [self.controller next];
+    [self resize:CGSizeMake(852, 393)];
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    UIScrollView *scroll = [self.controller valueForKey:@"scroll"];
+    UIView *spacer = [self insertUpstreamSpacer:120];
+    [self.controller replay];
+    NSString *snapshot = board.accessibilityValue;
+    [self.controller scrollViewWillBeginDragging:scroll];
+    [scroll setContentOffset:CGPointMake(0, 120) animated:NO];
+    CGPoint inspection = scroll.contentOffset;
+    [spacer removeFromSuperview];
+    [self resize:self.controller.view.bounds.size];
+    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, inspection),
+        @"A layout update cannot undo the learner's deliberate inspection scroll.");
+    XCTAssertFalse(board.isPlaying);
+    XCTAssertEqual(board.currentStepIndex, 3);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    [self.controller replay];
+    CGRect action = [board convertRect:board.currentConcreteTransformationRect toView:scroll];
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, 0, 7), action));
+    [self.controller previous];
+    [self.controller previous];
+    XCTAssertFalse([self choice:11].enabled);
+    XCTAssertFalse([self choice:12].enabled);
+    XCTAssertEqualObjects([self choice:12].accessibilityValue, @"和這一步的數量相同");
+    XCTAssertTrue([((UILabel *)[self.controller valueForKey:@"choiceFeedback"]).text containsString:@"7 + 5 = 12 個一"]);
 }
 - (void)testOversizedActionShowsAPausedInspectionRouteRatherThanPlayingOffscreen {
     [self open:27 second:15 operation:@"+"];

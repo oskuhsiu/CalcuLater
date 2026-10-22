@@ -420,10 +420,10 @@ class SourceInventoryTests(unittest.TestCase):
 
 class RepositorySelectionTests(unittest.TestCase):
     EXPECTED_COUNTS = {
-        "components": 329, "standard": 15, "compact": 9, "tablet": 9, "maximumAccessibilityText": 9,
+        "components": 416, "standard": 15, "compact": 9, "tablet": 9, "maximumAccessibilityText": 9,
         "focusedGroupingCompact": 4, "focusedGroupingMaximumText": 4,
-        "conceptCore": 3, "conceptDivision": 1,
-        "conceptCoreMaximumText": 3, "conceptDivisionMaximumText": 1,
+        "conceptCore": 4, "conceptDivision": 1,
+        "conceptCoreMaximumText": 4, "conceptDivisionMaximumText": 1,
         "reducedMotion": 1,
     }
 
@@ -450,8 +450,8 @@ class RepositorySelectionTests(unittest.TestCase):
         excluded = {"Calcu_LaterUITestsLaunchTests/testLaunch"}
         self.assertTrue(excluded.issubset(all_source))
         self.assertEqual(selected, set(all_source) - excluded)
-        self.assertEqual(len(selected), 359)
-        self.assertEqual(sum(self.EXPECTED_COUNTS.values()), 388)
+        self.assertEqual(len(selected), 447)
+        self.assertEqual(sum(self.EXPECTED_COUNTS.values()), 477)
 
     def test_preserved_baseline_and_new_ui_classes_have_exact_selection_coverage(self):
         standard = quality.required_test_inventory(quality.SCENARIOS["standard"]["onlyTesting"])

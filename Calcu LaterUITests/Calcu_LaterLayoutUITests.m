@@ -12,7 +12,7 @@
     self.continueAfterFailure = NO;
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
     self.app = [[XCUIApplication alloc] init];
-    self.app.launchArguments = @[@"-AppleLanguages", @"(zh-Hant)", @"-AppleLocale", @"zh_TW", @"-soundEffectsEnabled", @"NO"];
+    self.app.launchArguments = @[@"-AppleLanguages", @"(zh-Hant)", @"-AppleLocale", @"zh_TW", @"-soundEffectsEnabled", @"NO", @"-CalcuLaterVerticalPlaybackDiagnostics"];
     [self.app launch];
     XCTAssertTrue([self.app.buttons[@"home.settings"] waitForExistenceWithTimeout:10]);
 }
@@ -26,6 +26,13 @@
         tree.name = @"layout-failure-hierarchy";
         tree.lifetime = XCTAttachmentLifetimeKeepAlways;
         [self addAttachment:tree];
+        XCUIElement *verticalContent = self.app.scrollViews[@"teaching.content"];
+        if (verticalContent.exists) {
+            XCTAttachment *observations = [XCTAttachment attachmentWithString:[verticalContent.value description] ?: @"<missing controller observations>"];
+            observations.name = @"layout-failure-vertical-controller-observations";
+            observations.lifetime = XCTAttachmentLifetimeKeepAlways;
+            [self addAttachment:observations];
+        }
     }
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
     [self.app terminate];
@@ -427,11 +434,11 @@
     // Save actual geometry before an assertion can terminate the case. A fit
     // failure must be distinguished from a feasible action framed incorrectly.
     XCTAttachment *geometry = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
-        @"uptime=%.6f action=%@ viewport=%@ usableViewport=%@ board=%@ heading=%@ narration=%@ progress=%@ actionValue=%@",
+        @"uptime=%.6f action=%@ viewport=%@ usableViewport=%@ board=%@ heading=%@ narration=%@ progress=%@ actionValue=%@\ncontrollerObservations=%@",
         NSProcessInfo.processInfo.systemUptime, NSStringFromCGRect(action), NSStringFromCGRect(viewport),
         NSStringFromCGRect(CGRectInset(viewport, 0, 8)), NSStringFromCGRect([self element:@"verticalTeachingBoard"].frame),
         NSStringFromCGRect(self.app.staticTexts[@"teaching.heading"].frame), NSStringFromCGRect(self.app.staticTexts[@"explanation.steps"].frame),
-        self.app.staticTexts[@"teaching.progress"].label, [exchange.value description]]];
+        self.app.staticTexts[@"teaching.progress"].label, [exchange.value description], [content.value description]]];
     geometry.name = @"vertical-exchange-framing-observations";
     geometry.lifetime = XCTAttachmentLifetimeKeepAlways;
     [self addAttachment:geometry];
