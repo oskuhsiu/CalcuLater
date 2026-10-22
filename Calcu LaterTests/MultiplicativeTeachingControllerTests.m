@@ -76,6 +76,7 @@ static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixtur
 }
 
 @interface MultiplicativeTeachingViewController (ComponentTesting)
+- (MultiplicativePlaceValueBoardView *)makePlaceValueBoard;
 - (void)selectActionIndex:(NSInteger)index play:(BOOL)play;
 - (void)submitProposalText:(NSString *)text key:(MTPPreparationKey *)key;
 - (void)observeFirstAction;
@@ -99,6 +100,32 @@ static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixtur
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scroll;
 @end
 
+@interface MultiplicativePlaceValueBoardView (ControllerVisibilityObservation)
+- (BOOL)actualVisibilityContainsRequiredRect;
+@end
+extern NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board);
+
+/// Capture only the first real rejection, before recovery replaces its paint.
+/// Motion policy, admission, layout and rendering remain the production methods.
+@interface MTPAdmissionObservingBoard : MultiplicativePlaceValueBoardView
+@property (nonatomic) BOOL captureVisibilityFailure;
+@property (nonatomic, copy) NSString *visibilityFailureDiagnostic;
+@end
+@implementation MTPAdmissionObservingBoard
+- (BOOL)actualVisibilityContainsRequiredRect {
+    BOOL admitted = [super actualVisibilityContainsRequiredRect];
+    if (!admitted && self.captureVisibilityFailure && !self.visibilityFailureDiagnostic)
+        self.visibilityFailureDiagnostic = MTPNativeVisibilityDiagnostic(self);
+    return admitted;
+}
+@end
+@interface MTPAdmissionObservingController : MultiplicativeTeachingViewController @end
+@implementation MTPAdmissionObservingController
+- (MultiplicativePlaceValueBoardView *)makePlaceValueBoard {
+    return [[MTPAdmissionObservingBoard alloc] initWithFrame:CGRectZero];
+}
+@end
+
 /// Observes the actual static configure boundary; it never changes admission,
 /// visibility, animation state, motion preferences or renderer return values.
 @interface MTPBoundaryObservingBoard : MultiplicativePlaceValueBoardView
@@ -118,6 +145,7 @@ static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixtur
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) UIWindow *priorKeyWindow;
 @property (nonatomic, strong) MultiplicativeTeachingViewController *controller;
+@property (nonatomic) BOOL observePlaybackAdmission;
 @end
 @implementation MultiplicativeTeachingControllerTests
 - (void)setUp {
@@ -153,6 +181,15 @@ static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixtur
     }
 }
 - (void)tearDown {
+    if (self.observePlaybackAdmission) {
+        MTPAdmissionObservingBoard *board = [self.controller valueForKey:@"board"];
+        if (board.visibilityFailureDiagnostic.length) {
+            XCTAttachment *attachment = [XCTAttachment attachmentWithString:board.visibilityFailureDiagnostic];
+            attachment.name = @"native-controller-first-visibility-rejection";
+            attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+            [self addAttachment:attachment];
+        }
+    }
     if (_preElevationWindowDiagnostic.length && self.testRun.failureCount) {
         XCTAttachment *attachment = [XCTAttachment attachmentWithString:_preElevationWindowDiagnostic];
         attachment.name = @"native-pre-elevation-scene-windows";
@@ -170,7 +207,8 @@ static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixtur
 - (void)open:(NSInteger)a second:(NSInteger)b operation:(NSString *)operation {
     ArithmeticProblem *problem = [[ArithmeticProblem alloc] initWithNumber1:a number2:b operator:operation
         answer:[operation isEqualToString:@"×"] ? a * b : a / b];
-    self.controller = [[MultiplicativeTeachingViewController alloc] initWithProblem:problem wordProblem:nil];
+    Class controllerClass = self.observePlaybackAdmission ? MTPAdmissionObservingController.class : MultiplicativeTeachingViewController.class;
+    self.controller = [[controllerClass alloc] initWithProblem:problem wordProblem:nil];
     self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge;
     [self.window.rootViewController addChildViewController:self.controller];
     [self.window.rootViewController.view addSubview:self.controller.view];
@@ -357,7 +395,11 @@ static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixtur
     [self assertSnapshot:self.plan.actions[0].after]; XCTAssertEqual(self.presentation.actionIndex, 0);
 }
 - (void)testLayoutScrollAndBackgroundCancellationNeverResumeOrForceScroll {
-    [self open:1 second:1 operation:@"×"]; [self.controller selectActionIndex:2 play:YES]; [self awaitExplicitPaintAdmission];
+    self.observePlaybackAdmission = YES;
+    [self open:1 second:1 operation:@"×"];
+    ((MTPAdmissionObservingBoard *)self.board).captureVisibilityFailure = YES;
+    [self.controller selectActionIndex:2 play:YES]; [self awaitExplicitPaintAdmission];
+    ((MTPAdmissionObservingBoard *)self.board).captureVisibilityFailure = NO;
     XCTAssertEqual(self.board.playbackState, MTPPlaceValuePlaybackStateRunning);
     [self resize:CGSizeMake(320, 300)];
     XCTAssertNotEqual(self.board.playbackState, MTPPlaceValuePlaybackStateRunning); [self assertSnapshot:self.plan.actions[2].after];

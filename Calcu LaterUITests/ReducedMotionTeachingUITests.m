@@ -10,6 +10,8 @@
 @property (nonatomic, strong) XCUIApplication *app;
 @property (nonatomic, strong) XCUIApplication *settings;
 @property (nonatomic, copy) NSString *originalReduceMotionValue;
+@property (nonatomic, copy) NSString *originalAutoPlayMessageEffectsValue;
+@property (nonatomic, assign) BOOL reduceMotionChangeAttempted;
 @property (nonatomic, assign) BOOL ownedSimulatorVerified;
 @property (nonatomic, assign) BOOL systemReduceMotionVerified;
 @end
@@ -191,10 +193,28 @@ static BOOL RMUsableFrame(CGRect rect) {
     NSString *before = [toggle.value description];
     [self capture:@"rm-settings-01-original-switch" application:self.settings];
     if (![@[@"0", @"1"] containsObject:before]) return [self fail:@"Reduce Motion switch did not expose an unambiguous 0/1 value; nothing was toggled." application:self.settings];
+    // The retained iOS 18.5 evidence showed Auto-Play Message Effects changing
+    // after enabling Reduce Motion, without a test tap on that separate switch.
+    // Record its actual value too; never assume a default or change it for setup.
+    XCUIElement *messageEffects = [self settingsElementOfType:XCUIElementTypeSwitch labels:@[@"Auto-Play Message Effects"]];
+    if (![messageEffects waitForExistenceWithTimeout:5]
+        || ![self reveal:messageEffects in:[self settingsScrollContainer] application:self.settings name:@"rm-settings-original-message-effects-switch"])
+        return [self fail:@"Auto-Play Message Effects was not readable before setup; no system setting was changed." application:self.settings];
+    NSString *messageEffectsBefore = [messageEffects.value description];
+    if (![@[@"0", @"1"] containsObject:messageEffectsBefore])
+        return [self fail:@"Auto-Play Message Effects did not expose an unambiguous 0/1 value; no system setting was changed." application:self.settings];
+    if (![self reveal:toggle in:[self settingsScrollContainer] application:self.settings name:@"rm-settings-reduce-motion-before-change"]) return NO;
     // Record BEFORE touching the switch so tearDown can recover even if the
-    // post-tap assertion fails. Never retry a toggle with an uncertain outcome.
+    // post-tap assertion fails. An attempted tap owns only this recorded pair,
+    // not any other preference. Never retry a toggle with an uncertain outcome.
+    self.originalAutoPlayMessageEffectsValue = messageEffectsBefore;
     self.originalReduceMotionValue = before;
-    if ([before isEqualToString:@"0"]) [toggle tap];
+    [self attachText:[NSString stringWithFormat:@"reduceMotion=%@\nautoPlayMessageEffects=%@\nsource=real Settings switches before any setting tap",
+        before, messageEffectsBefore] name:@"rm-settings-original-motion-values"];
+    if ([before isEqualToString:@"0"]) {
+        self.reduceMotionChangeAttempted = YES;
+        [toggle tap];
+    }
     if (![self waitForValue:@"1" element:toggle application:self.settings name:@"System Reduce Motion ON readback"]) return NO;
     [self capture:@"rm-settings-02-enabled-readback" application:self.settings];
     [self attachText:[NSString stringWithFormat:@"bundle=com.apple.Preferences\nroute=Settings > Accessibility > Motion > Reduce Motion\noriginal=%@\nobserved=%@\nenableTapCount=%d",
@@ -218,11 +238,69 @@ static BOOL RMUsableFrame(CGRect rect) {
             NSString *current = [toggle.value description];
             [self capture:@"rm-settings-03-before-restore" application:self.settings];
             if ([@[@"0", @"1"] containsObject:current]) {
-                if (![current isEqualToString:self.originalReduceMotionValue]) [toggle tap];
-                [self waitForValue:self.originalReduceMotionValue element:toggle application:self.settings name:@"Restore original system Reduce Motion"];
+                if (![current isEqualToString:self.originalReduceMotionValue]) {
+                    if (self.reduceMotionChangeAttempted) [toggle tap];
+                    else [self fail:@"Reduce Motion changed without a setup tap; cleanup must not change unowned settings." application:self.settings];
+                }
+                BOOL reduceMotionRestored = [self waitForValue:self.originalReduceMotionValue element:toggle application:self.settings name:@"Restore original system Reduce Motion"];
                 [self capture:@"rm-settings-04-restored-readback" application:self.settings];
                 [self attachText:[NSString stringWithFormat:@"original=%@\nbeforeCleanup=%@\nobservedAfterCleanup=%@",
                     self.originalReduceMotionValue, current, toggle.value] name:@"rm-settings-cleanup-readback"];
+                // Restore the primary setting first. Only an actual setup tap
+                // permits repairing this recorded companion value, and only if
+                // it differs. An initially enabled Reduce Motion owns no change.
+                // Reload before deciding whether a companion tap is needed:
+                // the original immediate UI readback stayed ON, while the next
+                // Settings process exposed OFF. Do not act on a stale value.
+                if (reduceMotionRestored) {
+                    [self.settings terminate];
+                    [self.settings launch];
+                    XCUIElement *restoredMotion = [self resolveSystemReduceMotionSwitch];
+                    reduceMotionRestored = restoredMotion && [self waitForValue:self.originalReduceMotionValue
+                        element:restoredMotion application:self.settings name:@"Reloaded Settings preserved original Reduce Motion before companion cleanup"];
+                }
+                XCUIElement *messageEffects = [self settingsElementOfType:XCUIElementTypeSwitch labels:@[@"Auto-Play Message Effects"]];
+                if (self.originalAutoPlayMessageEffectsValue && reduceMotionRestored
+                    && [messageEffects waitForExistenceWithTimeout:5]
+                    && [self reveal:messageEffects in:[self settingsScrollContainer] application:self.settings name:@"rm-settings-restore-message-effects-switch"]) {
+                    NSString *messageEffectsCurrent = [messageEffects.value description];
+                    if ([@[@"0", @"1"] containsObject:messageEffectsCurrent]) {
+                        BOOL needsRestore = ![messageEffectsCurrent isEqualToString:self.originalAutoPlayMessageEffectsValue];
+                        if (needsRestore) {
+                            if (self.reduceMotionChangeAttempted) [messageEffects tap];
+                            else [self fail:@"Auto-Play Message Effects changed without a Reduce Motion setup tap; no unrelated setting was toggled." application:self.settings];
+                        }
+                        BOOL messageEffectsRestored = [self waitForValue:self.originalAutoPlayMessageEffectsValue element:messageEffects application:self.settings name:@"Restore original Auto-Play Message Effects"];
+                        [self capture:@"rm-settings-06-companion-restored-readback" application:self.settings];
+                        [self attachText:[NSString stringWithFormat:@"original=%@\nbeforeCompanionCleanup=%@\nobservedAfterCompanionCleanup=%@\nreduceMotionSetupTapAttempted=%d\ncompanionRestoreTapCount=%d",
+                            self.originalAutoPlayMessageEffectsValue, messageEffectsCurrent, messageEffects.value,
+                            self.reduceMotionChangeAttempted, needsRestore && self.reduceMotionChangeAttempted ? 1 : 0]
+                            name:@"rm-settings-message-effects-cleanup-readback"];
+                        if (messageEffectsRestored) {
+                            // The original discrepancy appeared after returning
+                            // to Settings. A live value in the existing process
+                            // is not enough: re-open and verify both, without a
+                            // second correction or a blind retry on disagreement.
+                            [self.settings terminate];
+                            [self.settings launch];
+                            XCUIElement *reopenedMotion = [self resolveSystemReduceMotionSwitch];
+                            if (reopenedMotion) {
+                                [self waitForValue:self.originalReduceMotionValue element:reopenedMotion application:self.settings name:@"Reopened Settings preserved original Reduce Motion"];
+                                XCUIElement *reopenedEffects = [self settingsElementOfType:XCUIElementTypeSwitch labels:@[@"Auto-Play Message Effects"]];
+                                [self waitForValue:self.originalAutoPlayMessageEffectsValue element:reopenedEffects application:self.settings name:@"Reopened Settings preserved original Auto-Play Message Effects"];
+                                [self capture:@"rm-settings-07-reopened-original-values" application:self.settings];
+                                [self attachText:[NSString stringWithFormat:@"originalReduceMotion=%@\nreopenedReduceMotion=%@\noriginalAutoPlayMessageEffects=%@\nreopenedAutoPlayMessageEffects=%@",
+                                    self.originalReduceMotionValue, reopenedMotion.value,
+                                    self.originalAutoPlayMessageEffectsValue, reopenedEffects.value]
+                                    name:@"rm-settings-reopened-cleanup-readback"];
+                            }
+                        }
+                    } else {
+                        [self fail:@"Cleanup found an ambiguous Auto-Play Message Effects value; no blind toggle was attempted." application:self.settings];
+                    }
+                } else {
+                    [self fail:@"Companion cleanup requires its recorded original value, verified Reduce Motion restoration and a reachable switch; no companion toggle was attempted." application:self.settings];
+                }
             } else {
                 [self fail:@"Cleanup found an ambiguous switch value; no blind toggle was attempted. Dispose of only this job-owned Simulator." application:self.settings];
             }

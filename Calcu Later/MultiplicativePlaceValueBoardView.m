@@ -4,6 +4,25 @@
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
+// Only the four empty-before captions use this private construction receipt.
+// These are stable drawing choices, not a cached image or a raster certificate.
+static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
+    if (!layer || layer.borderWidth != 0 || layer.cornerRadius != 0 || layer.shadowOpacity != 0
+        || (layer.backgroundColor && CGColorGetAlpha(layer.backgroundColor) != 0)
+        || layer.compositingFilter || layer.filters.count || layer.backgroundFilters.count
+        || layer.shouldRasterize || layer.drawsAsynchronously) return nil;
+    // Zero border, corner radius and shadow opacity make their color, curve,
+    // corner-selection, path, radius and offset settings visually inactive.
+    // Backing contents, format and scale can be updated by UIKit; they are not
+    // frozen here. Their exposed model/presentation agreement is checked later.
+    return @{@"contentsRect":[NSValue valueWithCGRect:layer.contentsRect], @"contentsCenter":[NSValue valueWithCGRect:layer.contentsCenter],
+        @"contentsGravity":layer.contentsGravity ?: NSNull.null, @"masksToBounds":@(layer.masksToBounds), @"opaque":@(layer.opaque),
+        @"geometryFlipped":@(layer.geometryFlipped), @"doubleSided":@(layer.doubleSided),
+        @"minificationFilter":layer.minificationFilter ?: NSNull.null, @"magnificationFilter":layer.magnificationFilter ?: NSNull.null,
+        @"minificationFilterBias":@(layer.minificationFilterBias), @"allowsGroupOpacity":@(layer.allowsGroupOpacity),
+        @"allowsEdgeAntialiasing":@(layer.allowsEdgeAntialiasing), @"edgeAntialiasingMask":@(layer.edgeAntialiasingMask)};
+}
+
 /// The outer body is exactly 16x16, 16x160, or 160x160. All ink is inset;
 /// internal seams remain at the 16-point cell boundaries, even while docking.
 @interface MTPMaterialView : UIView
@@ -69,6 +88,7 @@
 @property (nonatomic, copy, readwrite) NSString *spokenDescription;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, MTPMaterialView *> *unitViews;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *labels;
+@property (nonatomic, strong) NSMapTable<UILabel *, NSDictionary *> *preparedCaptionLayerConfigurations;
 @property (nonatomic, strong, nullable) UIView *cradle;
 @property (nonatomic, strong, nullable) MTPPlaceValueProjection *projection;
 @property (nonatomic, copy) NSSet<CALayer *> *retiredOwnedRootLayers;
@@ -81,6 +101,7 @@
 @property (nonatomic) CGSize renderedSize;
 @property (nonatomic) BOOL updatingBindings;
 @property (nonatomic) BOOL needsSceneLayout;
+@property (nonatomic) BOOL retainingExplicitlyPreparedPaint;
 - (void)tick:(CADisplayLink *)link transaction:(MTPPlaybackTransaction *)transaction;
 - (void)advanceClockAtTimestamp:(CFTimeInterval)timestamp transaction:(MTPPlaybackTransaction *)transaction clock:(CADisplayLink *)link;
 @end
@@ -136,6 +157,7 @@
     // Retire ownership before UIKit trait/layout callbacks from view removal.
     NSDictionary *units = self.unitViews; NSDictionary *labels = self.labels; UIView *cradle = self.cradle;
     self.unitViews = [NSMutableDictionary dictionary]; self.labels = [NSMutableDictionary dictionary]; self.cradle = nil; self.projection = nil; self.overviewLayout = nil;
+    self.preparedCaptionLayerConfigurations = nil;
     for (UIView *view in units.allValues) [view removeFromSuperview];
     for (UIView *view in labels.allValues) [view removeFromSuperview]; [cradle removeFromSuperview];
 }
@@ -238,15 +260,81 @@
         for (NSString *key in texts) self.labels[key].text = texts[key];
     } @finally { [CATransaction commit]; }
 }
+- (BOOL)canRetainPresentedBeforePaint:(MTPPlaceValueProjection *)before {
+    // Starting a fresh clock must not discard an already presented exact origin.
+    // This is only a reuse certificate, never an alternative admission path.
+    MTPPlaceValueProjection *current = self.projection;
+    if (!self.retainingExplicitlyPreparedPaint || self.endpoint != MTPPlaceValueEndpointBefore || self.displayingFullSnapshot || self.overviewLayout
+        || !self.scene.geometryValid || self.scene.stationary || self.scene.action != self.action
+        // The observed readiness failure has captions but no material yet. Do
+        // not extend this certificate to material or exchange-guide drawing.
+        || before.placements.count || !CGRectIsNull(self.scene.cradleRect)
+        || !current || current.complete || before.complete || current.canonicalSnapshot != self.action.before
+        || before.canonicalSnapshot != self.action.before || current.placements.count != before.placements.count
+        || ![current.ownedUnitsByIdentifier isEqualToDictionary:before.ownedUnitsByIdentifier]
+        || ![current.ownersByIdentifier isEqualToDictionary:before.ownersByIdentifier]
+        || ![current.carryIdentifiers isEqualToSet:before.carryIdentifiers]
+        || ![current.labelTexts isEqualToDictionary:before.labelTexts]) return NO;
+    if (![self installedPaintIsLawful]) return NO;
+    for (NSString *key in self.scene.labelFrames) {
+        UILabel *label = self.labels[key];
+        if (!CGRectEqualToRect(label.frame, self.scene.labelFrames[key].CGRectValue)
+            || ![label.font isEqual:self.scene.font] || ![label.textColor isEqual:ChildUI.brownText]
+            || label.numberOfLines != 0 || label.lineBreakMode != NSLineBreakByWordWrapping
+            || label.textAlignment != NSTextAlignmentNatural || label.lineBreakStrategy != NSLineBreakStrategyStandard
+            || !label.enabled || label.highlighted || label.shadowColor || label.adjustsFontSizeToFitWidth
+            || label.adjustsFontForContentSizeCategory || label.allowsDefaultTighteningForTruncation
+            || label.semanticContentAttribute != UISemanticContentAttributeUnspecified) return NO;
+        // Setting plain text may expose an unstyled attributed string. Any
+        // actual attributes can override these canonical UILabel settings.
+        NSAttributedString *styled = label.attributedText;
+        if (styled && ![styled isEqualToAttributedString:[[NSAttributedString alloc] initWithString:before.labelTexts[key]]]) return NO;
+        if (label.layer.delegate != label) return NO;
+        NSDictionary *configuration = [self.preparedCaptionLayerConfigurations objectForKey:label];
+        if (!configuration || ![configuration isEqualToDictionary:MTPPreparedCaptionLayerConfiguration(label.layer)]
+            || ![configuration isEqualToDictionary:MTPPreparedCaptionLayerConfiguration(label.layer.presentationLayer)]) return NO;
+    }
+    for (CALayer *layer in [self ownedRootLayers]) {
+        CALayer *paint = layer.presentationLayer;
+        if (!paint || paint.modelLayer != layer || paint.superlayer.modelLayer != self.layer
+            || [self presentationIndexOfLayer:layer inParent:self.layer] == NSNotFound
+            || ![self paintTreeIsStable:layer requirePresentation:YES]
+            || layer.needsDisplay || layer.needsLayout || layer.drawsAsynchronously || layer.shouldRasterize
+            || layer.contents != paint.contents || !CGRectEqualToRect(layer.contentsRect, paint.contentsRect)
+            || !CGRectEqualToRect(layer.contentsCenter, paint.contentsCenter) || layer.contentsScale != paint.contentsScale
+            || ![layer.contentsFormat isEqualToString:paint.contentsFormat]
+            || ![layer.contentsGravity isEqualToString:paint.contentsGravity]) return NO;
+        // Public dirty flags and exposed contents disagreement veto reuse;
+        // equal (including nil) contents are not a separate raster certificate.
+    }
+    return YES;
+}
 - (void)installScenePaint {
+    MTPPlaceValueProjection *projection = [self.scene projectionAfter:self.endpoint == MTPPlaceValueEndpointAfter];
+    if ([self canRetainPresentedBeforePaint:projection]) {
+        // Keep the native layer identities that were prepared before admission.
+        // The normal visibility gate still checks every ancestor and occluder.
+        // No drawing setters here, even an equal text assignment can invalidate
+        // the prepared surface. The certificate already checked equal content.
+        self.projection = projection; self.snapshot = projection.canonicalSnapshot;
+        self.spokenDescription = [NSString stringWithFormat:@"%@ %@ %@", projection.labelTexts[@"title"], projection.labelTexts[@"phase"], projection.labelTexts[@"context"]];
+        self.accessibilityValue = self.spokenDescription; return;
+    }
     [self clearPaint];
     if (!CGRectIsNull(self.scene.cradleRect)) {
         self.cradle = [[UIView alloc] initWithFrame:self.scene.cradleRect]; self.cradle.backgroundColor = UIColor.clearColor;
         self.cradle.layer.borderWidth = 1; self.cradle.layer.borderColor = [ChildUI.brownText colorWithAlphaComponent:.5].CGColor;
         self.cradle.isAccessibilityElement = NO; self.cradle.accessibilityIdentifier = @"multiplicative.place.exchange.cradle"; [self addSubview:self.cradle];
     }
-    MTPPlaceValueProjection *projection = [self.scene projectionAfter:self.endpoint == MTPPlaceValueEndpointAfter];
-    for (NSString *key in self.scene.labelFrames) [self makeLabel:key frame:self.scene.labelFrames[key].CGRectValue text:projection.labelTexts[key]];
+    if (self.endpoint == MTPPlaceValueEndpointBefore && !self.scene.stationary && !projection.placements.count
+        && CGRectIsNull(self.scene.cradleRect) && self.scene.labelFrames.count == 4) {
+        self.preparedCaptionLayerConfigurations = [[NSMapTable alloc] initWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory capacity:4];
+    }
+    for (NSString *key in self.scene.labelFrames) {
+        UILabel *label = [self makeLabel:key frame:self.scene.labelFrames[key].CGRectValue text:projection.labelTexts[key]];
+        NSDictionary *configuration = self.preparedCaptionLayerConfigurations ? MTPPreparedCaptionLayerConfiguration(label.layer) : nil;
+        if (configuration) [self.preparedCaptionLayerConfigurations setObject:configuration forKey:label];
+    }
     [self applyProjection:projection];
 }
 - (void)applyProjection:(MTPPlaceValueProjection *)projection {
@@ -504,7 +592,10 @@
     self.statusExplanation = @""; self.layoutRevision++; NSUInteger preparedRevision = self.layoutRevision; CGSize preparedSize = self.bounds.size;
     self.needsSceneLayout = NO; self.scene = [MultiplicativePlaceValueScene sceneWithAction:self.action width:preparedSize.width font:self.materialFont];
     self.renderedSize = preparedSize; self.requestedVisibleRect = visibleRect;
-    [self installScenePaint]; self.updatingBindings = NO;
+    self.retainingExplicitlyPreparedPaint = YES;
+    @try { [self installScenePaint]; }
+    @finally { self.retainingExplicitlyPreparedPaint = NO; }
+    self.updatingBindings = NO;
     if (self.layoutRevision != preparedRevision || !CGSizeEqualToSize(preparedSize, self.bounds.size)) {
         [self settleRecovery:MTPPlaceValuePlaybackStateInterrupted reason:MTPPlaceValueInterruptionReasonLayoutChanged]; return self.playbackState;
     }

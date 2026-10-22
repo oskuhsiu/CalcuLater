@@ -439,7 +439,12 @@
             delta = CGRectGetMinY(before) - CGRectGetMinY(viewport) - 8;
             if (fabs(delta) < 12) break;
         }
-        CGFloat distance = MIN(fabs(delta), viewport.size.height * 0.35);
+        // Native traces show 68 points of touch travel scrolling only 58,
+        // followed by seven 10-point drags that do not move the content.
+        // Account for that observed touch allowance when full containment is
+        // possible; keep tall-board framing and the gesture budget unchanged.
+        CGFloat touchAllowance = before.size.height <= viewport.size.height ? 10 : 0;
+        CGFloat distance = MIN(fabs(delta) + touchAllowance, viewport.size.height * 0.35);
         CGFloat startY = delta > 0 ? 0.7 : 0.3;
         CGFloat endY = startY + (delta > 0 ? -1 : 1) * distance / viewport.size.height;
         XCUICoordinate *start = [content coordinateWithNormalizedOffset:CGVectorMake(0.5, startY)];

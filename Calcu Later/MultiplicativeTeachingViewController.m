@@ -117,6 +117,9 @@ typedef NS_ENUM(NSInteger, MTPFramingResult) { MTPFramingResultAlreadyContained,
     if (action) [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
 }
+- (MultiplicativePlaceValueBoardView *)makePlaceValueBoard {
+    return [[MultiplicativePlaceValueBoardView alloc] initWithFrame:CGRectZero];
+}
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"一起看數量";
@@ -136,7 +139,7 @@ typedef NS_ENUM(NSInteger, MTPFramingResult) { MTPFramingResultAlreadyContained,
     self.headingLabel.accessibilityTraits |= UIAccessibilityTraitHeader;
     self.noticeLabel = [self label:19 weight:UIFontWeightSemibold identifier:@"multiplicative.notice"];
     self.writtenNoticeLabel = [self label:18 weight:UIFontWeightMedium identifier:@"multiplicative.writtenNotice"];
-    self.board = [[MultiplicativePlaceValueBoardView alloc] initWithFrame:CGRectZero];
+    self.board = [self makePlaceValueBoard];
     self.written = [[MultiplicativeWrittenWorkView alloc] initWithFrame:CGRectZero];
     for (UIView *view in @[self.questionLabel, self.headingLabel, self.noticeLabel, self.writtenNoticeLabel, self.board, self.written])
         [self.scroll addSubview:view];

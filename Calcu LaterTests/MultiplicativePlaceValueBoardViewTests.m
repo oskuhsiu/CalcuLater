@@ -3,6 +3,7 @@
 #import <math.h>
 #import "MultiplicativePlaceValueBoardView.h"
 #import "MultiplicativePlaceValueScene.h"
+#import "ChildUIKit.h"
 
 @interface MultiplicativePlaceValueBoardView (NativeTests)
 - (BOOL)motionAllowed;
@@ -236,6 +237,88 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
             child.modelLayer && [layer.sublayers containsObject:child.modelLayer], NSStringFromCGRect(child.frame), child.hidden, (double)child.opacity]];
     }
 }
+// Shared read-only rejection capture for real board and controller fixtures.
+NSString *MTPNativeVisibilityDiagnostic(MultiplicativePlaceValueBoardView *board) {
+    CGRect requested = [[board valueForKey:@"requestedVisibleRect"] CGRectValue];
+    CADisplayLink *clock = [board valueForKey:@"clock"];
+    id transaction = [board valueForKey:@"transaction"];
+    BOOL requiresPaint = clock != nil;
+    NSDictionary<NSNumber *, UIView *> *units = [board valueForKey:@"unitViews"];
+    NSDictionary<NSString *, UILabel *> *labels = [board valueForKey:@"labels"];
+    MTPPlaceValueProjection *projection = [board valueForKey:@"projection"];
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
+        @"visibility rejection applicationState=%ld sceneState=%ld sceneBounds=%@ windowBounds=%@ windowSafe=%@ boardBounds=%@ required=%@ requested=%@ category=%@ sceneWidth=%g sceneValid=%d geometryFailure=%@ installedPaintLawful=%d requiresPresentation=%d units=%lu/%lu labels=%lu/%lu",
+        (long)UIApplication.sharedApplication.applicationState, (long)board.window.windowScene.activationState,
+        NSStringFromCGRect(board.window.windowScene.coordinateSpace.bounds), NSStringFromCGRect(board.window.bounds), NSStringFromCGRect(board.window.safeAreaLayoutGuide.layoutFrame),
+        NSStringFromCGRect(board.bounds), NSStringFromCGRect(board.requiredActionRect), NSStringFromCGRect(requested), board.traitCollection.preferredContentSizeCategory,
+        (double)board.scene.width, board.scene.geometryValid, board.scene.geometryFailure, [board installedPaintIsLawful], requiresPaint,
+        (unsigned long)units.count, (unsigned long)projection.placements.count, (unsigned long)labels.count, (unsigned long)board.scene.labelFrames.count]];
+    [lines addObject:[NSString stringWithFormat:@"playback monotonic=%.9f state=%ld interruption=%ld generation=%lu revision=%lu endpoint=%ld fullSnapshot=%d clock=%p transaction=%p startTimestamp=%@ lastTimestamp=%@ snapshotIsBefore=%d snapshotIsAfter=%d",
+        CACurrentMediaTime(), (long)board.playbackState, (long)board.interruptionReason, (unsigned long)board.playbackGeneration,
+        (unsigned long)board.layoutRevision, (long)board.endpoint, board.displayingFullSnapshot, clock, transaction,
+        [board valueForKey:@"startTimestamp"], [board valueForKey:@"lastTimestamp"], board.snapshot == board.action.before, board.snapshot == board.action.after]];
+    for (MTPPlaceValueUnitPlacement *placement in projection.placements) {
+        UIView *view = units[@(placement.unit.identifier)];
+        [lines addObject:[NSString stringWithFormat:@"unit=%lu exists=%d attached=%d/%d unitIdentity=%d owner=%@/%@ carry=%@/%d frame=%@/%@ body=%@/%@ stable=%d paintTreeStable=%d noAdditionalPaint=%d inRequired=%d",
+            (unsigned long)placement.unit.identifier, view != nil, view.superview == board, view.layer.superlayer == board.layer, [view valueForKey:@"unit"] == placement.unit, [view valueForKey:@"owner"], placement.owner,
+            [view valueForKey:@"carryAnnotation"], placement.carryAnnotation, NSStringFromCGRect(view.frame), NSStringFromCGRect(placement.frame), NSStringFromCGSize(view.bounds.size), NSStringFromCGSize(MTPPlaceValueBodySize(placement.unit.column)),
+            [board layerIsStable:view.layer requirePresentation:requiresPaint], [board paintTreeIsStable:view.layer requirePresentation:requiresPaint], [board ownedSurfaceHasNoAdditionalPaint:view.layer],
+            CGRectContainsRect(board.requiredActionRect, view.layer.presentationLayer ? ((CALayer *)view.layer.presentationLayer).frame : view.frame)]];
+        MTPAppendLayerDiagnostic(lines, view.layer, 0);
+    }
+    for (NSString *key in board.scene.labelFrames) {
+        UILabel *label = labels[key];
+        [lines addObject:[NSString stringWithFormat:@"label=%@ exists=%d attached=%d/%d textMatches=%d shrink=%d textShadow=%@ frame=%@/%@ font=%g/%g measuredHeight=%g stable=%d paintTreeStable=%d noAdditionalPaint=%d",
+            key, label != nil, label.superview == board, label.layer.superlayer == board.layer, [label.text isEqualToString:projection.labelTexts[key]], label.adjustsFontSizeToFitWidth, label.shadowColor, NSStringFromCGRect(label.frame), NSStringFromCGRect(board.scene.labelFrames[key].CGRectValue),
+            (double)label.font.pointSize, (double)board.scene.font.pointSize, (double)(label.font ? MTPPlaceValueTextHeight(label.text ?: @"", label.font, label.bounds.size.width) : NAN),
+            [board layerIsStable:label.layer requirePresentation:requiresPaint], [board paintTreeIsStable:label.layer requirePresentation:requiresPaint], [board ownedSurfaceHasNoAdditionalPaint:label.layer]]];
+        MTPAppendLayerDiagnostic(lines, label.layer, 0);
+    }
+    UIView *cradle = [board valueForKey:@"cradle"];
+    [lines addObject:[NSString stringWithFormat:@"cradle=%@ expected=%@ knownGuide=%d ownedRootsUnobscured=%d",
+        cradle, NSStringFromCGRect(board.scene.cradleRect), cradle && [board cradleHasOnlyKnownGuidePaint], [board layerChildrenAreUnobscured:board.layer targets:[board ownedRootLayers]]]];
+    if (cradle) MTPAppendLayerDiagnostic(lines, cradle.layer, 0);
+    CGRect visible = CGRectIntersection(board.bounds, requested);
+    visible = CGRectIntersection(visible, [board convertRect:board.window.bounds fromView:board.window]);
+    visible = CGRectIntersection(visible, [board convertRect:board.window.safeAreaLayoutGuide.layoutFrame fromView:board.window]);
+    for (UIView *view = board; view; view = view.superview) {
+        CALayer *layer = view.layer, *paint = layer.presentationLayer;
+        [lines addObject:[NSString stringWithFormat:@"ancestor=%@ view=%p layer=%p frame=%@ hidden=%d alpha=%g stable=%d modelParentMatches=%d presentationParentMatches=%d parents=%p/%p/%p siblingsUnobscured=%d clipBefore=%@",
+            NSStringFromClass(view.class), view, layer, NSStringFromCGRect(view.frame), view.hidden, (double)view.alpha,
+            [board layerIsStable:layer requirePresentation:YES], layer.superlayer == view.superview.layer, paint.superlayer.modelLayer == view.superview.layer, layer.superlayer, paint.superlayer.modelLayer, view.superview.layer,
+            view == board.window || [board layerChildrenAreUnobscured:layer.superlayer targets:[NSSet setWithObject:layer]], NSStringFromCGRect(visible)]];
+        if (![board layerIsStable:layer requirePresentation:YES]) MTPAppendLayerDiagnostic(lines, layer, 4);
+        if (layer.masksToBounds || view.clipsToBounds || [view isKindOfClass:UIScrollView.class]) {
+            CGRect clip = layer.cornerRadius > 0 ? CGRectInset(layer.bounds, layer.cornerRadius, layer.cornerRadius) : layer.bounds;
+            visible = CGRectIntersection(visible, [board.layer convertRect:clip fromLayer:layer]);
+        }
+        if ([view isKindOfClass:UIScrollView.class]) {
+            UIScrollView *scroll = (UIScrollView *)view;
+            [lines addObject:[NSString stringWithFormat:@"scroll=%p bounds=%@ offset=%@ dragging=%d tracking=%d decelerating=%d",
+                scroll, NSStringFromCGRect(scroll.bounds), NSStringFromCGPoint(scroll.contentOffset), scroll.dragging, scroll.tracking, scroll.decelerating]];
+        }
+        if (view == board.window) break;
+    }
+    [lines addObject:[NSString stringWithFormat:@"effectiveClip=%@ containsRequired=%d", NSStringFromCGRect(visible), CGRectContainsRect(visible, board.requiredActionRect)]];
+    for (UIWindow *window in board.window.windowScene.windows) {
+        [lines addObject:[NSString stringWithFormat:@"sceneWindow=%p current=%d key=%d level=%g currentLevel=%g hidden=%d alpha=%g frame=%@ mayCover=%d",
+            window, window == board.window, window.isKeyWindow, (double)window.windowLevel, (double)board.window.windowLevel,
+            window.hidden, (double)window.alpha, NSStringFromCGRect(window.frame), window != board.window && [board occluderMayCoverAction:window]]];
+    }
+    NSArray<UIScrollView *> *scrolls = [transaction valueForKey:@"scrollViews"];
+    NSArray<NSValue *> *offsets = [transaction valueForKey:@"scrollOffsets"];
+    for (NSUInteger index = 0; index < scrolls.count; index++)
+        [lines addObject:[NSString stringWithFormat:@"capturedScroll=%p currentOffset=%@ originalOffset=%@ matches=%d",
+            scrolls[index], NSStringFromCGPoint(scrolls[index].contentOffset), offsets[index], CGPointEqualToPoint(scrolls[index].contentOffset, offsets[index].CGPointValue)]];
+    for (UIViewController *presented = board.window.rootViewController.presentedViewController; presented; presented = presented.presentedViewController) {
+        UIView *view = presented.viewIfLoaded;
+        [lines addObject:[NSString stringWithFormat:@"presentedController=%p loadedView=%p sameWindow=%d boardDescendant=%d mayCover=%d",
+            presented, view, view && view.window == board.window, view && [board isDescendantOfView:view], view && [board occluderMayCoverAction:view]]];
+    }
+    [lines addObject:MTPFixtureWindowSnapshot(board.window.windowScene, board.window)];
+    return [lines componentsJoinedByString:@"\n"];
+}
+
 @interface MTPNativeBoard : MultiplicativePlaceValueBoardView
 @property (nonatomic) BOOL allowsMotion;
 @property (nonatomic) BOOL injectLabelAnimation;
@@ -254,65 +337,8 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
     }
     return admitted;
 }
-- (NSString *)visibilityDiagnostic {
-    CGRect requested = [[self valueForKey:@"requestedVisibleRect"] CGRectValue];
-    BOOL requiresPaint = [self valueForKey:@"clock"] != nil;
-    NSDictionary<NSNumber *, UIView *> *units = [self valueForKey:@"unitViews"];
-    NSDictionary<NSString *, UILabel *> *labels = [self valueForKey:@"labels"];
-    MTPPlaceValueProjection *projection = [self valueForKey:@"projection"];
-    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
-        @"visibility rejection applicationState=%ld sceneState=%ld sceneBounds=%@ windowBounds=%@ windowSafe=%@ boardBounds=%@ required=%@ requested=%@ category=%@ sceneWidth=%g sceneValid=%d geometryFailure=%@ installedPaintLawful=%d requiresPresentation=%d units=%lu/%lu labels=%lu/%lu",
-        (long)UIApplication.sharedApplication.applicationState, (long)self.window.windowScene.activationState,
-        NSStringFromCGRect(self.window.windowScene.coordinateSpace.bounds), NSStringFromCGRect(self.window.bounds), NSStringFromCGRect(self.window.safeAreaLayoutGuide.layoutFrame),
-        NSStringFromCGRect(self.bounds), NSStringFromCGRect(self.requiredActionRect), NSStringFromCGRect(requested), self.traitCollection.preferredContentSizeCategory,
-        (double)self.scene.width, self.scene.geometryValid, self.scene.geometryFailure, [self installedPaintIsLawful], requiresPaint,
-        (unsigned long)units.count, (unsigned long)projection.placements.count, (unsigned long)labels.count, (unsigned long)self.scene.labelFrames.count]];
-    for (MTPPlaceValueUnitPlacement *placement in projection.placements) {
-        UIView *view = units[@(placement.unit.identifier)];
-        [lines addObject:[NSString stringWithFormat:@"unit=%lu exists=%d attached=%d/%d unitIdentity=%d owner=%@/%@ carry=%@/%d frame=%@/%@ body=%@/%@ stable=%d paintTreeStable=%d noAdditionalPaint=%d inRequired=%d",
-            (unsigned long)placement.unit.identifier, view != nil, view.superview == self, view.layer.superlayer == self.layer, [view valueForKey:@"unit"] == placement.unit, [view valueForKey:@"owner"], placement.owner,
-            [view valueForKey:@"carryAnnotation"], placement.carryAnnotation, NSStringFromCGRect(view.frame), NSStringFromCGRect(placement.frame), NSStringFromCGSize(view.bounds.size), NSStringFromCGSize(MTPPlaceValueBodySize(placement.unit.column)),
-            [self layerIsStable:view.layer requirePresentation:requiresPaint], [self paintTreeIsStable:view.layer requirePresentation:requiresPaint], [self ownedSurfaceHasNoAdditionalPaint:view.layer],
-            CGRectContainsRect(self.requiredActionRect, view.layer.presentationLayer ? ((CALayer *)view.layer.presentationLayer).frame : view.frame)]];
-        MTPAppendLayerDiagnostic(lines, view.layer, 0);
-    }
-    for (NSString *key in self.scene.labelFrames) {
-        UILabel *label = labels[key];
-        [lines addObject:[NSString stringWithFormat:@"label=%@ exists=%d attached=%d/%d textMatches=%d shrink=%d textShadow=%@ frame=%@/%@ font=%g/%g measuredHeight=%g stable=%d paintTreeStable=%d noAdditionalPaint=%d",
-            key, label != nil, label.superview == self, label.layer.superlayer == self.layer, [label.text isEqualToString:projection.labelTexts[key]], label.adjustsFontSizeToFitWidth, label.shadowColor, NSStringFromCGRect(label.frame), NSStringFromCGRect(self.scene.labelFrames[key].CGRectValue),
-            (double)label.font.pointSize, (double)self.scene.font.pointSize, (double)(label.font ? MTPPlaceValueTextHeight(label.text ?: @"", label.font, label.bounds.size.width) : NAN),
-            [self layerIsStable:label.layer requirePresentation:requiresPaint], [self paintTreeIsStable:label.layer requirePresentation:requiresPaint], [self ownedSurfaceHasNoAdditionalPaint:label.layer]]];
-        MTPAppendLayerDiagnostic(lines, label.layer, 0);
-    }
-    UIView *cradle = [self valueForKey:@"cradle"];
-    [lines addObject:[NSString stringWithFormat:@"cradle=%@ expected=%@ knownGuide=%d ownedRootsUnobscured=%d",
-        cradle, NSStringFromCGRect(self.scene.cradleRect), cradle && [self cradleHasOnlyKnownGuidePaint], [self layerChildrenAreUnobscured:self.layer targets:[self ownedRootLayers]]]];
-    if (cradle) MTPAppendLayerDiagnostic(lines, cradle.layer, 0);
-    CGRect visible = CGRectIntersection(self.bounds, requested);
-    visible = CGRectIntersection(visible, [self convertRect:self.window.bounds fromView:self.window]);
-    visible = CGRectIntersection(visible, [self convertRect:self.window.safeAreaLayoutGuide.layoutFrame fromView:self.window]);
-    for (UIView *view = self; view; view = view.superview) {
-        CALayer *layer = view.layer, *paint = layer.presentationLayer;
-        [lines addObject:[NSString stringWithFormat:@"ancestor=%@ view=%p layer=%p frame=%@ hidden=%d alpha=%g stable=%d modelParentMatches=%d presentationParentMatches=%d parents=%p/%p/%p siblingsUnobscured=%d clipBefore=%@",
-            NSStringFromClass(view.class), view, layer, NSStringFromCGRect(view.frame), view.hidden, (double)view.alpha,
-            [self layerIsStable:layer requirePresentation:YES], layer.superlayer == view.superview.layer, paint.superlayer.modelLayer == view.superview.layer, layer.superlayer, paint.superlayer.modelLayer, view.superview.layer,
-            view == self.window || [self layerChildrenAreUnobscured:layer.superlayer targets:[NSSet setWithObject:layer]], NSStringFromCGRect(visible)]];
-        if (![self layerIsStable:layer requirePresentation:YES]) MTPAppendLayerDiagnostic(lines, layer, 4);
-        if (layer.masksToBounds || view.clipsToBounds || [view isKindOfClass:UIScrollView.class]) {
-            CGRect clip = layer.cornerRadius > 0 ? CGRectInset(layer.bounds, layer.cornerRadius, layer.cornerRadius) : layer.bounds;
-            visible = CGRectIntersection(visible, [self.layer convertRect:clip fromLayer:layer]);
-        }
-        if (view == self.window) break;
-    }
-    [lines addObject:[NSString stringWithFormat:@"effectiveClip=%@ containsRequired=%d", NSStringFromCGRect(visible), CGRectContainsRect(visible, self.requiredActionRect)]];
-    for (UIWindow *window in self.window.windowScene.windows) {
-        [lines addObject:[NSString stringWithFormat:@"sceneWindow=%p current=%d key=%d level=%g currentLevel=%g hidden=%d alpha=%g frame=%@ mayCover=%d",
-            window, window == self.window, window.isKeyWindow, (double)window.windowLevel, (double)self.window.windowLevel,
-            window.hidden, (double)window.alpha, NSStringFromCGRect(window.frame), window != self.window && [self occluderMayCoverAction:window]]];
-    }
-    [lines addObject:MTPFixtureWindowSnapshot(self.window.windowScene, self.window)];
-    return [lines componentsJoinedByString:@"\n"];
-}
+- (NSString *)visibilityDiagnostic { return MTPNativeVisibilityDiagnostic(self); }
+
 - (void)installScenePaint {
     [super installScenePaint];
     if (self.injectLabelAnimation) {
@@ -650,7 +676,22 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
 - (void)testNaturalClockCompletionDoesNotAdvanceTheAction {
     self.board.captureVisibilityFailure = YES;
     MultiplicativeTeachingAction *action = [self action:[self plan:1 op:@"×" b:1] kind:MultiplicativeTeachingActionKindGenerateGroup column:2 last:NO];
-    [self fitAction:action width:self.viewport.bounds.size.width]; XCTAssertEqual([self.board playInVisibleRect:self.board.bounds], MTPPlaceValuePlaybackStateRunning);
+    [self fitAction:action width:self.viewport.bounds.size.width];
+    NSDictionary<NSString *, UILabel *> *preparedLabels = [[self.board valueForKey:@"labels"] copy];
+    for (UILabel *label in preparedLabels.allValues) {
+        XCTAssertNotNil(label.layer.presentationLayer);
+        XCTAssertEqual(label.layer.presentationLayer.modelLayer, label.layer);
+        XCTAssertFalse(label.layer.needsDisplay); XCTAssertFalse(label.layer.needsLayout);
+    }
+    XCTAssertEqual([self.board playInVisibleRect:self.board.bounds], MTPPlaceValuePlaybackStateRunning);
+    NSDictionary<NSString *, UILabel *> *runningLabels = [self.board valueForKey:@"labels"];
+    XCTAssertEqualObjects([NSSet setWithArray:runningLabels.allKeys], [NSSet setWithArray:preparedLabels.allKeys]);
+    for (NSString *key in preparedLabels) {
+        XCTAssertEqual(runningLabels[key], preparedLabels[key], @"Admission must retain the exact presented before caption, not install uncommitted replacement paint.");
+        XCTAssertNotNil(runningLabels[key].layer.presentationLayer);
+        XCTAssertEqual(runningLabels[key].layer.presentationLayer.modelLayer, runningLabels[key].layer);
+        XCTAssertFalse(runningLabels[key].layer.needsDisplay); XCTAssertFalse(runningLabels[key].layer.needsLayout);
+    }
     XCTestExpectation *finished = [self expectationForPredicate:[NSPredicate predicateWithFormat:@"playbackState == %ld", (long)MTPPlaceValuePlaybackStateCompleted] evaluatedWithObject:self.board handler:nil];
     [self waitForExpectations:@[finished] timeout:5]; XCTAssertEqual(self.board.action, action); XCTAssertEqual(self.board.snapshot, action.after); XCTAssertNil([self.board valueForKey:@"clock"]); [self assertActualFramesMatch:self.board.scene.afterFrames];
 }
@@ -816,6 +857,87 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
         [self.board recheckVisibility]; XCTAssertEqual(self.board.playbackState,MTPPlaceValuePlaybackStateInterrupted); XCTAssertEqual(self.board.snapshot,action.after); XCTAssertNil([self.board valueForKey:@"clock"]);
         [layer removeAllAnimations]; [self presentFrame]; XCTAssertNil([self.board valueForKey:@"clock"]);
     }
+    // Exercise the exact empty-before scene eligible for prepared-caption reuse.
+    // Changed drawing settings must be replaced, not repaired in place and
+    // described as already-presented canonical text. Native layer observations
+    // below do not certify that a changed glyph raster is already visible.
+    MultiplicativeTeachingAction *generate = [self action:[self plan:1 op:@"×" b:1] kind:MultiplicativeTeachingActionKindGenerateGroup column:2 last:NO];
+    NSDictionary *(^ownAppearance)(CALayer *) = ^NSDictionary *(CALayer *layer) {
+        return @{@"borderWidth":@(layer.borderWidth), @"borderColor":layer.borderWidth && layer.borderColor ? [UIColor colorWithCGColor:layer.borderColor] : NSNull.null,
+            @"background":layer.backgroundColor && CGColorGetAlpha(layer.backgroundColor) ? [UIColor colorWithCGColor:layer.backgroundColor] : NSNull.null,
+            @"cornerRadius":@(layer.cornerRadius), @"clips":@(layer.masksToBounds), @"contentsRect":[NSValue valueWithCGRect:layer.contentsRect],
+            @"contentsCenter":[NSValue valueWithCGRect:layer.contentsCenter], @"contentsGravity":layer.contentsGravity ?: NSNull.null};
+    };
+    NSDictionary *(^drawing)(UILabel *) = ^NSDictionary *(UILabel *label) {
+        return @{@"color":label.textColor, @"lines":@(label.numberOfLines), @"break":@(label.lineBreakMode),
+            @"alignment":@(label.textAlignment), @"strategy":@(label.lineBreakStrategy), @"enabled":@(label.enabled),
+            @"highlighted":@(label.highlighted), @"highlightColor":label.highlightedTextColor ?: NSNull.null,
+            @"attributed":label.attributedText ?: NSNull.null, @"ownLayer":ownAppearance(label.layer)};
+    };
+    for (NSString *mutation in @[@"clear", @"singleLine", @"truncating", @"attributedTail", @"centered", @"breakStrategy",
+                                 @"highlighted", @"disabled", @"border", @"background", @"cornerClip", @"contentsRect", @"contentsCenter", @"contentsGravity",
+                                 @"pendingDisplay", @"pendingLayout", @"restoredColor", @"pendingContentsRect"]) {
+        [self fitAction:generate width:MIN(320,self.viewport.bounds.size.width)];
+        UILabel *prepared = [[self.board valueForKey:@"labels"] objectForKey:@"context"];
+        XCTAssertNotNil(prepared); XCTAssertNotNil(prepared.layer.presentationLayer);
+        XCTAssertEqual(prepared.layer.presentationLayer.modelLayer,prepared.layer);
+        if ([mutation isEqualToString:@"clear"] || [mutation isEqualToString:@"restoredColor"]) prepared.textColor = UIColor.clearColor;
+        else if ([mutation isEqualToString:@"singleLine"]) prepared.numberOfLines = 1;
+        else if ([mutation isEqualToString:@"truncating"]) prepared.lineBreakMode = NSLineBreakByTruncatingTail;
+        else if ([mutation isEqualToString:@"attributedTail"]) {
+            NSMutableAttributedString *styled = [[NSMutableAttributedString alloc] initWithString:prepared.text attributes:@{NSFontAttributeName:prepared.font, NSForegroundColorAttributeName:prepared.textColor}];
+            XCTAssertGreaterThan(styled.length,1u);
+            [styled addAttribute:NSForegroundColorAttributeName value:UIColor.clearColor range:NSMakeRange(styled.length-1,1)]; prepared.attributedText = styled;
+        } else if ([mutation isEqualToString:@"centered"]) prepared.textAlignment = NSTextAlignmentCenter;
+        else if ([mutation isEqualToString:@"breakStrategy"]) prepared.lineBreakStrategy = NSLineBreakStrategyNone;
+        else if ([mutation isEqualToString:@"highlighted"]) { prepared.highlightedTextColor = UIColor.clearColor; prepared.highlighted = YES; }
+        else if ([mutation isEqualToString:@"disabled"]) prepared.enabled = NO;
+        else if ([mutation isEqualToString:@"border"]) { prepared.layer.borderColor = UIColor.redColor.CGColor; prepared.layer.borderWidth = MAX(prepared.bounds.size.width,prepared.bounds.size.height); }
+        else if ([mutation isEqualToString:@"background"]) prepared.layer.backgroundColor = UIColor.redColor.CGColor;
+        else if ([mutation isEqualToString:@"cornerClip"]) { prepared.layer.masksToBounds = YES; prepared.layer.cornerRadius = MAX(prepared.bounds.size.width,prepared.bounds.size.height); }
+        else if ([mutation isEqualToString:@"contentsRect"]) prepared.layer.contentsRect = CGRectEqualToRect(prepared.layer.contentsRect,CGRectMake(0,0,.5,1)) ? CGRectMake(.5,0,.5,1) : CGRectMake(0,0,.5,1);
+        else if ([mutation isEqualToString:@"contentsCenter"]) prepared.layer.contentsCenter = CGRectEqualToRect(prepared.layer.contentsCenter,CGRectMake(.25,.25,.5,.5)) ? CGRectMake(.125,.125,.25,.25) : CGRectMake(.25,.25,.5,.5);
+        else if ([mutation isEqualToString:@"contentsGravity"]) prepared.layer.contentsGravity = [prepared.layer.contentsGravity isEqualToString:kCAGravityTopLeft] ? kCAGravityBottomRight : kCAGravityTopLeft;
+        if (![mutation hasPrefix:@"pending"]) {
+            // Passively observe public native-layer agreement, including a
+            // settled border/clip/contents-layout mutation. No glyph readback,
+            // CA flush, synthesized presentation, or admission retry occurs.
+            XCTestExpectation *settled = [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+                UILabel *label = object;
+                CALayer *paint = label.layer.presentationLayer;
+                return paint && paint.modelLayer == label.layer && !label.layer.needsDisplay && !label.layer.needsLayout
+                    && label.layer.contents == paint.contents && [ownAppearance(label.layer) isEqualToDictionary:ownAppearance(paint)]
+                    && [self.board paintTreeIsStable:label.layer requirePresentation:YES];
+            }] evaluatedWithObject:prepared handler:nil];
+            [self waitForExpectations:@[settled] timeout:2];
+            XCTAssertNotNil(prepared.layer.presentationLayer);
+            XCTAssertEqual(prepared.layer.presentationLayer.modelLayer,prepared.layer);
+            XCTAssertFalse(prepared.layer.needsDisplay); XCTAssertFalse(prepared.layer.needsLayout);
+        }
+        if ([mutation isEqualToString:@"restoredColor"]) {
+            prepared.textColor = ChildUI.brownText; [prepared.layer setNeedsDisplay]; XCTAssertTrue(prepared.layer.needsDisplay);
+        } else if ([mutation isEqualToString:@"pendingDisplay"]) {
+            [prepared.layer setNeedsDisplay]; XCTAssertTrue(prepared.layer.needsDisplay);
+        } else if ([mutation isEqualToString:@"pendingLayout"]) {
+            [prepared.layer setNeedsLayout]; XCTAssertTrue(prepared.layer.needsLayout);
+        } else if ([mutation isEqualToString:@"pendingContentsRect"]) {
+            prepared.layer.contentsRect = CGRectEqualToRect(prepared.layer.presentationLayer.contentsRect,CGRectMake(0,0,.5,1)) ? CGRectMake(.5,0,.5,1) : CGRectMake(0,0,.5,1);
+            XCTAssertFalse(CGRectEqualToRect(prepared.layer.contentsRect,prepared.layer.presentationLayer.contentsRect));
+        }
+        NSDictionary *mutatedDrawing = drawing(prepared);
+        XCTAssertEqual([self.board playInVisibleRect:self.board.bounds],MTPPlaceValuePlaybackStateRunning);
+        ((CADisplayLink *)[self.board valueForKey:@"clock"]).paused = YES;
+        UILabel *replacement = [[self.board valueForKey:@"labels"] objectForKey:@"context"];
+        XCTAssertNotEqual(replacement,prepared,@"%@ must take the unchanged rebuild path.",mutation);
+        XCTAssertNil(prepared.superview); XCTAssertEqualObjects(drawing(prepared),mutatedDrawing);
+        XCTAssertEqualObjects(replacement.textColor,ChildUI.brownText); XCTAssertEqual(replacement.numberOfLines,0);
+        XCTAssertEqual(replacement.lineBreakMode,NSLineBreakByWordWrapping);
+        XCTAssertEqual(replacement.layer.borderWidth,0); XCTAssertEqual(replacement.layer.cornerRadius,0);
+    }
+    [self.board cancelPlaybackWithReason:MTPPlaceValueInterruptionReasonCancelled];
+    [self fitAction:generate width:MIN(320,self.viewport.bounds.size.width)]; self.board.injectLabelAnimation = YES;
+    XCTAssertEqual([self.board playInVisibleRect:self.board.bounds],MTPPlaceValuePlaybackStateInsufficientSpace);
+    XCTAssertNil([self.board valueForKey:@"clock"]); self.board.injectLabelAnimation = NO;
 }
 - (void)testAnimatedSiblingAndSameLevelNonKeyWindowCannotBeSkipped {
     MultiplicativeTeachingAction *action = [self action:[self plan:1 op:@"×" b:1] kind:MultiplicativeTeachingActionKindGenerateGroup column:2 last:NO];

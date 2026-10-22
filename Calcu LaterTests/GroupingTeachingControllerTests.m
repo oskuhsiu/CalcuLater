@@ -42,35 +42,93 @@
 
 @interface GroupingTeachingControllerTests : XCTestCase
 @property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, weak) UIWindow *previousKeyWindow;
 @property (nonatomic, strong) GroupingTeachingViewController *controller;
 @end
 @implementation GroupingTeachingControllerTests
 - (void)releaseHost {
     [self.controller viewWillDisappear:NO];
-    [self.window.rootViewController.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+    if (self.controller) [self.window.rootViewController setOverrideTraitCollection:nil forChildViewController:self.controller];
     [self.controller willMoveToParentViewController:nil];
     [self.controller.view removeFromSuperview]; [self.controller removeFromParentViewController];
     self.window.hidden = YES; self.window.rootViewController = nil;
     self.controller = nil; self.window = nil;
+    if (self.previousKeyWindow && !self.previousKeyWindow.hidden
+        && self.previousKeyWindow.windowScene.activationState == UISceneActivationStateForegroundActive) {
+        [self.previousKeyWindow makeKeyWindow];
+    }
+    self.previousKeyWindow = nil;
 }
 - (void)tearDown {
     [self releaseHost];
     [super tearDown];
 }
 - (void)openSharingTotal:(NSInteger)total divisor:(NSInteger)divisor maximumText:(BOOL)maximumText {
+    [self openSharingTotal:total divisor:divisor maximumText:maximumText inForegroundScene:NO];
+}
+- (void)settleHost {
+    // Traits flow through the parent view before reaching the child controller.
+    // Settle that ancestor and real wrapping constraints, not just the child.
+    for (NSUInteger pass = 0; pass < 4; pass++) {
+        [self.window.rootViewController.view setNeedsLayout]; [self.window.rootViewController.view layoutIfNeeded];
+        [self.controller.view setNeedsLayout]; [self.controller.view layoutIfNeeded];
+    }
+}
+- (void)openSharingTotal:(NSInteger)total divisor:(NSInteger)divisor maximumText:(BOOL)maximumText
+    inForegroundScene:(BOOL)nativePresentation {
     GroupingStoryContext *context = [[GroupingStoryContext alloc] initWithMeaning:GroupingStoryMeaningShareEqually itemName:@"糖果" itemUnit:@"顆" groupName:@"個小朋友" answerUnit:@"顆"];
     WordProblem *story = [[WordProblem alloc] initWithStory:@"保留原來的完整故事。" templateID:@"focus-controller" grade:3 number1:total number2:divisor operator:@"÷" answer:total / divisor unit:@"顆"
         missingAddend:NO missingSubtrahend:NO missingMinuend:NO remainder:total % divisor number3:0 operator2:nil intermediate:0
         isFractionAnswer:NO answerNumerator:0 answerDenominator:0 groupingContext:context strategyText:@"每輪每人只有一顆。"];
-    self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 393, 852)];
-    self.window.rootViewController = [[UIViewController alloc] init]; self.window.hidden = NO;
-    if (maximumText) self.window.rootViewController.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    if (nativePresentation) {
+        UIWindowScene *scene = nil;
+        for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+            if ([candidate isKindOfClass:UIWindowScene.class]
+                && candidate.activationState == UISceneActivationStateForegroundActive
+                && ((UIWindowScene *)candidate).screen == UIScreen.mainScreen) {
+                scene = (UIWindowScene *)candidate; break;
+            }
+        }
+        XCTAssertNotNil(scene, @"Live text-size changes require the app's actual foreground scene.");
+        if (!scene) return;
+        XCTAssertGreaterThanOrEqual(scene.coordinateSpace.bounds.size.width, 393);
+        XCTAssertGreaterThanOrEqual(scene.coordinateSpace.bounds.size.height, 852);
+        if (scene.coordinateSpace.bounds.size.width < 393 || scene.coordinateSpace.bounds.size.height < 852) return;
+        for (UIWindow *window in scene.windows) if (window.isKeyWindow) { self.previousKeyWindow = window; break; }
+        self.window = [[UIWindow alloc] initWithWindowScene:scene];
+        self.window.frame = scene.coordinateSpace.bounds;
+    } else {
+        // Geometry-only tests retain their explicit portrait/landscape sizes.
+        self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 393, 852)];
+    }
+    UIViewController *host = [[UIViewController alloc] init];
+    self.window.rootViewController = host;
+    if (nativePresentation) [self.window makeKeyAndVisible]; else self.window.hidden = NO;
+    host.view.frame = self.window.bounds;
+    [host.view setNeedsLayout]; [host.view layoutIfNeeded];
     self.controller = [[CLSpeechRecordingGroupingController alloc] initWithProblem:[story toArithmeticProblem] wordProblem:story];
-    [self.window.rootViewController addChildViewController:self.controller];
-    self.controller.view.frame = CGRectMake(0, 0, 393, 852);
-    [self.window.rootViewController.view addSubview:self.controller.view];
-    [self.controller didMoveToParentViewController:self.window.rootViewController];
-    [self.controller.view setNeedsLayout]; [self.controller.view layoutIfNeeded];
+    [host addChildViewController:self.controller];
+    UIContentSizeCategory category = maximumText ? UIContentSizeCategoryAccessibilityExtraExtraExtraLarge : UIContentSizeCategoryLarge;
+    [host setOverrideTraitCollection:[UITraitCollection traitCollectionWithPreferredContentSizeCategory:category]
+              forChildViewController:self.controller];
+    // The inherited UIKit category also governs the production font factories
+    // during initial view loading. No fake trait getter or test font is used.
+    [self.controller.traitCollection performAsCurrentTraitCollection:^{
+        [host.view addSubview:self.controller.view];
+    }];
+    self.controller.view.autoresizingMask = UIViewAutoresizingNone;
+    self.controller.view.frame = CGRectMake((host.view.bounds.size.width - 393) / 2,
+        (host.view.bounds.size.height - 852) / 2, 393, 852);
+    [self.controller didMoveToParentViewController:host];
+    [self settleHost];
+    XCTAssertEqualObjects(self.controller.traitCollection.preferredContentSizeCategory, category);
+    XCTAssertEqualObjects(self.controller.view.traitCollection.preferredContentSizeCategory, category);
+    if (nativePresentation) {
+        XCTAssertNotNil(self.window.windowScene);
+        XCTAssertTrue(self.window.isKeyWindow);
+        XCTAssertTrue(CGRectContainsRect(self.window.bounds,
+            [self.controller.view convertRect:self.controller.view.bounds toView:self.window]));
+    }
 }
 - (GroupingTeachingAction *)action { return [self.controller valueForKey:@"selectedAction"]; }
 - (GroupingTeachingFocusView *)focus { return [self.controller valueForKey:@"focusView"]; }
@@ -191,7 +249,7 @@
     XCTAssertEqual([[self.controller valueForKey:@"answeredSteps"] count], 0u);
 }
 - (void)testWrongPredictionFeedbackIsRevealedWithoutAdvancingOrWritingAnswer {
-    [self openSharingTotal:23 divisor:4 maximumText:YES];
+    [self openSharingTotal:23 divisor:4 maximumText:YES inForegroundScene:YES];
     [self.controller next];
     UIStackView *choices = [self.controller valueForKey:@"choices"];
     UIButton *wrong = nil;
@@ -228,12 +286,40 @@
     // Preserve the original close-from-wrong-state callback above, then release
     // its window and child before starting a separate correction/restart flow.
     [self releaseHost];
-    [self openSharingTotal:23 divisor:4 maximumText:YES];
+    [self openSharingTotal:23 divisor:4 maximumText:YES inForegroundScene:YES];
     XCTAssertEqualObjects(self.controller.traitCollection.preferredContentSizeCategory, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge);
     [self.controller next];
     board = [self.controller valueForKey:@"board"];
     feedback = [self.controller valueForKey:@"choiceFeedback"];
     prediction = board.currentStep;
+    // Keep the same native hierarchy while changing both ways. Merely returning
+    // AX5 from a getter would not update these labels or the prediction layout.
+    choices = [self.controller valueForKey:@"choices"];
+    NSArray<UIView *> *originalChoices = [choices.arrangedSubviews copy];
+    CGFloat largeFeedbackSize = 0;
+    for (UIContentSizeCategory category in @[UIContentSizeCategoryLarge,
+            UIContentSizeCategoryAccessibilityExtraExtraExtraLarge, UIContentSizeCategoryLarge,
+            UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
+        [self.window.rootViewController setOverrideTraitCollection:[UITraitCollection traitCollectionWithPreferredContentSizeCategory:category]
+                                          forChildViewController:self.controller];
+        [self settleHost];
+        XCTAssertEqual(self.controller.view.window, self.window);
+        XCTAssertEqual(self.window.windowScene.activationState, UISceneActivationStateForegroundActive);
+        XCTAssertTrue(self.window.isKeyWindow);
+        XCTAssertEqualObjects(self.controller.traitCollection.preferredContentSizeCategory, category);
+        XCTAssertEqualObjects(feedback.traitCollection.preferredContentSizeCategory, category);
+        XCTAssertEqualObjects(choices.arrangedSubviews, originalChoices);
+        BOOL maximumText = UIContentSizeCategoryIsAccessibilityCategory(category);
+        XCTAssertEqual(choices.axis, maximumText ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal);
+        if (maximumText) XCTAssertGreaterThan(feedback.font.pointSize, largeFeedbackSize);
+        else largeFeedbackSize = feedback.font.pointSize;
+        for (UIView *choice in originalChoices) XCTAssertEqualObjects(choice.traitCollection.preferredContentSizeCategory, category);
+        XCTAssertEqual(board.currentStep, prediction);
+        XCTAssertEqual([[self.controller valueForKey:@"stepIndex"] integerValue], 1);
+        XCTAssertEqual([[self.controller valueForKey:@"answeredSteps"] count], 0u);
+        XCTAssertNil(board.currentStep.visibleAnswer); XCTAssertNil(board.currentStep.visibleRemainder);
+        XCTAssertEqual(self.recorder.requests.count, 0u);
+    }
     [self assertReadRequests:prediction.spokenExplanation];
     [self assertPredictionChoiceCancelsRequest:[self predictionButton:2]];
     [self assertReadRequests:wrongCountSpeech];
