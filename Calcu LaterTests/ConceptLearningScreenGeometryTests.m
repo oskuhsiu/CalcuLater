@@ -1,4 +1,5 @@
 #import <XCTest/XCTest.h>
+#import <math.h>
 #import "ConceptLearningPath.h"
 #import "ConceptLearningPathViewController.h"
 #import "ChildUIKit.h"
@@ -321,6 +322,78 @@
         } else {
             XCTAssertEqualWithAccuracy(question.font.pointSize, defaultQuestionSize, 0.5);
             XCTAssertEqualWithAccuracy(teach.titleLabel.font.pointSize, defaultActionSize, 0.5);
+        }
+    }
+}
+
+- (void)testActionButtonsCreateAndKeepWrappedTitlesAcrossLiveTextSizeChanges {
+    UIWindowScene *scene = nil;
+    for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+        if ([candidate isKindOfClass:UIWindowScene.class]
+            && candidate.activationState == UISceneActivationStateForegroundActive
+            && ((UIWindowScene *)candidate).screen == UIScreen.mainScreen) {
+            scene = (UIWindowScene *)candidate;
+            break;
+        }
+    }
+    XCTAssertNotNil(scene, @"Creation and live relayout must run in the app's actual foreground scene.");
+    if (!scene) return;
+    CGSize size = CGSizeMake(320, 568);
+    XCTAssertGreaterThanOrEqual(scene.coordinateSpace.bounds.size.width, size.width);
+    XCTAssertGreaterThanOrEqual(scene.coordinateSpace.bounds.size.height, size.height);
+    NSArray<NSString *> *identifiers = @[@"concept.close", @"concept.read", @"concept.teach",
+        @"concept.previousNumbers", @"concept.change", @"concept.previous", @"concept.next"];
+    for (UIContentSizeCategory initial in @[UIContentSizeCategoryLarge,
+            UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
+        [self removeHost];
+        self.hostWindow = [[UIWindow alloc] initWithWindowScene:scene];
+        self.hostWindow.frame = scene.coordinateSpace.bounds;
+        self.host = [[UIViewController alloc] init];
+        self.hostWindow.rootViewController = self.host;
+        self.hostWindow.hidden = NO;
+        [self.hostWindow layoutIfNeeded];
+        self.controller = [[ConceptLearningPathViewController alloc] initWithPath:[ConceptLearningPath allPaths].firstObject];
+        [self.host addChildViewController:self.controller];
+        [self.host setOverrideTraitCollection:[self traitsForSize:size category:initial]
+                      forChildViewController:self.controller];
+        // Loading the actual controller exercises every production factory's
+        // first titleLabel creation. The old rectangle override crashed here.
+        [self.controller.traitCollection performAsCurrentTraitCollection:^{
+            [self.host.view addSubview:self.controller.view];
+        }];
+        self.controller.view.frame = CGRectMake(floor((self.host.view.bounds.size.width - size.width) / 2),
+            floor((self.host.view.bounds.size.height - size.height) / 2), size.width, size.height);
+        [self.controller didMoveToParentViewController:self.host];
+        [self settleLayout];
+        XCTAssertEqualObjects(self.controller.traitCollection.preferredContentSizeCategory, initial);
+        [self assertScreenAtStage:0 navigationAxis:UILayoutConstraintAxisVertical];
+        [self.controller next]; [self.controller next];
+        ConceptLearningExample *selected = self.controller.currentExample;
+        NSMutableDictionary<NSString *, UIButton *> *originalButtons = [NSMutableDictionary dictionary];
+        for (NSString *identifier in identifiers) originalButtons[identifier] = (UIButton *)[self viewWithIdentifier:identifier];
+        for (UIContentSizeCategory category in @[initial, UIContentSizeCategoryLarge,
+                UIContentSizeCategoryAccessibilityExtraExtraExtraLarge, UIContentSizeCategoryLarge]) {
+            [self.host setOverrideTraitCollection:[self traitsForSize:size category:category]
+                          forChildViewController:self.controller];
+            [self settleLayout];
+            XCTAssertEqual(self.controller.view.window, self.hostWindow);
+            XCTAssertEqual(self.hostWindow.windowScene, scene);
+            XCTAssertFalse(self.hostWindow.hidden);
+            XCTAssertEqualObjects(self.controller.traitCollection.preferredContentSizeCategory, category);
+            XCTAssertEqual(self.controller.currentExample, selected);
+            [self assertScreenAtStage:2 navigationAxis:UILayoutConstraintAxisVertical];
+            for (NSString *identifier in identifiers) {
+                UIButton *button = (UIButton *)[self viewWithIdentifier:identifier];
+                XCTAssertEqual(button, originalButtons[identifier]);
+                XCTAssertEqual(button.window, self.hostWindow);
+                XCTAssertEqualObjects(button.traitCollection.preferredContentSizeCategory, category);
+                XCTAssertFalse(button.titleLabel.hidden);
+                XCTAssertGreaterThan(button.currentTitle.length, 0u);
+                [self assertButtonFits:button];
+                CGRect content = [button contentRectForBounds:button.bounds];
+                XCTAssertTrue(CGRectEqualToRect([button titleRectForContentRect:content], content),
+                    @"UILabel must receive the padded content box without re-entering lazy label creation.");
+            }
         }
     }
 }

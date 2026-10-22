@@ -174,6 +174,10 @@
 /// The fixed-size child fits INSIDE the physical iPad window, never an oversized
 /// fake window, and no visibility gate or animation behavior is overridden.
 - (LessonIntroView *)showPresentationProblemA:(NSInteger)a width:(CGFloat)width {
+    return [self showPresentationProblemA:a width:width category:nil];
+}
+- (LessonIntroView *)showPresentationProblemA:(NSInteger)a width:(CGFloat)width
+    category:(UIContentSizeCategory)category {
     [self releaseHost];
     BOOL nativeAnimationEnvironment = UIView.areAnimationsEnabled && !CATransaction.disableActions;
     XCTAssertTrue(nativeAnimationEnvironment,
@@ -202,10 +206,19 @@
     self.hostWindow.frame = sceneBounds;
     UIViewController *host = [[UIViewController alloc] init];
     self.hostWindow.rootViewController = host;
+    if (category) host.traitOverrides.preferredContentSizeCategory = category;
     [self.hostWindow makeKeyAndVisible];
     [self.hostWindow layoutIfNeeded];
-    LessonIntroView *intro = [[LessonIntroView alloc] initWithProblem:[self problemA:a b:9 make:YES]
-        lesson:[self lessonAtIndex:3]];
+    __block LessonIntroView *intro;
+    if (category) {
+        [host.traitCollection performAsCurrentTraitCollection:^{
+            intro = [[LessonIntroView alloc] initWithProblem:[self problemA:a b:9 make:YES]
+                lesson:[self lessonAtIndex:3]];
+        }];
+    } else {
+        intro = [[LessonIntroView alloc] initWithProblem:[self problemA:a b:9 make:YES]
+            lesson:[self lessonAtIndex:3]];
+    }
     self.intro = intro;
     intro.autoresizingMask = UIViewAutoresizingNone;
     intro.frame = CGRectMake(floor((host.view.bounds.size.width - width) / 2),
@@ -2327,6 +2340,52 @@
             [self assertEquationHidden:intro a:2 b:9 make:YES];
             [self attachGeometryForIntro:intro name:[NSString stringWithFormat:@"Reachable listening %@ %@", category,
                 NSStringFromCGSize(sizeValue.CGSizeValue)]];
+        }
+    }
+}
+- (void)testFooterButtonsCreateAndSwitchBetweenTextAndSymbolsAfterLiveTextSizeChanges {
+    NSArray<NSString *> *keys = @[@"previousButton", @"nextButton", @"replayButton", @"startButton"];
+    for (UIContentSizeCategory initial in @[UIContentSizeCategoryLarge,
+            UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
+        // Exercise the production factory before any test reads titleLabel, in
+        // a real foreground scene rather than a detached geometry-only fixture.
+        LessonIntroView *intro = [self showPresentationProblemA:2 width:377 category:initial];
+        XCTAssertNotNil(intro);
+        if (!intro) return;
+        [self settleIntro:intro atStep:3];
+        NSArray<UIButton *> *buttons = [intro dictionaryWithValuesForKeys:keys].allValues;
+        XCTAssertEqual(buttons.count, keys.count);
+        UIViewController *host = self.hostWindow.rootViewController;
+        for (UIContentSizeCategory category in @[initial, UIContentSizeCategoryLarge,
+                UIContentSizeCategoryAccessibilityExtraExtraExtraLarge, UIContentSizeCategoryLarge]) {
+            // Change inherited UIKit traits on the existing hierarchy. Do not
+            // rebuild buttons, set test fonts, or only change the current-trait scope.
+            host.traitOverrides.preferredContentSizeCategory = category;
+            for (NSUInteger pass = 0; pass < 4; pass++) {
+                [host.view setNeedsLayout]; [host.view layoutIfNeeded];
+                [intro setNeedsLayout]; [intro layoutIfNeeded];
+            }
+            XCTAssertEqual(intro.window, self.hostWindow);
+            XCTAssertNotNil(intro.window.windowScene);
+            XCTAssertEqualObjects(intro.traitCollection.preferredContentSizeCategory, category);
+            XCTAssertEqual(intro.currentStepIndex, 3);
+            [self assertPinnedListeningAndFooterFit:intro];
+            BOOL usesSymbols = UIContentSizeCategoryIsAccessibilityCategory(category);
+            for (NSString *key in keys) {
+                UIButton *button = [intro valueForKey:key];
+                XCTAssertTrue([buttons containsObject:button], @"Live resizing must retain the original controls.");
+                XCTAssertEqualObjects(button.traitCollection.preferredContentSizeCategory, category);
+                UIFont *expected = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+                    scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightBold]
+                    compatibleWithTraitCollection:intro.traitCollection];
+                XCTAssertEqualWithAccuracy(button.titleLabel.font.pointSize, expected.pointSize, 0.01);
+                XCTAssertTrue(button.titleLabel.adjustsFontForContentSizeCategory);
+                XCTAssertEqual(button.titleLabel.hidden, usesSymbols, @"%@ at %@", key, category);
+                XCTAssertEqual(button.imageView.hidden, !usesSymbols, @"%@ at %@", key, category);
+                XCTAssertEqualObjects(button.titleLabel.text, button.currentTitle);
+                XCTAssertGreaterThan(button.currentTitle.length, 0u);
+                XCTAssertEqualObjects(button.largeContentTitle, button.accessibilityLabel);
+            }
         }
     }
 }

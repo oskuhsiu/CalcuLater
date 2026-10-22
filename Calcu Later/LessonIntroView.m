@@ -129,6 +129,7 @@
 /// VoiceOver and the system large-content viewer retain the complete action.
 @interface CLIntroActionButton : ChildButton
 @property (nonatomic) BOOL requiresCompactSymbol;
+- (UIFont *)preferredActionTitleFont;
 - (BOOL)showsSymbolAtWidth:(CGFloat)width;
 @end
 @implementation CLIntroActionButton
@@ -142,6 +143,8 @@
     button.tintColor = ChildUI.brownText;
     button.layer.cornerRadius = 20;
     [ChildUI applySoftShadowOnLayer:button.layer];
+    button.titleLabel.font = [button preferredActionTitleFont];
+    button.titleLabel.adjustsFontForContentSizeCategory = YES;
     button.titleLabel.textAlignment = NSTextAlignmentCenter;
     button.titleLabel.adjustsFontSizeToFitWidth = NO;
     button.showsLargeContentViewer = YES;
@@ -155,8 +158,16 @@
     [self setNeedsLayout];
 }
 - (BOOL)showsSymbolAtWidth:(CGFloat)width {
-    CGFloat titleWidth = [self.currentTitle sizeWithAttributes:@{NSFontAttributeName:self.titleLabel.font}].width;
+    // Both geometry hooks run during UIKit's lazy title/image-view creation.
+    // Never read either view from here. Resolve the same uncapped font used by
+    // the label from current traits, rather than retaining a stale measurement.
+    CGFloat titleWidth = [self.currentTitle sizeWithAttributes:@{NSFontAttributeName:[self preferredActionTitleFont]}].width;
     return self.requiresCompactSymbol || self.currentTitle.length == 0 || ceil(titleWidth) + 16 > width;
+}
+- (UIFont *)preferredActionTitleFont {
+    return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightBold]
+        compatibleWithTraitCollection:self.traitCollection];
 }
 - (CGRect)titleRectForContentRect:(CGRect)contentRect {
     if ([self showsSymbolAtWidth:contentRect.size.width]) return CGRectZero;
@@ -171,6 +182,15 @@
     BOOL symbol = [self showsSymbolAtWidth:self.bounds.size.width];
     self.titleLabel.hidden = symbol;
     self.imageView.hidden = !symbol;
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if (![previousTraitCollection.preferredContentSizeCategory
+            isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
+        self.titleLabel.font = [self preferredActionTitleFont];
+        [self invalidateIntrinsicContentSize];
+        [self setNeedsLayout];
+    }
 }
 @end
 
@@ -355,9 +375,6 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 - (ChildButton *)footerButton:(NSString *)title color:(UIColor *)color symbol:(NSString *)symbol
     action:(SEL)action identifier:(NSString *)identifier {
     CLIntroActionButton *button = [CLIntroActionButton buttonWithTitle:title backgroundColor:color];
-    button.titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-        scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightBold]];
-    button.titleLabel.adjustsFontForContentSizeCategory = YES;
     [button setImage:[UIImage systemImageNamed:symbol withConfiguration:
         [UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightSemibold]]
         forState:UIControlStateNormal];
@@ -500,6 +517,12 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 
 #pragma mark - Layout and lifecycle
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    // Re-evaluate footer row heights and symbol choices after a live size change.
+    [self setNeedsLayout];
+}
 
 - (BOOL)usesSideBySideTenFramesAtWidth:(CGFloat)width {
     // Two full frames need 240 points each, a 24-point gutter and outer room.

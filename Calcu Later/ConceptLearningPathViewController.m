@@ -25,9 +25,11 @@
     return size;
 }
 - (CGRect)titleRectForContentRect:(CGRect)contentRect {
-    CGSize title = [self.titleLabel sizeThatFits:CGSizeMake(MAX(1, contentRect.size.width), CGFLOAT_MAX)];
-    CGFloat height = MIN(contentRect.size.height, ceil(title.height));
-    return CGRectMake(contentRect.origin.x, CGRectGetMidY(contentRect) - height / 2, contentRect.size.width, height);
+    // UIKit asks for this rectangle while lazily creating titleLabel. Reading
+    // that property here re-enters its creation and exhausts the stack. The
+    // content rectangle already excludes our padding; UILabel centers its full
+    // wrapped text within it, and intrinsicContentSize supplies the needed height.
+    return contentRect;
 }
 - (void)layoutSubviews {
     CGFloat width = MAX(1, self.bounds.size.width - self.contentEdgeInsets.left - self.contentEdgeInsets.right);
