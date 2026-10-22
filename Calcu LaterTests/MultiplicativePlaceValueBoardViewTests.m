@@ -391,6 +391,7 @@ static NSString *MTPPreparedCaptionRetentionObservation(MultiplicativePlaceValue
     MTPPlaceValueProjection *current = [board valueForKey:@"projection"];
     NSDictionary<NSString *, UILabel *> *labels = [board valueForKey:@"labels"];
     NSMapTable<UILabel *, NSDictionary *> *receipts = [board valueForKey:@"preparedCaptionLayerConfigurations"];
+    NSMapTable<UILabel *, NSDictionary *> *textReceipts = [board valueForKey:@"preparedCaptionTextConfigurations"];
     NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
         @"realCertificateResult=%d phase=after-original-predicate-before-fallback monotonic=%.9f explicitRetention=%@ endpoint=%ld fullSnapshot=%d overview=%p scene=%p geometryValid=%d stationary=%d sceneAction=%p action=%p actionBefore=%p cradleRect=%@ cradle=%p units=%lu labels=%lu sceneLabels=%lu receipts=%lu clock=%p generation=%lu revision=%lu required=%@",
         retained, started, [board valueForKey:@"retainingExplicitlyPreparedPaint"], (long)board.endpoint, board.displayingFullSnapshot,
@@ -419,6 +420,12 @@ static NSString *MTPPreparedCaptionRetentionObservation(MultiplicativePlaceValue
             (long)label.numberOfLines, (long)label.lineBreakMode, (long)label.textAlignment, (unsigned long)label.lineBreakStrategy,
             label.enabled, label.highlighted, label.shadowColor, label.adjustsFontSizeToFitWidth, label.adjustsFontForContentSizeCategory,
             label.allowsDefaultTighteningForTruncation, (long)label.semanticContentAttribute, label ? [receipts objectForKey:label] : nil]];
+        NSDictionary *textReceipt = label ? [textReceipts objectForKey:label] : nil;
+        NSString *textReceiptDescription = textReceipt.description ?: @"(null)";
+        NSUInteger textReceiptLength = textReceiptDescription.length, emittedLength = MIN(textReceiptLength, 4096u);
+        [lines addObject:[NSString stringWithFormat:@"caption=%@ textReceiptPresent=%d textReceiptLength=%lu emittedLength=%lu complete=%d characterLimit=4096 textReceipt=%@",
+            key, textReceipt != nil, (unsigned long)textReceiptLength, (unsigned long)emittedLength, emittedLength == textReceiptLength,
+            [textReceiptDescription substringToIndex:emittedLength]]];
         NSAttributedString *styled = label.attributedText;
         [lines addObject:[NSString stringWithFormat:@"caption=%@ attributedText=%p string=%@ length=%lu", key, styled, styled.string, (unsigned long)styled.length]];
         NSUInteger location = 0, runs = 0;
@@ -1038,7 +1045,7 @@ static NSString *MTPPreparedCaptionRetentionObservation(MultiplicativePlaceValue
             @"highlighted":@(label.highlighted), @"highlightColor":label.highlightedTextColor ?: NSNull.null,
             @"attributed":label.attributedText ?: NSNull.null, @"ownLayer":ownAppearance(label.layer)};
     };
-    for (NSString *mutation in @[@"clear", @"singleLine", @"truncating", @"attributedTail", @"centered", @"breakStrategy",
+    for (NSString *mutation in @[@"clear", @"singleLine", @"truncating", @"attributedTail", @"paragraphIndent", @"mutableShadow", @"extraAttribute", @"centered", @"breakStrategy",
                                  @"highlighted", @"disabled", @"border", @"background", @"cornerClip", @"contentsRect", @"contentsCenter", @"contentsGravity",
                                  @"pendingDisplay", @"pendingLayout", @"restoredColor", @"pendingContentsRect"]) {
         [self fitAction:generate width:MIN(320,self.viewport.bounds.size.width)];
@@ -1052,6 +1059,31 @@ static NSString *MTPPreparedCaptionRetentionObservation(MultiplicativePlaceValue
             NSMutableAttributedString *styled = [[NSMutableAttributedString alloc] initWithString:prepared.text attributes:@{NSFontAttributeName:prepared.font, NSForegroundColorAttributeName:prepared.textColor}];
             XCTAssertGreaterThan(styled.length,1u);
             [styled addAttribute:NSForegroundColorAttributeName value:UIColor.clearColor range:NSMakeRange(styled.length-1,1)]; prepared.attributedText = styled;
+        } else if ([mutation isEqualToString:@"paragraphIndent"] || [mutation isEqualToString:@"mutableShadow"] || [mutation isEqualToString:@"extraAttribute"]) {
+            NSMutableAttributedString *styled = [prepared.attributedText mutableCopy] ?: [[NSMutableAttributedString alloc] initWithString:prepared.text];
+            NSRange all = NSMakeRange(0, styled.length); XCTAssertGreaterThan(all.length,0u);
+            if ([mutation isEqualToString:@"paragraphIndent"]) {
+                NSMutableParagraphStyle *paragraph = [[styled attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:NULL] mutableCopy] ?: [[NSMutableParagraphStyle alloc] init];
+                paragraph.firstLineHeadIndent += 12; [styled addAttribute:NSParagraphStyleAttributeName value:paragraph range:all];
+            } else if ([mutation isEqualToString:@"mutableShadow"]) {
+                // Own the mutable value so UIKit's shared default is untouched.
+                NSShadow *originalShadow = [styled attribute:NSShadowAttributeName atIndex:0 effectiveRange:NULL];
+                NSShadow *shadow = [originalShadow copy] ?: [[NSShadow alloc] init];
+                if (originalShadow) XCTAssertNotEqual(shadow,originalShadow);
+                NSMapTable *receipts = [self.board valueForKey:@"preparedCaptionTextConfigurations"];
+                NSDictionary *receipt = [receipts objectForKey:prepared]; XCTAssertNotNil(receipt);
+                NSDictionary *frozenAttributes = [receipt[@"runs"] firstObject][@"attributes"];
+                id frozenValue = frozenAttributes[NSShadowAttributeName];
+                NSDictionary *frozenShadow = [frozenValue isKindOfClass:NSDictionary.class] ? frozenValue : nil;
+                NSValue *offset = [NSValue valueWithCGSize:shadow.shadowOffset]; NSNumber *blur = @(shadow.shadowBlurRadius);
+                shadow.shadowOffset = CGSizeMake(shadow.shadowOffset.width + 10, shadow.shadowOffset.height + 5); shadow.shadowBlurRadius += 2;
+                [styled addAttribute:NSShadowAttributeName value:shadow range:all];
+                if (originalShadow) {
+                    XCTAssertNotNil(frozenShadow); XCTAssertFalse([frozenShadow isKindOfClass:NSMutableDictionary.class]);
+                    XCTAssertEqualObjects(frozenShadow[@"offset"],offset); XCTAssertEqualObjects(frozenShadow[@"blur"],blur);
+                }
+            } else [styled addAttribute:NSKernAttributeName value:@4 range:NSMakeRange(styled.length-1,1)];
+            prepared.attributedText = styled;
         } else if ([mutation isEqualToString:@"centered"]) prepared.textAlignment = NSTextAlignmentCenter;
         else if ([mutation isEqualToString:@"breakStrategy"]) prepared.lineBreakStrategy = NSLineBreakStrategyNone;
         else if ([mutation isEqualToString:@"highlighted"]) { prepared.highlightedTextColor = UIColor.clearColor; prepared.highlighted = YES; }
@@ -1097,6 +1129,36 @@ static NSString *MTPPreparedCaptionRetentionObservation(MultiplicativePlaceValue
         XCTAssertEqualObjects(replacement.textColor,ChildUI.brownText); XCTAssertEqual(replacement.numberOfLines,0);
         XCTAssertEqual(replacement.lineBreakMode,NSLineBreakByWordWrapping);
         XCTAssertEqual(replacement.layer.borderWidth,0); XCTAssertEqual(replacement.layer.cornerRadius,0);
+    }
+    // Equal effective style with distinct mutable values is still canonical.
+    // Wait for ordinary native presentation, never repair or flush at admission.
+    [self fitAction:generate width:MIN(320,self.viewport.bounds.size.width)];
+    NSDictionary<NSString *, UILabel *> *equivalentPreparedLabels = [[self.board valueForKey:@"labels"] copy];
+    UILabel *equivalentLabel = equivalentPreparedLabels[@"context"];
+    NSAttributedString *original = equivalentLabel.attributedText ?: [[NSAttributedString alloc] initWithString:equivalentLabel.text];
+    NSMutableAttributedString *equivalent = [original mutableCopy]; __block NSUInteger copiedStyles = 0;
+    [original enumerateAttributesInRange:NSMakeRange(0,original.length) options:0 usingBlock:^(NSDictionary<NSAttributedStringKey,id> *attributes, NSRange range, BOOL *stop) {
+        for (NSAttributedStringKey key in @[NSParagraphStyleAttributeName,NSShadowAttributeName]) if (attributes[key]) {
+            id copied = [key isEqualToString:NSParagraphStyleAttributeName] ? [attributes[key] mutableCopy] : [attributes[key] copy];
+            XCTAssertNotEqual(copied,attributes[key]); [equivalent addAttribute:key value:copied range:range]; copiedStyles++;
+        }
+    }];
+    XCTAssertGreaterThan(copiedStyles,0u,@"The equal-style case must exercise a copied paragraph or shadow value.");
+    equivalentLabel.attributedText = equivalent;
+    XCTestExpectation *equivalentSettled = [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        UILabel *label = object; CALayer *paint = label.layer.presentationLayer;
+        return paint && paint.modelLayer == label.layer && !label.layer.needsDisplay && !label.layer.needsLayout
+            && label.layer.contents == paint.contents && [ownAppearance(label.layer) isEqualToDictionary:ownAppearance(paint)]
+            && [self.board paintTreeIsStable:label.layer requirePresentation:YES];
+    }] evaluatedWithObject:equivalentLabel handler:nil];
+    [self waitForExpectations:@[equivalentSettled] timeout:2];
+    XCTAssertEqual([self.board playInVisibleRect:self.board.bounds],MTPPlaceValuePlaybackStateRunning);
+    ((CADisplayLink *)[self.board valueForKey:@"clock"]).paused = YES;
+    NSDictionary<NSString *, UILabel *> *equivalentRunningLabels = [self.board valueForKey:@"labels"];
+    for (NSString *key in equivalentPreparedLabels) {
+        UILabel *label = equivalentRunningLabels[key]; XCTAssertEqual(label,equivalentPreparedLabels[key]);
+        XCTAssertNotNil(label.layer.presentationLayer); XCTAssertEqual(label.layer.presentationLayer.modelLayer,label.layer);
+        XCTAssertFalse(label.layer.needsDisplay); XCTAssertFalse(label.layer.needsLayout);
     }
     [self.board cancelPlaybackWithReason:MTPPlaceValueInterruptionReasonCancelled];
     [self fitAction:generate width:MIN(320,self.viewport.bounds.size.width)]; self.board.injectLabelAnimation = YES;

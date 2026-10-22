@@ -344,8 +344,36 @@
     XCTAssertTrue([self.app.staticTexts[@"explanation.steps"].label containsString:@"500 − 128 = 372"]);
     [self capture:@"29-borrow-complete-with-conserved-place-value"];
     [self.app.buttons[@"explanation.close"] tap];
+    // Observe the result of this single Close tap, never retry the action.
+    NSPredicate *returnedToQuestion = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary<NSString *, id> *bindings) {
+        XCUIElement *teaching = [self.app descendantsMatchingType:XCUIElementTypeAny][@"teaching.screen"];
+        XCUIElement *answer = self.app.buttons[@"answer.0"];
+        return !teaching.exists && answer.exists && answer.hittable;
+    }];
+    XCTNSPredicateExpectation *returned = [[XCTNSPredicateExpectation alloc] initWithPredicate:returnedToQuestion object:nil];
+    XCTWaiterResult returnResult = [XCTWaiter waitForExpectations:@[returned] timeout:5];
+    if (returnResult != XCTWaiterResultCompleted) {
+        // Retain the actual endpoint before continueAfterFailure=NO stops the test.
+        XCTAttachment *screen = [XCTAttachment attachmentWithScreenshot:XCUIScreen.mainScreen.screenshot];
+        screen.name = @"29a-borrow-return-not-observed";
+        screen.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:screen];
+        XCTAttachment *tree = [XCTAttachment attachmentWithString:self.app.debugDescription];
+        tree.name = @"29a-borrow-return-not-observed-hierarchy";
+        tree.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:tree];
+    }
+    XCTAssertEqual(returnResult, XCTWaiterResultCompleted,
+        @"A single Close tap must dismiss teaching and expose the real answer within 5 seconds.");
     XCTAssertEqualObjects(self.app.staticTexts[@"practice.problem"].label, @"500 − 128 = ?");
     XCTAssertTrue(self.app.buttons[@"answer.0"].hittable);
+    CGRect answerFrame = self.app.buttons[@"answer.0"].frame;
+    CGRect windowFrame = self.app.windows.firstMatch.frame;
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(windowFrame, -1, -1), answerFrame),
+        @"The returned answer must be fully inside the window, allowing 1 point for geometry rounding.");
+    XCTAssertGreaterThanOrEqual(answerFrame.size.width, 44);
+    XCTAssertGreaterThanOrEqual(answerFrame.size.height, 44);
+    [self capture:@"29b-borrow-returned-to-unanswered-question"];
 }
 
 // These use explicit producer metadata, unlike the legacy remainder fixture above.

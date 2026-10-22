@@ -23,6 +23,32 @@ static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
         @"allowsEdgeAntialiasing":@(layer.allowsEdgeAntialiasing), @"edgeAntialiasingMask":@(layer.edgeAntialiasingMask)};
 }
 
+// UILabel can expose these effective attributes even after assigning plain text.
+// Freeze only this renderer's construction-time style, not arbitrary attributed
+// content. Paragraph copies are immutable; NSShadow must be stored by value so
+// later mutation of a shared attribute cannot change the original receipt.
+static NSDictionary *MTPPreparedCaptionTextConfiguration(UILabel *label) {
+    NSAttributedString *styled = label.attributedText ?: [[NSAttributedString alloc] initWithString:label.text ?: @""];
+    NSMutableArray *runs = [NSMutableArray array]; __block BOOL supported = YES;
+    [styled enumerateAttributesInRange:NSMakeRange(0, styled.length) options:0 usingBlock:^(NSDictionary<NSAttributedStringKey, id> *attributes, NSRange range, BOOL *stop) {
+        NSMutableDictionary *frozen = [NSMutableDictionary dictionary];
+        for (NSAttributedStringKey key in attributes) {
+            id value = attributes[key];
+            if (([key isEqualToString:NSFontAttributeName] && [value isKindOfClass:UIFont.class])
+                || ([key isEqualToString:NSForegroundColorAttributeName] && [value isKindOfClass:UIColor.class])
+                || ([key isEqualToString:NSParagraphStyleAttributeName] && [value isKindOfClass:NSParagraphStyle.class])) frozen[key] = [value copy];
+            else if ([key isEqualToString:NSShadowAttributeName] && [value isKindOfClass:NSShadow.class]) {
+                NSShadow *shadow = value;
+                if (shadow.shadowColor && ![shadow.shadowColor isKindOfClass:UIColor.class]) { supported = NO; *stop = YES; break; }
+                frozen[key] = @{@"offset":[NSValue valueWithCGSize:shadow.shadowOffset], @"blur":@(shadow.shadowBlurRadius),
+                    @"color":[shadow.shadowColor copy] ?: NSNull.null};
+            } else { supported = NO; *stop = YES; break; }
+        }
+        if (supported) [runs addObject:@{@"range":[NSValue valueWithRange:range], @"attributes":frozen.copy}];
+    }];
+    return supported ? @{@"text":styled.string.copy, @"runs":runs.copy} : nil;
+}
+
 /// The outer body is exactly 16x16, 16x160, or 160x160. All ink is inset;
 /// internal seams remain at the 16-point cell boundaries, even while docking.
 @interface MTPMaterialView : UIView
@@ -89,6 +115,7 @@ static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, MTPMaterialView *> *unitViews;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *labels;
 @property (nonatomic, strong) NSMapTable<UILabel *, NSDictionary *> *preparedCaptionLayerConfigurations;
+@property (nonatomic, strong) NSMapTable<UILabel *, NSDictionary *> *preparedCaptionTextConfigurations;
 @property (nonatomic, strong, nullable) UIView *cradle;
 @property (nonatomic, strong, nullable) MTPPlaceValueProjection *projection;
 @property (nonatomic, copy) NSSet<CALayer *> *retiredOwnedRootLayers;
@@ -158,6 +185,7 @@ static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
     NSDictionary *units = self.unitViews; NSDictionary *labels = self.labels; UIView *cradle = self.cradle;
     self.unitViews = [NSMutableDictionary dictionary]; self.labels = [NSMutableDictionary dictionary]; self.cradle = nil; self.projection = nil; self.overviewLayout = nil;
     self.preparedCaptionLayerConfigurations = nil;
+    self.preparedCaptionTextConfigurations = nil;
     for (UIView *view in units.allValues) [view removeFromSuperview];
     for (UIView *view in labels.allValues) [view removeFromSuperview]; [cradle removeFromSuperview];
 }
@@ -285,10 +313,10 @@ static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
             || !label.enabled || label.highlighted || label.shadowColor || label.adjustsFontSizeToFitWidth
             || label.adjustsFontForContentSizeCategory || label.allowsDefaultTighteningForTruncation
             || label.semanticContentAttribute != UISemanticContentAttributeUnspecified) return NO;
-        // Setting plain text may expose an unstyled attributed string. Any
-        // actual attributes can override these canonical UILabel settings.
-        NSAttributedString *styled = label.attributedText;
-        if (styled && ![styled isEqualToAttributedString:[[NSAttributedString alloc] initWithString:before.labelTexts[key]]]) return NO;
+        // Compare effective styles with the frozen canonical construction, not
+        // an unstyled string. Extra or changed attributes still veto reuse.
+        NSDictionary *textConfiguration = [self.preparedCaptionTextConfigurations objectForKey:label];
+        if (!textConfiguration || ![textConfiguration isEqualToDictionary:MTPPreparedCaptionTextConfiguration(label)]) return NO;
         if (label.layer.delegate != label) return NO;
         NSDictionary *configuration = [self.preparedCaptionLayerConfigurations objectForKey:label];
         if (!configuration || ![configuration isEqualToDictionary:MTPPreparedCaptionLayerConfiguration(label.layer)]
@@ -329,6 +357,7 @@ static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
     if (self.endpoint == MTPPlaceValueEndpointBefore && !self.scene.stationary && !projection.placements.count
         && CGRectIsNull(self.scene.cradleRect) && self.scene.labelFrames.count == 4) {
         self.preparedCaptionLayerConfigurations = [[NSMapTable alloc] initWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory capacity:4];
+        self.preparedCaptionTextConfigurations = [[NSMapTable alloc] initWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory capacity:4];
     }
     for (NSString *key in self.scene.labelFrames) {
         UILabel *label = [self makeLabel:key frame:self.scene.labelFrames[key].CGRectValue text:projection.labelTexts[key]];
@@ -336,6 +365,12 @@ static NSDictionary *MTPPreparedCaptionLayerConfiguration(CALayer *layer) {
         if (configuration) [self.preparedCaptionLayerConfigurations setObject:configuration forKey:label];
     }
     [self applyProjection:projection];
+    // Capture after the final canonical plain-text assignments. This receipt
+    // never changes during reuse or playback and makes no claim about pixels.
+    if (self.preparedCaptionTextConfigurations) for (UILabel *label in self.labels.allValues) {
+        NSDictionary *configuration = MTPPreparedCaptionTextConfiguration(label);
+        if (configuration) [self.preparedCaptionTextConfigurations setObject:configuration forKey:label];
+    }
 }
 - (void)applyProjection:(MTPPlaceValueProjection *)projection {
     self.projection = projection; self.snapshot = projection.canonicalSnapshot;
