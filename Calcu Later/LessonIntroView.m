@@ -194,6 +194,20 @@
 }
 @end
 
+/// Only Previous has an unavailable first-step state. Keep its label/symbol
+/// fully readable; a neutral, flat surface distinguishes it from a ready action.
+@interface CLIntroPreviousButton : CLIntroActionButton
+@end
+@implementation CLIntroPreviousButton
+- (void)setEnabled:(BOOL)enabled {
+    [super setEnabled:enabled];
+    self.adjustsImageWhenDisabled = NO;
+    self.backgroundColor = enabled ? ChildUI.lavender : [UIColor colorWithWhite:0.90 alpha:1.0];
+    if (enabled) [ChildUI applySoftShadowOnLayer:self.layer];
+    else self.layer.shadowOpacity = 0;
+}
+@end
+
 /// Each leg belongs to one original counter. The schedule has no overlapping
 /// transfer intervals, so a child can track and count every moved unit.
 @interface CLIntroTransferLeg : NSObject
@@ -382,7 +396,8 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 
 - (ChildButton *)footerButton:(NSString *)title color:(UIColor *)color symbol:(NSString *)symbol
     action:(SEL)action identifier:(NSString *)identifier {
-    CLIntroActionButton *button = [CLIntroActionButton buttonWithTitle:title backgroundColor:color];
+    Class buttonClass = action == @selector(goToPreviousStep) ? CLIntroPreviousButton.class : CLIntroActionButton.class;
+    CLIntroActionButton *button = [buttonClass buttonWithTitle:title backgroundColor:color];
     [button setImage:[UIImage systemImageNamed:symbol withConfiguration:
         [UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightSemibold]]
         forState:UIControlStateNormal];
@@ -866,7 +881,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
         case LessonKindBreakTen: {
             NSInteger ones = a % 10, left = 10 - b;
             NSArray *lines = @[
-                [NSString stringWithFormat:@"先把 %ld 拆成 10 和 %ld。", (long)a, (long)ones],
+                [NSString stringWithFormat:@"先把 %ld 拆成 10 和 %ld。原本的 %ld 個不夠拿走 %ld 個，可以先留著，從 10 裡拿走 %ld 個。", (long)a, (long)ones, (long)ones, (long)b, (long)b],
                 [NSString stringWithFormat:@"從 10 裡劃掉 %ld 個，原本的 %ld 個留著。", (long)b, (long)ones],
                 [NSString stringWithFormat:@"只拿走劃掉的 %ld 個。10 − %ld = %ld，原本的 %ld 個不動。", (long)b, (long)b, (long)left, (long)ones],
                 [NSString stringWithFormat:@"留下的 %ld 加原本的 %ld，%ld + %ld = %ld！", (long)left, (long)ones, (long)left, (long)ones, (long)answer]];

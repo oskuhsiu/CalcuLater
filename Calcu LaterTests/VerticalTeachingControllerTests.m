@@ -2,6 +2,7 @@
 #import "VerticalTeachingViewController.h"
 #import "VerticalArithmeticBoardView.h"
 #import "ArithmeticProblem.h"
+#import "SpeechManager.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
@@ -13,6 +14,28 @@
 - (void)restart;
 - (void)focusCurrentContent;
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView;
+- (SpeechManager *)speechManager;
+@end
+
+/// Observe speech requests only, not audible output or playback/visibility.
+@interface VTSpeechRecorder : SpeechManager
+@property (nonatomic, strong) NSMutableArray<NSString *> *requests;
+@end
+@implementation VTSpeechRecorder
+- (void)speak:(NSString *)text {
+    if (!self.requests) self.requests = [NSMutableArray array];
+    [self.requests addObject:[text copy]];
+}
+- (void)stop {}
+@end
+@interface VTSpeechRecordingController : VerticalTeachingViewController
+@property (nonatomic, strong) VTSpeechRecorder *recorder;
+@end
+@implementation VTSpeechRecordingController
+- (SpeechManager *)speechManager {
+    if (!self.recorder) self.recorder = [[VTSpeechRecorder alloc] init];
+    return self.recorder;
+}
 @end
 
 // This drives the registered completion deterministically; it does not rotate
@@ -88,12 +111,16 @@
     [super tearDown];
 }
 - (void)open:(NSInteger)first second:(NSInteger)second operation:(NSString *)operation {
+    [self open:first second:second operation:operation recordingSpeech:NO];
+}
+- (void)open:(NSInteger)first second:(NSInteger)second operation:(NSString *)operation recordingSpeech:(BOOL)recordingSpeech {
     NSInteger answer = [operation isEqualToString:@"+"] ? first + second : first - second;
     ArithmeticProblem *problem = [[ArithmeticProblem alloc] initWithNumber1:first number2:second operator:operation answer:answer];
     self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 852, 852)];
     self.window.rootViewController = [[UIViewController alloc] init];
     self.window.hidden = NO;
-    self.controller = [[VerticalTeachingViewController alloc] initWithProblem:problem wordProblem:nil];
+    Class controllerClass = recordingSpeech ? VTSpeechRecordingController.class : VerticalTeachingViewController.class;
+    self.controller = [[controllerClass alloc] initWithProblem:problem wordProblem:nil];
     [self.window.rootViewController addChildViewController:self.controller];
     [self.window.rootViewController.view addSubview:self.controller.view];
     [self.controller didMoveToParentViewController:self.window.rootViewController];
@@ -362,13 +389,42 @@
     for (UIButton *button in choices.arrangedSubviews) if (button.tag == value) return button;
     return nil;
 }
+- (VTSpeechRecorder *)speechRecorder { return ((VTSpeechRecordingController *)self.controller).recorder; }
+- (void)assertReadRequests:(NSString *)expected {
+    VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
+    NSInteger stepIndex = board.currentStepIndex;
+    NSString *snapshot = board.accessibilityValue;
+    VerticalArithmeticPlaybackState playback = board.playbackState;
+    NSIndexSet *answered = [[self.controller valueForKey:@"answeredSteps"] copy];
+    NSDictionary *lastAttempts = [[self.controller valueForKey:@"lastAttemptedValues"] copy];
+    NSUInteger requests = self.speechRecorder.requests.count;
+    UIButton *read = nil;
+    for (UIView *view in ((UIStackView *)[self.controller valueForKey:@"content"]).arrangedSubviews) {
+        if ([view isKindOfClass:UIButton.class] && [view.accessibilityIdentifier isEqualToString:@"teaching.read"]) read = (UIButton *)view;
+    }
+    XCTAssertNotNil(read);
+    // Exercise the real target/action. This is not proof of touch reachability
+    // or audible delivery, and does not replace native UI/audio acceptance.
+    [read sendActionsForControlEvents:UIControlEventTouchUpInside];
+    XCTAssertEqual(self.speechRecorder.requests.count, requests + 1);
+    XCTAssertEqualObjects(self.speechRecorder.requests.lastObject, expected);
+    XCTAssertEqual(board.currentStepIndex, stepIndex);
+    XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+    XCTAssertEqual(board.playbackState, playback);
+    XCTAssertEqualObjects([self.controller valueForKey:@"answeredSteps"], answered);
+    XCTAssertEqualObjects([self.controller valueForKey:@"lastAttemptedValues"], lastAttempts);
+}
 - (void)testWrongAndCorrectColumnFeedbackIsVisibleAndInspectionReturnsWithoutRevealingAnAnswer {
-    [self open:27 second:15 operation:@"+"];
+    [self open:27 second:15 operation:@"+" recordingSpeech:YES];
     self.controller.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
     [self resize:CGSizeMake(375, 812)];
     [self select:1 animated:NO];
     VerticalArithmeticBoardView *board = [self.controller valueForKey:@"board"];
     NSString *before = board.accessibilityValue;
+    ArithmeticTeachingStep *prediction = board.currentStep;
+    NSString *question = [NSString stringWithFormat:@"%@。%@。%@", prediction.title, prediction.explanation, prediction.prompt];
+    XCTAssertEqual(self.speechRecorder.requests.count, 0u);
+    [self assertReadRequests:question];
     [[self choice:11] sendActionsForControlEvents:UIControlEventTouchUpInside];
     UILabel *feedback = [self.controller valueForKey:@"choiceFeedback"];
     XCTAssertTrue([feedback.text containsString:@"你選 11 個一"]);
@@ -379,6 +435,10 @@
     XCTAssertTrue([self choice:12].enabled);
     XCTAssertEqual(board.currentStepIndex, 1);
     XCTAssertEqualObjects(board.accessibilityValue, before);
+    XCTAssertEqual(self.speechRecorder.requests.count, 1u, @"Choosing must not request speech automatically.");
+    NSString *wrongSpeech = [NSString stringWithFormat:@"%@ %@", question, feedback.text];
+    [self assertReadRequests:wrongSpeech];
+    XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"42"]);
     [self.controller focusCurrentContent];
     UIButton *focus = [self.controller valueForKey:@"focusButton"];
     XCTAssertEqualObjects(focus.currentTitle, @"回到選項");
@@ -386,30 +446,50 @@
     [self.controller focusCurrentContent];
     XCTAssertEqualObjects(focus.currentTitle, @"看數量");
     XCTAssertTrue([self contains:[self.controller valueForKey:@"choices"]]);
+    XCTAssertEqual(self.speechRecorder.requests.count, 2u, @"Inspecting must not request speech automatically.");
     [[self choice:12] sendActionsForControlEvents:UIControlEventTouchUpInside];
     XCTAssertTrue([feedback.text containsString:@"7 + 5 = 12 個一"]);
     XCTAssertTrue([self contains:feedback]);
     XCTAssertEqualObjects([self choice:12].accessibilityValue, @"和這一步的數量相同");
     XCTAssertFalse([feedback.text containsString:@"42"]);
     XCTAssertEqualObjects(board.accessibilityValue, before);
+    XCTAssertEqual(self.speechRecorder.requests.count, 2u);
+    NSString *correctSpeech = [NSString stringWithFormat:@"%@ %@", question, feedback.text];
+    [self assertReadRequests:correctSpeech];
+    XCTAssertNotEqualObjects(self.speechRecorder.requests.lastObject, wrongSpeech);
+    XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"42"]);
     [self.controller next];
+    XCTAssertEqual(self.speechRecorder.requests.count, 3u);
+    ArithmeticTeachingStep *calculation = board.currentStep;
+    [self assertReadRequests:[NSString stringWithFormat:@"%@。%@", calculation.title, calculation.explanation]];
     [self.controller previous];
     XCTAssertFalse([self choice:12].enabled);
     XCTAssertTrue([((UILabel *)[self.controller valueForKey:@"choiceFeedback"]).text containsString:@"7 + 5 = 12 個一"]);
+    XCTAssertEqual(self.speechRecorder.requests.count, 4u, @"Navigation must not request speech automatically.");
+    [self assertReadRequests:correctSpeech];
     [self.controller restart];
     [self.controller next];
     XCTAssertTrue([self choice:11].enabled);
     XCTAssertTrue([self choice:12].enabled);
     XCTAssertEqual([[self.controller valueForKey:@"lastAttemptedValues"] count], 0u);
+    XCTAssertEqual(self.speechRecorder.requests.count, 5u, @"Restart must not request speech automatically.");
+    [self assertReadRequests:question];
+    XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"你選"]);
 }
 - (void)testBothZeroBorrowPredictionsExplainTheChosenUnitsWithoutLeakingTheNextExchange {
-    [self open:500 second:128 operation:@"-"];
+    [self open:500 second:128 operation:@"-" recordingSpeech:YES];
     ArithmeticTeachingSequence *sequence = [self.controller valueForKey:@"sequence"];
     NSUInteger tested = 0;
+    NSUInteger requests = 0;
     for (NSUInteger index = 0; index + 1 < sequence.steps.count; index++) {
         if (sequence.steps[index].kind != ArithmeticTeachingStepKindPrediction
             || sequence.steps[index + 1].kind != ArithmeticTeachingStepKindRegroup) continue;
         [self select:index animated:NO];
+        XCTAssertEqual(self.speechRecorder.requests.count, requests);
+        ArithmeticTeachingStep *prediction = sequence.steps[index];
+        NSString *question = [NSString stringWithFormat:@"%@。%@。%@", prediction.title, prediction.explanation, prediction.prompt];
+        [self assertReadRequests:question];
+        requests++;
         [[self choice:1] sendActionsForControlEvents:UIControlEventTouchUpInside];
         UILabel *feedback = [self.controller valueForKey:@"choiceFeedback"];
         NSString *unit = tested == 0 ? @"十" : @"一";
@@ -424,6 +504,28 @@
         XCTAssertTrue([board.accessibilityValue containsString:@"答案還沒寫"]);
         XCTAssertFalse([feedback.text containsString:@"372"]);
         if (tested == 0) XCTAssertFalse([feedback.text containsString:@"10 個一"]);
+        XCTAssertEqual(self.speechRecorder.requests.count, requests, @"Choosing must not request speech automatically.");
+        NSString *wrongSpeech = [NSString stringWithFormat:@"%@ %@", question, feedback.text];
+        [self assertReadRequests:wrongSpeech];
+        requests++;
+        XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:selection]);
+        XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:equality]);
+        XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"372"]);
+        if (tested == 0) XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"10 個一"]);
+        [self.controller previous];
+        [self.controller next];
+        XCTAssertEqual(self.speechRecorder.requests.count, requests);
+        [self assertReadRequests:wrongSpeech];
+        requests++;
+        [[self choice:10] sendActionsForControlEvents:UIControlEventTouchUpInside];
+        XCTAssertEqual(self.speechRecorder.requests.count, requests);
+        [self assertReadRequests:[NSString stringWithFormat:@"%@ %@", question, feedback.text]];
+        requests++;
+        XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:[NSString stringWithFormat:@"你選 10 個%@", unit]]);
+        XCTAssertTrue([self.speechRecorder.requests.lastObject containsString:equality]);
+        XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:selection]);
+        XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"372"]);
+        if (tested == 0) XCTAssertFalse([self.speechRecorder.requests.lastObject containsString:@"10 個一"]);
         tested++;
     }
     XCTAssertEqual(tested, 2u);

@@ -240,7 +240,7 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
 }
 - (void)showCurrentStepAnimated:(BOOL)animated {
     self.semanticReframeGeneration++;
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     [self.playbackNotice removeFromSuperview];
     self.inspectionAnchor = VTInspectionAnchorHeading;
     self.hasManualInspection = NO;
@@ -513,7 +513,7 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
 }
 - (void)replay {
     self.semanticReframeGeneration++;
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     // Replay recovers semantic focus, not an obsolete numerical offset.
     [self.playbackNotice removeFromSuperview];
     [self.board showStepAtIndex:self.stepIndex animated:NO];
@@ -541,12 +541,17 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     self.stepIndex = 0;
     [self showCurrentStepAnimated:NO];
 }
+- (SpeechManager *)speechManager { return SpeechManager.sharedInstance; }
 - (void)readStep {
     ArithmeticTeachingStep *step = self.currentStep;
     NSString *speech = step.kind == ArithmeticTeachingStepKindPrediction
         ? [NSString stringWithFormat:@"%@。%@。%@", step.title, step.explanation, step.prompt]
         : [NSString stringWithFormat:@"%@。%@", step.title, step.explanation];
-    [SpeechManager.sharedInstance speak:speech];
+    if (step.kind == ArithmeticTeachingStepKindPrediction && self.lastAttemptedValues[@(self.stepIndex)]) {
+        // Read only this prediction's visible coaching, on explicit request.
+        speech = [NSString stringWithFormat:@"%@ %@", speech, self.choiceFeedback.text];
+    }
+    [[self speechManager] speak:speech];
 }
 - (void)close {
     [self pausePlayback];
@@ -557,7 +562,7 @@ typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
     self.semanticReframeGeneration++;
     [self recordPlaybackLayoutEvent:@"pause-request"];
     [self.board cancelAnimations];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
 }
 - (void)reframeCurrentInspection {
     if (self.hasManualInspection) return;

@@ -1049,6 +1049,14 @@
                     XCTAssertEqualObjects([[intro valueForKey:@"secondFrame"] valueForKey:@"capacity"], @10);
                     for (NSInteger step = 0; step < intro.numberOfSteps; step++) {
                         [self settleIntro:intro atStep:step];
+                        if (step == 0) {
+                            NSString *decomposition = [NSString stringWithFormat:@"先把 %ld 拆成 10 和 %ld。", (long)a, (long)(a % 10)];
+                            NSString *reason = [NSString stringWithFormat:@"原本的 %ld 個不夠拿走 %ld 個，可以先留著，從 10 裡拿走 %ld 個。", (long)(a % 10), (long)b, (long)b];
+                            NSString *opening = [decomposition stringByAppendingString:reason];
+                            XCTAssertEqualObjects(intro.currentNarration, opening);
+                            NSString *spoken = [NSString stringWithFormat:@"原來的題目是 %ld 減 %ld。%@", (long)a, (long)b, opening];
+                            XCTAssertTrue([[[intro valueForKey:@"stage"] accessibilityValue] hasSuffix:spoken]);
+                        }
                         XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
                         XCTAssertEqual([self visibleDotsInIntro:intro].count, (NSUInteger)(step < 2 ? a : a - b));
                         XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], step < 2 ? 10 : 10 - b);
@@ -1086,6 +1094,14 @@
     XCTAssertEqual([self countInFrame:@"secondFrame" intro:make], 3);
     XCTAssertTrue([make.currentNarration containsString:@"8 + 2"]);
     LessonIntroView *subtract = [self showLessonAtIndex:4 width:288 height:420];
+    [self assertEquationHidden:subtract a:12 b:5 make:NO];
+    XCTAssertEqualObjects(subtract.currentNarration, @"先把 12 拆成 10 和 2。原本的 2 個不夠拿走 5 個，可以先留著，從 10 裡拿走 5 個。");
+    XCTAssertFalse([subtract.currentNarration containsString:@"7"]);
+    [self settleIntro:subtract atStep:1];
+    XCTAssertEqualObjects(subtract.currentNarration, @"從 10 裡劃掉 5 個，原本的 2 個留著。");
+    [self assertEquationHidden:subtract a:12 b:5 make:NO];
+    [self settleIntro:subtract atStep:2];
+    XCTAssertEqualObjects(subtract.currentNarration, @"只拿走劃掉的 5 個。10 − 5 = 5，原本的 2 個不動。");
     [self assertEquationHidden:subtract a:12 b:5 make:NO];
     [self settleIntro:subtract atStep:3];
     XCTAssertEqual([self visibleDotsInIntro:subtract].count, 7u);
@@ -2609,6 +2625,213 @@
     [self assertPinnedListeningAndFooterFit:intro];
     XCTAssertTrue(CGRectEqualToRect(physicalWindow.bounds, physicalBounds));
     XCTAssertTrue(CGRectEqualToRect(physicalWindow.windowScene.coordinateSpace.bounds, sceneBounds));
+
+    // The longer opening explanation must remain complete at real UIKit text
+    // sizes. These are native component scrolls, not finger-gesture or audio proof.
+    for (UIContentSizeCategory category in @[UIContentSizeCategoryLarge,
+            UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
+        for (NSArray<NSNumber *> *operands in @[@[@12, @5], @[@18, @9]]) {
+            NSInteger a = operands[0].integerValue, b = operands[1].integerValue, ones = a % 10;
+            LessonIntroView *initial = [self showPresentationProblemA:2 width:377 category:category];
+            if (!initial) continue;
+            UIWindow *window = initial.window;
+            CGRect windowBounds = window.bounds, nativeSceneBounds = window.windowScene.coordinateSpace.bounds;
+            UIViewController *controller = window.rootViewController;
+            [initial stopPlayback];
+            [initial removeFromSuperview];
+            __block LessonIntroView *breakIntro;
+            [controller.traitCollection performAsCurrentTraitCollection:^{
+                breakIntro = [[LessonIntroView alloc] initWithProblem:[self problemA:a b:b make:NO]
+                    lesson:[self lessonAtIndex:4]];
+            }];
+            XCTAssertNotNil(breakIntro);
+            if (!breakIntro) continue;
+            self.intro = breakIntro;
+            breakIntro.autoresizingMask = UIViewAutoresizingNone;
+            breakIntro.frame = CGRectMake(floor((controller.view.bounds.size.width - 377) / 2),
+                floor((controller.view.bounds.size.height - 661) / 2), 377, 661);
+            [controller.view addSubview:breakIntro];
+            [controller.view setNeedsLayout]; [controller.view layoutIfNeeded];
+            [breakIntro play];
+            [breakIntro layoutIfNeeded];
+            [CATransaction flush];
+            XCTAssertEqual(breakIntro.window, window);
+            XCTAssertTrue(window.isKeyWindow);
+            XCTAssertNotNil(window.windowScene);
+            XCTAssertTrue(CGRectContainsRect(windowBounds, [breakIntro convertRect:breakIntro.bounds toView:window]));
+            XCTAssertEqualObjects(breakIntro.traitCollection.preferredContentSizeCategory, category);
+            XCTAssertEqual(breakIntro.numberOfSteps, 4);
+            XCTAssertEqual(breakIntro.currentStepIndex, 0);
+            [self assertRequiredActionIsContainedInActualClips:breakIntro];
+            [self assertVisibleDotsFitWithoutOverlapping:breakIntro];
+            [self assertEquationHidden:breakIntro a:a b:b make:NO];
+            XCTAssertEqual([self visibleDotsInIntro:breakIntro].count, (NSUInteger)a);
+            XCTAssertEqual([self countInFrame:@"firstFrame" intro:breakIntro], 10);
+            XCTAssertEqual([self countInFrame:@"secondFrame" intro:breakIntro], ones);
+            XCTAssertEqual([self crossedCount:breakIntro], 0);
+
+            UILabel *paragraph = [breakIntro valueForKey:@"narration"];
+            NSString *fullText = [NSString stringWithFormat:
+                @"先把 %ld 拆成 10 和 %ld。原本的 %ld 個不夠拿走 %ld 個，可以先留著，從 10 裡拿走 %ld 個。",
+                (long)a, (long)ones, (long)ones, (long)b, (long)b];
+            XCTAssertEqualObjects(paragraph.text, fullText);
+            XCTAssertEqualObjects(breakIntro.currentNarration, fullText);
+            NSString *context = [NSString stringWithFormat:@"原來的題目是 %ld 減 %ld。%@", (long)a, (long)b, fullText];
+            XCTAssertTrue([[[breakIntro valueForKey:@"stage"] accessibilityValue] containsString:context]);
+            UIFont *paragraphFont = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+                scaledFontForFont:[ChildUI roundedFontOfSize:20 weight:UIFontWeightMedium]
+                compatibleWithTraitCollection:breakIntro.traitCollection];
+            XCTAssertEqualObjects(paragraph.traitCollection.preferredContentSizeCategory, category);
+            XCTAssertEqualWithAccuracy(paragraph.font.pointSize, paragraphFont.pointSize, 0.5);
+            XCTAssertTrue(paragraph.adjustsFontForContentSizeCategory);
+            XCTAssertFalse(paragraph.adjustsFontSizeToFitWidth);
+            XCTAssertEqual(paragraph.numberOfLines, 0);
+            XCTAssertEqual(paragraph.lineBreakMode, NSLineBreakByWordWrapping);
+            XCTAssertGreaterThanOrEqual(paragraph.bounds.size.height + 0.5,
+                [paragraph sizeThatFits:CGSizeMake(paragraph.bounds.size.width, CGFLOAT_MAX)].height);
+            UIScrollView *content = [breakIntro valueForKey:@"scrollView"];
+            if (UIContentSizeCategoryIsAccessibilityCategory(category)) {
+                XCTAssertGreaterThan(paragraphFont.pointSize, 33);
+                XCTAssertGreaterThan(paragraph.bounds.size.height, content.bounds.size.height);
+                XCTAssertGreaterThan([self explanationRectForIntro:breakIntro includeRead:NO].size.height,
+                    content.bounds.size.height);
+            }
+            UIButton *inlineRead = [breakIntro valueForKey:@"readButton"];
+            UIFont *inlineFont = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+                scaledFontForFont:[ChildUI roundedFontOfSize:18 weight:UIFontWeightBold]
+                compatibleWithTraitCollection:breakIntro.traitCollection];
+            XCTAssertEqualWithAccuracy(inlineRead.titleLabel.font.pointSize, inlineFont.pointSize, 0.5);
+            XCTAssertFalse(inlineRead.titleLabel.adjustsFontSizeToFitWidth);
+            XCTAssertEqual(inlineRead.titleLabel.numberOfLines, 0);
+            XCTAssertEqual(inlineRead.titleLabel.lineBreakMode, NSLineBreakByWordWrapping);
+            XCTAssertGreaterThanOrEqual(inlineRead.bounds.size.height + 0.5,
+                [inlineRead.titleLabel sizeThatFits:CGSizeMake(inlineRead.bounds.size.width - 24, CGFLOAT_MAX)].height + 24);
+            XCTAssertTrue([paragraph isDescendantOfView:content]);
+            XCTAssertTrue([inlineRead isDescendantOfView:content]);
+            XCTAssertTrue(content.scrollEnabled);
+            XCTAssertTrue(inlineRead.enabled);
+
+            NSArray<UIView *> *sourceDots = [[breakIntro valueForKey:@"dots"] copy];
+            NSMutableArray<NSDictionary *> *sourceStates = [NSMutableArray array];
+            NSArray<NSString *> *dotKeys = @[@"center", @"fillColor", @"alpha", @"crossedOut", @"selectedForTen"];
+            for (UIView *dot in sourceDots) [sourceStates addObject:[dot dictionaryWithValuesForKeys:dotKeys]];
+            NSUInteger beforeInspection = breakIntro.playbackGeneration;
+            LessonIntroPlaybackState beforeState = breakIntro.playbackState;
+            XCTAssertNil([breakIntro valueForKey:@"stepAnimator"]);
+            NSArray<NSString *> *controlKeys = @[@"previousButton", @"pinnedReadButton", @"nextButton", @"replayButton", @"startButton"];
+            NSMutableArray<NSValue *> *controlRects = [NSMutableArray array];
+            for (NSString *key in controlKeys) {
+                UIButton *button = [breakIntro valueForKey:key];
+                [controlRects addObject:[NSValue valueWithCGRect:[button convertRect:button.bounds toView:breakIntro]]];
+            }
+            CGRect textRect = [paragraph convertRect:paragraph.bounds toView:content];
+            CGFloat lineHeight = MIN(paragraph.font.lineHeight, textRect.size.height);
+            NSArray<NSDictionary *> *readingTargets = @[
+                @{@"view": paragraph, @"rect": [NSValue valueWithCGRect:CGRectMake(textRect.origin.x, CGRectGetMinY(textRect), textRect.size.width, lineHeight)]},
+                @{@"view": paragraph, @"rect": [NSValue valueWithCGRect:CGRectMake(textRect.origin.x, CGRectGetMaxY(textRect) - lineHeight, textRect.size.width, lineHeight)]},
+                @{@"view": inlineRead, @"rect": [NSValue valueWithCGRect:[inlineRead convertRect:inlineRead.bounds toView:content]]}];
+            for (NSDictionary *target in readingTargets) {
+                UIView *targetView = target[@"view"];
+                CGRect targetRect = [target[@"rect"] CGRectValue];
+                [content scrollRectToVisible:targetRect animated:NO];
+                XCTAssertFalse(CGRectIsEmpty(targetRect));
+                XCTAssertTrue(CGRectContainsRect(CGRectInset(content.bounds, -0.5, -0.5), targetRect));
+                XCTAssertTrue(CGRectContainsRect(CGRectInset(window.bounds, -0.5, -0.5),
+                    [content convertRect:targetRect toView:window]));
+                for (UIView *ancestor = targetView; ancestor; ancestor = ancestor.superview) {
+                    XCTAssertFalse(ancestor.hidden);
+                    XCTAssertGreaterThan(ancestor.alpha, 0.01);
+                    if (ancestor.clipsToBounds) {
+                        XCTAssertTrue(CGRectContainsRect(CGRectInset(ancestor.bounds, -0.5, -0.5),
+                            [content convertRect:targetRect toView:ancestor]));
+                    }
+                }
+                if (targetView == inlineRead) {
+                    CGPoint center = [inlineRead convertPoint:CGPointMake(CGRectGetMidX(inlineRead.bounds),
+                        CGRectGetMidY(inlineRead.bounds)) toView:window];
+                    UIView *hit = [window hitTest:center withEvent:nil];
+                    XCTAssertTrue(hit == inlineRead || [hit isDescendantOfView:inlineRead]);
+                }
+                XCTAssertFalse(inlineRead.hidden);
+                XCTAssertEqual(breakIntro.currentStepIndex, 0);
+                XCTAssertEqual(breakIntro.playbackGeneration, beforeInspection);
+                XCTAssertEqual(breakIntro.playbackState, beforeState);
+                XCTAssertNil([breakIntro valueForKey:@"stepAnimator"]);
+                XCTAssertEqualObjects(paragraph.text, fullText);
+                [self assertEquationHidden:breakIntro a:a b:b make:NO];
+                XCTAssertEqualObjects([breakIntro valueForKey:@"dots"], sourceDots);
+                for (NSUInteger index = 0; index < sourceDots.count; index++) {
+                    XCTAssertEqualObjects([sourceDots[index] dictionaryWithValuesForKeys:dotKeys], sourceStates[index]);
+                }
+                for (NSUInteger index = 0; index < controlKeys.count; index++) {
+                    UIButton *button = [breakIntro valueForKey:controlKeys[index]];
+                    CGRect rect = [button convertRect:button.bounds toView:breakIntro];
+                    XCTAssertTrue(CGRectEqualToRect(rect, controlRects[index].CGRectValue));
+                    XCTAssertFalse(button.hidden);
+                    XCTAssertEqual(button.enabled, index != 0); // Previous stays disabled on the opening step.
+                    XCTAssertFalse([button isDescendantOfView:content]);
+                    XCTAssertGreaterThanOrEqual(rect.size.width, 60);
+                    XCTAssertGreaterThanOrEqual(rect.size.height, 60);
+                    XCTAssertTrue(CGRectContainsRect(breakIntro.bounds, rect));
+                    XCTAssertTrue(CGRectContainsRect(window.bounds, [button convertRect:button.bounds toView:window]));
+                    XCTAssertFalse(CGRectIntersectsRect(rect, content.frame));
+                    for (NSUInteger other = 0; other < index; other++) {
+                        XCTAssertFalse(CGRectIntersectsRect(rect, controlRects[other].CGRectValue));
+                    }
+                    if (button.enabled) {
+                        UIView *hit = [breakIntro hitTest:CGPointMake(CGRectGetMidX(rect), CGRectGetMidY(rect)) withEvent:nil];
+                        XCTAssertTrue(hit == button || [hit isDescendantOfView:button]);
+                    }
+                }
+                if (a == 18 && b == 9 && [category isEqualToString:UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
+                    CGPoint inspectedOffset = content.contentOffset;
+                    void (^assertStaticInspection)(void) = ^{
+                        XCTAssertEqual(breakIntro.currentStepIndex, 0);
+                        XCTAssertEqual(breakIntro.playbackGeneration, beforeInspection);
+                        XCTAssertEqual(breakIntro.playbackState, beforeState);
+                        XCTAssertNil([breakIntro valueForKey:@"stepAnimator"]);
+                        XCTAssertTrue(CGPointEqualToPoint(content.contentOffset, inspectedOffset));
+                        XCTAssertEqualObjects(paragraph.text, fullText);
+                        XCTAssertTrue(CGRectEqualToRect(window.bounds, windowBounds));
+                        XCTAssertTrue(CGRectEqualToRect(window.windowScene.coordinateSpace.bounds, nativeSceneBounds));
+                    };
+                    assertStaticInspection();
+                    // Ask UIKit to include pending screen updates for current glyphs.
+                    // This is a native window render, not device/compositor proof.
+                    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+                    format.scale = window.screen.scale;
+                    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithBounds:window.bounds format:format];
+                    __block BOOL complete = NO;
+                    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+                        complete = [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:YES];
+                    }];
+                    XCTAttachment *attachment = complete && image ? [XCTAttachment attachmentWithImage:image]
+                        : [XCTAttachment attachmentWithString:@"Native window render unavailable: UIKit did not complete the hierarchy draw."];
+                    NSUInteger observationIndex = [readingTargets indexOfObjectIdenticalTo:target];
+                    NSString *observation = @[@"paragraph-start", @"paragraph-end", @"inline-listen"][observationIndex];
+                    attachment.name = [@"native-window-render-18-minus-9-AX5-" stringByAppendingString:observation];
+                    attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+                    [self addAttachment:attachment];
+                    assertStaticInspection();
+                }
+            }
+            // Only an explicit Next may leave inspection and admit the causal action.
+            [breakIntro goToNextStep];
+            [self assertRequiredActionIsContainedInActualClips:breakIntro];
+            XCTAssertEqual(breakIntro.currentStepIndex, 1);
+            XCTAssertEqual(breakIntro.playbackGeneration, beforeInspection + 1);
+            XCTAssertEqual(breakIntro.playbackState, UIAccessibilityIsReduceMotionEnabled()
+                ? LessonIntroPlaybackStateReducedMotion : LessonIntroPlaybackStateRunning);
+            XCTAssertEqualObjects([breakIntro valueForKey:@"dots"], sourceDots);
+            XCTAssertEqual([self countInFrame:@"firstFrame" intro:breakIntro], 10);
+            XCTAssertEqual([self countInFrame:@"secondFrame" intro:breakIntro], ones);
+            XCTAssertEqual([self crossedCount:breakIntro], b);
+            [self assertEquationHidden:breakIntro a:a b:b make:NO];
+            [self assertPinnedListeningAndFooterFit:breakIntro];
+            XCTAssertTrue(CGRectEqualToRect(window.bounds, windowBounds));
+            XCTAssertTrue(CGRectEqualToRect(window.windowScene.coordinateSpace.bounds, nativeSceneBounds));
+        }
+    }
 }
 - (void)testPinnedListeningAndNavigationFitCompactAndAX5WithoutFontCaps {
     for (UIContentSizeCategory category in @[UIContentSizeCategoryLarge, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
@@ -2661,6 +2884,11 @@
         LessonIntroView *intro = [self showPresentationProblemA:2 width:377 category:initial];
         XCTAssertNotNil(intro);
         if (!intro) return;
+        UIButton *previous = [intro valueForKey:@"previousButton"];
+        UIColor *unavailableColor = [UIColor colorWithWhite:0.90 alpha:1.0];
+        XCTAssertFalse(previous.enabled);
+        XCTAssertEqualObjects(previous.backgroundColor, unavailableColor);
+        XCTAssertEqualWithAccuracy(previous.layer.shadowOpacity, 0, 0.001);
         [self settleIntro:intro atStep:3];
         NSArray<UIButton *> *buttons = [intro dictionaryWithValuesForKeys:keys].allValues;
         XCTAssertEqual(buttons.count, keys.count);
@@ -2697,6 +2925,60 @@
                 XCTAssertGreaterThan(button.currentTitle.length, 0u);
                 XCTAssertEqualObjects(button.largeContentTitle, button.accessibilityLabel);
             }
+            // Exercise real Back/Next transitions on these same scene-hosted
+            // controls, including after inherited normal/AX5 traits change.
+            CGSize enabledSize = previous.bounds.size;
+            UIFont *enabledFont = previous.titleLabel.font;
+            CALayer *normalShadow = [CALayer layer];
+            [ChildUI applySoftShadowOnLayer:normalShadow];
+            for (NSUInteger back = 0; back < 3; back++) [intro goToPreviousStep];
+            for (NSNumber *step in @[@0, @1, @0, @1, @0]) {
+                BOOL enabled = step.integerValue > 0;
+                if (enabled) [intro goToNextStep];
+                else [intro goToPreviousStep];
+                [intro layoutIfNeeded];
+                XCTAssertEqual(intro.currentStepIndex, step.integerValue);
+                XCTAssertEqual(previous.enabled, enabled);
+                XCTAssertEqualObjects(previous.backgroundColor, enabled ? ChildUI.lavender : unavailableColor);
+                XCTAssertEqualWithAccuracy(previous.layer.shadowOpacity, enabled ? normalShadow.shadowOpacity : 0, 0.001);
+                XCTAssertEqualWithAccuracy(previous.layer.shadowRadius, normalShadow.shadowRadius, 0.001);
+                XCTAssertTrue(CGSizeEqualToSize(previous.layer.shadowOffset, normalShadow.shadowOffset));
+                XCTAssertTrue(CGColorEqualToColor(previous.layer.shadowColor, normalShadow.shadowColor));
+                XCTAssertEqualObjects(previous.currentTitle, @"上一步");
+                XCTAssertEqualObjects(previous.accessibilityLabel, @"上一步");
+                XCTAssertEqualObjects(previous.largeContentTitle, previous.accessibilityLabel);
+                XCTAssertEqualObjects(previous.currentTitleColor, ChildUI.brownText);
+                XCTAssertEqualObjects(previous.titleLabel.textColor, ChildUI.brownText);
+                XCTAssertEqualObjects(previous.tintColor, ChildUI.brownText);
+                XCTAssertEqualObjects(previous.imageView.tintColor, ChildUI.brownText);
+                XCTAssertFalse(previous.adjustsImageWhenDisabled);
+                for (UIView *paint in @[previous, previous.titleLabel, previous.imageView]) {
+                    XCTAssertEqualWithAccuracy(paint.alpha, 1, 0.001);
+                    XCTAssertEqualWithAccuracy(paint.layer.opacity, 1, 0.001);
+                }
+                XCTAssertEqual([self contentHasVisibleArea:previous.titleLabel inButton:previous], !usesSymbols);
+                XCTAssertEqual([self contentHasVisibleArea:previous.imageView inButton:previous], usesSymbols);
+                UIView *content = usesSymbols ? previous.imageView : previous.titleLabel;
+                CGSize completeContent = usesSymbols ? CGSizeMake(24, 24)
+                    : [previous.currentTitle sizeWithAttributes:@{NSFontAttributeName:enabledFont}];
+                XCTAssertGreaterThanOrEqual(content.bounds.size.width + 0.5, completeContent.width);
+                XCTAssertGreaterThanOrEqual(content.bounds.size.height + 0.5, completeContent.height);
+                XCTAssertTrue(CGRectContainsRect(previous.bounds, content.frame));
+                XCTAssertEqualObjects(previous.titleLabel.font, enabledFont);
+                XCTAssertFalse(previous.titleLabel.adjustsFontSizeToFitWidth);
+                XCTAssertEqualWithAccuracy(previous.bounds.size.width, enabledSize.width, 0.001);
+                XCTAssertEqualWithAccuracy(previous.bounds.size.height, enabledSize.height, 0.001);
+                XCTAssertTrue(CGRectContainsRect(CGRectInset(intro.window.bounds, -0.5, -0.5),
+                    [previous convertRect:previous.bounds toView:intro.window]));
+                if (!enabled) {
+                    [intro goToPreviousStep];
+                    XCTAssertEqual(intro.currentStepIndex, 0, @"The unavailable affordance must preserve the first-step boundary.");
+                }
+            }
+            [self settleIntro:intro atStep:3];
+            XCTAssertTrue(previous.enabled);
+            XCTAssertEqualObjects(previous.backgroundColor, ChildUI.lavender);
+            XCTAssertEqualWithAccuracy(previous.layer.shadowOpacity, normalShadow.shadowOpacity, 0.001);
         }
     }
 }
