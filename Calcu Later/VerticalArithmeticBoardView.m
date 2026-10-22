@@ -84,6 +84,11 @@ typedef struct {
 @property (nonatomic) CFTimeInterval animationEndTime;
 @property (nonatomic) CGSize renderedSize;
 @property (nonatomic) BOOL needsSnapshotLayout;
+@property (nonatomic) BOOL playsWrittenExchange;
+@property (nonatomic) BOOL requiresVisiblePlayback;
+@property (nonatomic, assign, readwrite) VerticalArithmeticPlaybackState playbackState;
+@property (nonatomic, strong) UIAccessibilityElement *summaryElement;
+@property (nonatomic, strong) UIAccessibilityElement *concreteElement;
 - (void)animationTick:(CADisplayLink *)link;
 @end
 
@@ -121,7 +126,7 @@ typedef struct {
     self.backgroundColor = ChildUI.creamBackground;
     self.layer.cornerRadius = 24;
     self.clipsToBounds = YES;
-    self.accessibilityIdentifier = @"verticalTeachingBoard";
+    self.accessibilityIdentifier = @"verticalTeachingBoardContainer";
     self.accessibilityLabel = @"一步一步看直式";
     self.accessibilityLanguage = @"zh-TW";
     self.accessibilityTraits = UIAccessibilityTraitStaticText;
@@ -151,16 +156,20 @@ typedef struct {
         [self invalidateIntrinsicContentSize];
         return NO;
     }
+    self.playbackState = VerticalArithmeticPlaybackStateStill;
+    self.playsWrittenExchange = YES;
+    self.requiresVisiblePlayback = NO;
     self.sequence = sequence;
     self.currentStepIndex = stepIndex;
     self.currentStep = sequence.steps[stepIndex];
-    self.isAccessibilityElement = YES;
+    self.isAccessibilityElement = NO;
     [self updateSpokenSummary];
     self.needsSnapshotLayout = YES;
     [self invalidateIntrinsicContentSize];
     [self setNeedsLayout];
     [self layoutIfNeeded];
     if (animated && [self canAnimate]) [self animateCurrentAction];
+    else if (animated && !ChildUI.motionEnabled) self.playbackState = VerticalArithmeticPlaybackStateReducedMotion;
     return YES;
 }
 
@@ -169,6 +178,8 @@ typedef struct {
 }
 
 - (void)clearSnapshot {
+    self.summaryElement = nil;
+    self.concreteElement = nil;
     [self.contentView removeFromSuperview];
     self.contentView = nil;
     self.gridView = nil;
@@ -219,6 +230,44 @@ typedef struct {
     self.accessibilityValue = [parts componentsJoinedByString:@" "];
 }
 
+- (BOOL)isPlaying { return self.playbackState == VerticalArithmeticPlaybackStatePlaying; }
+
+- (NSString *)playbackDescription {
+    switch (self.playbackState) {
+        case VerticalArithmeticPlaybackStatePlaying: return @"正在交換";
+        case VerticalArithmeticPlaybackStateCompleted: return @"動態已播放完成";
+        case VerticalArithmeticPlaybackStateInterrupted: return @"動態已暫停，停在這一步";
+        case VerticalArithmeticPlaybackStateReducedMotion: return @"減少動態，直接看這一步";
+        case VerticalArithmeticPlaybackStateStill: return @"停在這一步";
+    }
+}
+
+- (void)setPlaybackState:(VerticalArithmeticPlaybackState)playbackState {
+    _playbackState = playbackState;
+    self.concreteElement.accessibilityValue = [NSString stringWithFormat:@"%@。%@", [self exchangeCountsText], [self playbackDescription]];
+}
+
+- (NSArray *)accessibilityElements {
+    if (!self.currentStep) return @[];
+    if (!self.summaryElement) self.summaryElement = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:self];
+    self.summaryElement.accessibilityIdentifier = @"verticalTeachingBoard";
+    self.summaryElement.accessibilityLabel = self.accessibilityLabel;
+    self.summaryElement.accessibilityValue = self.accessibilityValue;
+    self.summaryElement.accessibilityLanguage = @"zh-TW";
+    self.summaryElement.accessibilityTraits = UIAccessibilityTraitStaticText;
+    self.summaryElement.accessibilityFrameInContainerSpace = self.bounds;
+    CGRect concrete = self.currentConcreteTransformationRect;
+    if (CGRectIsNull(concrete) || CGRectIsEmpty(concrete)) return @[self.summaryElement];
+    if (!self.concreteElement) self.concreteElement = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:self];
+    self.concreteElement.accessibilityIdentifier = @"verticalTeachingExchange";
+    self.concreteElement.accessibilityLabel = @"這一步的完整交換";
+    self.concreteElement.accessibilityValue = [NSString stringWithFormat:@"%@。%@", [self exchangeCountsText], [self playbackDescription]];
+    self.concreteElement.accessibilityLanguage = @"zh-TW";
+    self.concreteElement.accessibilityTraits = UIAccessibilityTraitStaticText;
+    self.concreteElement.accessibilityFrameInContainerSpace = concrete;
+    return @[self.summaryElement, self.concreteElement];
+}
+
 #pragma mark - Width-aware layout
 
 - (UIFont *)bodyFont {
@@ -262,6 +311,27 @@ typedef struct {
 - (CGRect)currentConcreteTransformationRect {
     if (!self.currentStep || self.currentStep.kind != ArithmeticTeachingStepKindRegroup || !self.illustrationView) return CGRectNull;
     return [self.illustrationView convertRect:self.illustrationView.bounds toView:self];
+}
+
+- (CGRect)currentWrittenRect {
+    return self.gridView ? [self.gridView convertRect:self.gridView.bounds toView:self] : CGRectNull;
+}
+
+- (CGRect)currentActionRect {
+    if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) return self.currentConcreteTransformationRect;
+    if (self.currentStep.kind == ArithmeticTeachingStepKindWriteAnswer && [self validColumn:self.currentStep.activeColumn]
+        && self.currentStep.activeColumn < (NSInteger)self.answerLabels.count) {
+        UILabel *answer = self.answerLabels[self.currentStep.activeColumn];
+        // A deliberately omitted leading zero is explained, not written.
+        if (!answer.text.length) return CGRectNull;
+        return [answer convertRect:CGRectInset(answer.bounds, -5, -5) toView:self];
+    }
+    return CGRectNull;
+}
+
+- (CGRect)currentPlaybackRect {
+    if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup && self.playsWrittenExchange) return self.currentTransformationRect;
+    return self.currentActionRect;
 }
 
 - (CGRect)currentTransformationRect {
@@ -511,7 +581,31 @@ typedef struct {
 
 #pragma mark - One finite action, no automatic advancement
 
+- (BOOL)playCurrentActionInVisibleRect:(CGRect)visibleRect {
+    [self cancelAnimations];
+    CGRect required = self.currentActionRect;
+    if (CGRectIsNull(required) || CGRectIsEmpty(required) || CGRectIsNull(visibleRect)
+        || CGRectIsEmpty(visibleRect) || !CGRectContainsRect(visibleRect, required)) return NO;
+    self.playsWrittenExchange = CGRectContainsRect(visibleRect, self.currentTransformationRect);
+    self.requiresVisiblePlayback = YES;
+    if (![self playbackFitsClippingAncestors]) return NO;
+    if ([self canAnimate]) [self animateCurrentAction];
+    else if (!ChildUI.motionEnabled) self.playbackState = VerticalArithmeticPlaybackStateReducedMotion;
+    return YES;
+}
+
+- (BOOL)playbackFitsClippingAncestors {
+    CGRect action = self.currentPlaybackRect;
+    if (CGRectIsNull(action) || CGRectIsEmpty(action)) return NO;
+    for (UIView *view = self; view; view = view.superview) {
+        if ((view.clipsToBounds || view == self.window)
+            && !CGRectContainsRect(view.bounds, [self convertRect:action toView:view])) return NO;
+    }
+    return YES;
+}
+
 - (BOOL)canAnimate {
+    if (self.requiresVisiblePlayback && ![self playbackFitsClippingAncestors]) return NO;
     if (!ChildUI.motionEnabled || !self.window || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return NO;
     for (UIView *view = self; view; view = view.superview) if (view.hidden || view.alpha <= 0.01) return NO;
     return YES;
@@ -537,6 +631,7 @@ typedef struct {
         [self addAnimation:press toLayer:answer.layer key:@"verticalAnswerWrite"];
     }
     if (!self.animatedLayers.count) return;
+    self.playbackState = VerticalArithmeticPlaybackStatePlaying;
     self.animationEndTime = CACurrentMediaTime() + VABExchangeDuration;
     VABWeakDisplayLinkTarget *proxy = [VABWeakDisplayLinkTarget new];
     proxy.target = self;
@@ -547,36 +642,39 @@ typedef struct {
 - (void)animateExchange {
     ArithmeticTeachingStep *step = self.currentStep;
     if (![self validColumn:step.sourceColumn] || ![self validColumn:step.destinationColumn] || self.annotationLabels.count != self.sequence.columnCount) return;
-    UILabel *source = self.annotationLabels[step.sourceColumn];
-    UILabel *destination = self.annotationLabels[step.destinationColumn];
-    CGPoint from = [self.gridView convertPoint:source.center toView:self.contentView];
-    CGPoint to = [self.gridView convertPoint:destination.center toView:self.contentView];
     BOOL carriesLeft = step.destinationColumn < step.sourceColumn;
-    NSString *packetText = [NSString stringWithFormat:@"%@%@", carriesLeft ? @"10" : @"1", [self unitNameForColumn:step.sourceColumn]];
-    UILabel *packet = [self labelWithText:packetText font:[ChildUI roundedMonoFontOfSize:16 weight:UIFontWeightBold] identifier:@"verticalMovingExchange"];
-    packet.frame = CGRectMake(0, 0, 44, 30);
-    packet.center = to;
-    packet.backgroundColor = ChildUI.eggYolk;
-    packet.layer.cornerRadius = 10;
-    packet.clipsToBounds = YES;
-    packet.alpha = 0; // Model state has no transient packet; cancellation is always safe.
-    [self.contentView addSubview:packet];
-    [self.transientViews addObject:packet];
-    UIBezierPath *path = [UIBezierPath bezierPath];
-    [path moveToPoint:from];
-    [path addQuadCurveToPoint:to controlPoint:CGPointMake((from.x + to.x) / 2, MIN(from.y, to.y) - 32)];
-    CAKeyframeAnimation *travel = [CAKeyframeAnimation animationWithKeyPath:@"position"];
-    travel.path = path.CGPath;
-    travel.duration = 0.62;
-    travel.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    CAKeyframeAnimation *visibility = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    visibility.values = @[@1, @1, @0];
-    visibility.keyTimes = @[@0, @0.72, @1];
-    visibility.duration = VABExchangeDuration;
-    CAAnimationGroup *packetGroup = [CAAnimationGroup animation];
-    packetGroup.animations = @[travel, visibility];
-    packetGroup.duration = VABExchangeDuration;
-    [self addAnimation:packetGroup toLayer:packet.layer key:@"verticalUnitTransfer"];
+    if (self.playsWrittenExchange) {
+        UILabel *source = self.annotationLabels[step.sourceColumn];
+        UILabel *destination = self.annotationLabels[step.destinationColumn];
+        CGPoint from = [self.gridView convertPoint:source.center toView:self.contentView];
+        CGPoint to = [self.gridView convertPoint:destination.center toView:self.contentView];
+        NSString *packetText = [NSString stringWithFormat:@"%@%@", carriesLeft ? @"10" : @"1", [self unitNameForColumn:step.sourceColumn]];
+        UILabel *packet = [self labelWithText:packetText font:[ChildUI roundedMonoFontOfSize:16 weight:UIFontWeightBold] identifier:@"verticalMovingExchange"];
+        packet.frame = CGRectMake(0, 0, 44, 30);
+        packet.center = to;
+        packet.backgroundColor = ChildUI.eggYolk;
+        packet.layer.cornerRadius = 10;
+        packet.clipsToBounds = YES;
+        packet.alpha = 0; // Model state has no transient packet; cancellation is always safe.
+        [self.contentView addSubview:packet];
+        [self.transientViews addObject:packet];
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        [path moveToPoint:from];
+        [path addQuadCurveToPoint:to controlPoint:CGPointMake((from.x + to.x) / 2, MIN(from.y, to.y) - 32)];
+        CAKeyframeAnimation *travel = [CAKeyframeAnimation animationWithKeyPath:@"position"];
+        travel.path = path.CGPath;
+        travel.duration = 0.62;
+        travel.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        CAKeyframeAnimation *visibility = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+        visibility.values = @[@1, @1, @0];
+        visibility.keyTimes = @[@0, @0.72, @1];
+        visibility.duration = VABExchangeDuration;
+        CAAnimationGroup *packetGroup = [CAAnimationGroup animation];
+        packetGroup.animations = @[travel, visibility];
+        packetGroup.duration = VABExchangeDuration;
+        [self addAnimation:packetGroup toLayer:packet.layer key:@"verticalUnitTransfer"];
+
+    }
 
     // The concrete equality remains visible at rest. During exchange the ten
     // small pieces visibly collect into one larger unit, or one splits into ten.
@@ -616,43 +714,50 @@ typedef struct {
         bundle.duration = VABExchangeDuration;
         [self addAnimation:bundle toLayer:self.exchangeDestinationUnits.firstObject.layer key:@"verticalCountChange"];
     }
-    for (NSNumber *columnNumber in @[@(step.sourceColumn), @(step.destinationColumn)]) {
-        NSInteger column = columnNumber.integerValue;
-        UILabel *label = self.annotationLabels[column];
-        // The model layer is already the correct after-state. A disposable before
-        // label stays until the unit arrives; cancelling simply removes this veil.
-        NSString *beforeText = carriesLeft && column == step.destinationColumn ? @"" : step.workingDigitsBefore[column].stringValue;
-        UILabel *before = [self labelWithText:beforeText font:label.font identifier:@"verticalBeforeExchange"];
-        before.frame = label.frame;
-        before.backgroundColor = self.backgroundColor;
-        before.layer.cornerRadius = 10;
-        before.clipsToBounds = YES;
-        before.alpha = 0;
-        [self.gridView addSubview:before];
-        [self.transientViews addObject:before];
-        CAKeyframeAnimation *oldCount = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-        oldCount.values = @[@1, @1, @0];
-        oldCount.keyTimes = @[@0, @0.60, @1];
-        oldCount.duration = VABExchangeDuration;
-        [self addAnimation:oldCount toLayer:before.layer key:@"verticalBeforeCount"];
-        CAKeyframeAnimation *newCount = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-        newCount.values = @[@0, @0, @1];
-        newCount.keyTimes = @[@0, @0.60, @1];
-        newCount.duration = VABExchangeDuration;
-        [self addAnimation:newCount toLayer:label.layer key:@"verticalAfterCount"];
-        CAKeyframeAnimation *emphasis = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-        emphasis.values = @[@1, @1, @1.12, @1];
-        emphasis.keyTimes = @[@0, @0.55, @0.76, @1];
-        emphasis.duration = VABExchangeDuration;
-        [self addAnimation:emphasis toLayer:label.layer key:@"verticalCountChange"];
+    if (self.playsWrittenExchange) {
+        for (NSNumber *columnNumber in @[@(step.sourceColumn), @(step.destinationColumn)]) {
+            NSInteger column = columnNumber.integerValue;
+            UILabel *label = self.annotationLabels[column];
+            // The model layer is already the correct after-state. A disposable before
+            // label stays until the unit arrives; cancelling simply removes this veil.
+            NSString *beforeText = carriesLeft && column == step.destinationColumn ? @"" : step.workingDigitsBefore[column].stringValue;
+            UILabel *before = [self labelWithText:beforeText font:label.font identifier:@"verticalBeforeExchange"];
+            before.frame = label.frame;
+            before.backgroundColor = self.backgroundColor;
+            before.layer.cornerRadius = 10;
+            before.clipsToBounds = YES;
+            before.alpha = 0;
+            [self.gridView addSubview:before];
+            [self.transientViews addObject:before];
+            CAKeyframeAnimation *oldCount = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+            oldCount.values = @[@1, @1, @0];
+            oldCount.keyTimes = @[@0, @0.60, @1];
+            oldCount.duration = VABExchangeDuration;
+            [self addAnimation:oldCount toLayer:before.layer key:@"verticalBeforeCount"];
+            CAKeyframeAnimation *newCount = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+            newCount.values = @[@0, @0, @1];
+            newCount.keyTimes = @[@0, @0.60, @1];
+            newCount.duration = VABExchangeDuration;
+            [self addAnimation:newCount toLayer:label.layer key:@"verticalAfterCount"];
+            CAKeyframeAnimation *emphasis = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
+            emphasis.values = @[@1, @1, @1.12, @1];
+            emphasis.keyTimes = @[@0, @0.55, @0.76, @1];
+            emphasis.duration = VABExchangeDuration;
+            [self addAnimation:emphasis toLayer:label.layer key:@"verticalCountChange"];
+        }
     }
 }
 
 - (void)animationTick:(CADisplayLink *)link {
-    if (CACurrentMediaTime() >= self.animationEndTime || ![self canAnimate]) [self cancelAnimations];
+    if (![self canAnimate]) { [self cancelAnimations]; return; }
+    if (self.isPlaying && CACurrentMediaTime() >= self.animationEndTime) {
+        [self cancelAnimations];
+        self.playbackState = VerticalArithmeticPlaybackStateCompleted;
+    }
 }
 
 - (void)cancelAnimations {
+    if (self.isPlaying) self.playbackState = VerticalArithmeticPlaybackStateInterrupted;
     [self.animationDisplayLink invalidate];
     self.animationDisplayLink = nil;
     for (CALayer *layer in self.animatedLayers) {
@@ -670,7 +775,11 @@ typedef struct {
     self.animationEndTime = 0;
 }
 
-- (void)stopForNotification:(NSNotification *)notification { [self cancelAnimations]; }
+- (void)stopForNotification:(NSNotification *)notification {
+    [self cancelAnimations];
+    if ([notification.name isEqualToString:UIAccessibilityReduceMotionStatusDidChangeNotification] && !ChildUI.motionEnabled)
+        self.playbackState = VerticalArithmeticPlaybackStateReducedMotion;
+}
 - (void)contentSizeChanged:(NSNotification *)notification {
     [self cancelAnimations];
     self.needsSnapshotLayout = YES;

@@ -120,7 +120,10 @@ static void VABRecordPathStart(void *info, const CGPathElement *element) {
     }
     XCTAssertFalse([board.accessibilityValue containsString:@"372"]);
     XCTAssertTrue([board.accessibilityValue containsString:@"500 減 128"]);
-    XCTAssertTrue(board.isAccessibilityElement);
+    XCTAssertFalse(board.isAccessibilityElement);
+    UIAccessibilityElement *summary = board.accessibilityElements.firstObject;
+    XCTAssertEqualObjects(summary.accessibilityIdentifier, @"verticalTeachingBoard");
+    XCTAssertEqualObjects(summary.accessibilityValue, board.accessibilityValue);
     XCTAssertTrue(board.subviews.firstObject.accessibilityElementsHidden);
 }
 
@@ -249,6 +252,8 @@ static void VABRecordPathStart(void *info, const CGPathElement *element) {
     [self fitBoard:board width:288];
     [self assertCancelled:board index:index];
     [board showStepAtIndex:index animated:YES];
+    // This tests the no-motion rendering gate, not the system preference.
+    // Actual Reduce Motion acceptance toggles Settings and checks runtime state.
     board.allowMotion = NO;
     [board animationTick:nil];
     [self assertCancelled:board index:index];
@@ -256,9 +261,11 @@ static void VABRecordPathStart(void *info, const CGPathElement *element) {
     XCTAssertEqualObjects([self label:@"verticalExchangeCounts" inView:board].text, @"百位 5 → 4　・　十位 0 → 10");
 }
 
-- (void)testReduceMotionStaticRenderHasSameCountsAndNoTransfers {
+- (void)testMotionDisabledStaticRenderHasSameCountsAndNoTransfers {
     ArithmeticTeachingSequence *sequence = [self sequence:500 second:128 operation:@"-"];
     VABAnimationTestBoard *board = [[VABAnimationTestBoard alloc] initWithFrame:CGRectMake(0, 0, 320, 500)];
+    // This tests the no-motion rendering gate, not the system preference.
+    // Actual Reduce Motion acceptance toggles Settings and checks runtime state.
     board.allowMotion = NO;
     NSInteger index = [self firstIndexOfKind:ArithmeticTeachingStepKindRegroup inSequence:sequence];
     [board configureWithSequence:sequence stepIndex:index animated:YES];
@@ -302,4 +309,132 @@ static void VABRecordPathStart(void *info, const CGPathElement *element) {
     }
     XCTAssertNil(weakBoard);
 }
+- (void)testConcreteOnlyPlaybackRequiresTheWholeActionAndKeepsHiddenNotationStill {
+    for (ArithmeticTeachingSequence *sequence in @[[self sequence:27 second:15 operation:@"+"], [self sequence:500 second:128 operation:@"-"]]) {
+        VABAnimationTestBoard *board = [[VABAnimationTestBoard alloc] initWithFrame:CGRectMake(0, 0, 680, 600)];
+        board.allowMotion = YES;
+        for (NSInteger index = 0; index < (NSInteger)sequence.steps.count; index++) {
+            if (sequence.steps[index].kind != ArithmeticTeachingStepKindRegroup) continue;
+            [board configureWithSequence:sequence stepIndex:index animated:NO];
+            [self fitBoard:board width:680];
+            CGRect concrete = board.currentConcreteTransformationRect;
+            NSString *snapshot = board.accessibilityValue;
+            XCTAssertTrue([board playCurrentActionInVisibleRect:concrete]);
+            XCTAssertTrue(board.isPlaying);
+            XCTAssertTrue(CGRectEqualToRect(board.currentPlaybackRect, concrete));
+            XCTAssertNil([self label:@"verticalMovingExchange" inView:board]);
+            XCTAssertNil([self label:@"verticalBeforeExchange" inView:board]);
+            for (UILabel *label in [board valueForKey:@"annotationLabels"]) XCTAssertEqual(label.layer.animationKeys.count, 0u);
+            BOOL carry = sequence.steps[index].destinationColumn < sequence.steps[index].sourceColumn;
+            XCTAssertEqual([[board valueForKey:@"exchangeSourceUnits"] count], carry ? 10u : 1u);
+            XCTAssertEqual([[board valueForKey:@"exchangeDestinationUnits"] count], carry ? 1u : 10u);
+            XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+            XCTAssertTrue([snapshot containsString:@"答案還沒寫"]);
+            XCTAssertFalse([board playCurrentActionInVisibleRect:CGRectInset(concrete, 0, 1)]);
+            [self assertCancelled:board index:index];
+            XCTAssertFalse([board playCurrentActionInVisibleRect:CGRectInset(concrete, 1, 0)]);
+            [self assertCancelled:board index:index];
+            XCTAssertTrue([board playCurrentActionInVisibleRect:board.currentTransformationRect]);
+            XCTAssertNotNil([self label:@"verticalMovingExchange" inView:board]);
+            XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+            [board cancelAnimations];
+        }
+    }
+}
+- (void)testSemanticAccessibilityGeometryMatchesTheRealExchangeIncludingColumnConnection {
+    ArithmeticTeachingSequence *sequence = [self sequence:500 second:128 operation:@"-"];
+    NSInteger index = [self firstIndexOfKind:ArithmeticTeachingStepKindRegroup inSequence:sequence];
+    VerticalArithmeticBoardView *board = self.board;
+    for (NSNumber *width in @[@288, @343, @680]) {
+        [board configureWithSequence:sequence stepIndex:index animated:NO];
+        [self fitBoard:board width:width.doubleValue];
+        NSArray *elements = board.accessibilityElements;
+        XCTAssertEqual(elements.count, 2u);
+        UIAccessibilityElement *exchange = elements.lastObject;
+        XCTAssertEqualObjects(exchange.accessibilityIdentifier, @"verticalTeachingExchange");
+        XCTAssertTrue(CGRectEqualToRect(exchange.accessibilityFrameInContainerSpace, board.currentConcreteTransformationRect));
+        XCTAssertTrue([exchange.accessibilityValue containsString:@"百位 5 → 4"]);
+        XCTAssertTrue([exchange.accessibilityValue containsString:@"十位 0 → 10"]);
+        UILabel *counts = [self label:@"verticalExchangeCounts" inView:board];
+        XCTAssertTrue(CGRectContainsRect(board.currentConcreteTransformationRect, [counts convertRect:counts.bounds toView:board]));
+        XCTAssertFalse([exchange.accessibilityValue containsString:@"個位 0 → 10"]);
+        XCTAssertFalse([board.accessibilityValue containsString:@"372"]);
+    }
+}
+- (void)testNaturalDisplayLinkCompletionIsDistinctFromCancellationAndNeverAdvances {
+    VABAnimationTestBoard *board = [self animatedBoardForSequence:[self sequence:500 second:128 operation:@"-"]];
+    NSInteger index = board.currentStepIndex;
+    NSString *snapshot = board.accessibilityValue;
+    UIAccessibilityElement *exchange = board.accessibilityElements.lastObject;
+    XCTAssertTrue(board.isPlaying);
+    XCTAssertTrue([exchange.accessibilityValue containsString:@"正在交換"]);
+    XCTestExpectation *settled = [self expectationWithDescription:@"The real finite display link completes without intervention"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateCompleted);
+        XCTAssertFalse(board.isPlaying);
+        [self assertCancelled:board index:index];
+        XCTAssertTrue([exchange.accessibilityValue containsString:@"動態已播放完成"]);
+        XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+        [settled fulfill];
+    });
+    [self waitForExpectations:@[settled] timeout:2.0];
+    [board showStepAtIndex:index animated:YES];
+    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    XCTAssertFalse([((UIAccessibilityElement *)board.accessibilityElements.lastObject).accessibilityValue containsString:@"動態已播放完成"]);
+    XCTAssertEqual(board.currentStepIndex, index);
+    [board showStepAtIndex:0 animated:NO];
+    XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateStill);
+    XCTAssertTrue(CGRectIsNull(board.currentActionRect));
+    XCTAssertFalse([board playCurrentActionInVisibleRect:board.bounds]);
+}
+- (void)testCallerRectCannotAuthorizePlaybackOutsideAnActualClippingAncestor {
+    ArithmeticTeachingSequence *sequence = [self sequence:27 second:15 operation:@"+"];
+    VABAnimationTestBoard *board = [[VABAnimationTestBoard alloc] initWithFrame:CGRectMake(0, 0, 320, 500)];
+    board.allowMotion = YES;
+    NSInteger index = [self firstIndexOfKind:ArithmeticTeachingStepKindRegroup inSequence:sequence];
+    [board configureWithSequence:sequence stepIndex:index animated:NO];
+    [self fitBoard:board width:320];
+    CGRect action = board.currentConcreteTransformationRect;
+    UIView *viewport = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, action.size.height - 1)];
+    viewport.clipsToBounds = YES;
+    [viewport addSubview:board];
+    board.frame = CGRectOffset(board.frame, 0, -action.origin.y);
+    XCTAssertFalse([board playCurrentActionInVisibleRect:action]);
+    XCTAssertFalse(board.isPlaying);
+    viewport.frame = CGRectMake(0, 0, 320, action.size.height);
+    XCTAssertTrue([board playCurrentActionInVisibleRect:action]);
+    XCTAssertTrue(board.isPlaying);
+    [board cancelAnimations];
+}
+- (void)testOmittedLeadingZeroHasNoActionOrPlaybackToFrame {
+    NSUInteger omittedColumns = 0;
+    for (ArithmeticTeachingSequence *sequence in @[[self sequence:100 second:1 operation:@"-"], [self sequence:500 second:499 operation:@"-"]]) {
+        VABAnimationTestBoard *board = [[VABAnimationTestBoard alloc] initWithFrame:CGRectMake(0, 0, 320, 500)];
+        board.allowMotion = YES;
+        for (NSInteger index = 0; index < (NSInteger)sequence.steps.count; index++) {
+            ArithmeticTeachingStep *step = sequence.steps[index];
+            if (step.kind != ArithmeticTeachingStepKindWriteAnswer
+                || step.visibleAnswerDigits[step.activeColumn] != NSNull.null) continue;
+            omittedColumns++;
+            [board configureWithSequence:sequence stepIndex:index animated:NO];
+            [self fitBoard:board width:320];
+            NSString *identifier = [NSString stringWithFormat:@"verticalAnswer%ld", (long)step.activeColumn];
+            XCTAssertEqual([self label:identifier inView:board].text.length, 0u);
+            XCTAssertTrue([step.explanation containsString:@"最左邊多出來的 0 不用寫"]);
+            NSString *snapshot = board.accessibilityValue;
+            XCTAssertTrue(CGRectIsNull(board.currentActionRect));
+            XCTAssertTrue(CGRectIsNull(board.currentPlaybackRect));
+            XCTAssertFalse([board playCurrentActionInVisibleRect:board.bounds]);
+            XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateStill);
+            [self assertCancelled:board index:index];
+            [board showStepAtIndex:index animated:YES];
+            XCTAssertEqual(board.playbackState, VerticalArithmeticPlaybackStateStill);
+            XCTAssertEqualObjects(board.accessibilityValue, snapshot);
+            [self assertCancelled:board index:index];
+        }
+    }
+    XCTAssertEqual(omittedColumns, 3u);
+}
+
 @end

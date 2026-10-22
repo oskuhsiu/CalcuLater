@@ -1,0 +1,235 @@
+#import <XCTest/XCTest.h>
+#import <QuartzCore/QuartzCore.h>
+#import <math.h>
+#import "GroupingTeachingFocusView.h"
+#import "GroupingTeachingBoardView.h"
+#import "WordProblem.h"
+
+@interface GroupingTeachingFocusView (Testing)
+- (BOOL)motionAllowed;
+- (BOOL)applicationActive;
+- (BOOL)actuallyVisible;
+- (void)renderElapsed:(NSTimeInterval)elapsed;
+- (void)tick:(CADisplayLink *)link generation:(NSUInteger)generation;
+@end
+// Component dependencies, not an app launch preference or a substitute for the
+// dedicated native Settings flow that changes the actual system preference.
+@interface GFTTestView : GroupingTeachingFocusView
+@property (nonatomic) BOOL testMotionAllowed;
+@property (nonatomic) BOOL testVisibility;
+@end
+@implementation GFTTestView
+- (BOOL)motionAllowed { return self.testMotionAllowed; }
+- (BOOL)actuallyVisible { return self.testVisibility; }
+- (BOOL)applicationActive { return YES; }
+@end
+@interface GroupingTeachingFocusViewTests : XCTestCase
+@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) GFTTestView *focus;
+@end
+@implementation GroupingTeachingFocusViewTests
+- (void)setUp {
+    [super setUp]; self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 700, 1200)];
+    self.window.rootViewController = [[UIViewController alloc] init]; self.window.hidden = NO;
+    self.focus = [[GFTTestView alloc] initWithFrame:CGRectMake(0, 0, 320, 600)];
+    self.focus.testMotionAllowed = YES; self.focus.testVisibility = YES;
+    [self.window.rootViewController.view addSubview:self.focus];
+}
+- (void)tearDown {
+    [self.focus cancelPlayback]; [self.focus.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
+    [self.focus removeFromSuperview]; self.focus = nil;
+    self.window.hidden = YES; self.window.rootViewController = nil; self.window = nil; [super tearDown];
+}
+- (GroupingTeachingSequence *)sequence:(BOOL)share {
+    GroupingStoryContext *context = [[GroupingStoryContext alloc] initWithMeaning:share ? GroupingStoryMeaningShareEqually : GroupingStoryMeaningMakeGroupsOf
+        itemName:@"糖果" itemUnit:@"顆" groupName:share ? @"個小朋友" : @"包" answerUnit:share ? @"顆" : @"包"];
+    WordProblem *story = [[WordProblem alloc] initWithStory:@"原來的故事" templateID:@"focus-native-components" grade:3 number1:23 number2:4 operator:@"÷" answer:5 unit:context.answerUnit
+        missingAddend:NO missingSubtrahend:NO missingMinuend:NO remainder:3 number3:0 operator2:nil intermediate:0 isFractionAnswer:NO answerNumerator:0 answerDenominator:0 groupingContext:context strategyText:@"照原來的規則。"];
+    return [GroupingTeachingSequence sequenceForWordProblem:story];
+}
+- (GroupingTeachingAction *)actionSharing:(BOOL)share last:(BOOL)last full:(BOOL)full {
+    GroupingTeachingSequence *sequence = [self sequence:share]; NSInteger index = 0;
+    for (NSInteger i = 0; i < (NSInteger)sequence.steps.count; i++) if (sequence.steps[i].kind == (share ? GroupingTeachingStepKindShareRound : GroupingTeachingStepKindPackGroup)) { index = i; if (!last) break; }
+    if (full) return [GroupingTeachingAction fullActionForSequence:sequence stepIndex:index];
+    NSArray *actions = [GroupingTeachingAction focusedActionsForSequence:sequence stepIndex:index]; return last ? actions.lastObject : actions.firstObject;
+}
+- (void)fitAction:(GroupingTeachingAction *)action width:(CGFloat)width {
+    [self.focus configureWithAction:action]; CGSize size = [self.focus sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
+    self.focus.frame = CGRectMake(0, 0, size.width, size.height); [self.focus setNeedsLayout]; [self.focus layoutIfNeeded];
+}
+- (void)assertConservation {
+    NSInteger total = self.focus.displayedPoolCount + self.focus.inFlightCount;
+    for (NSNumber *count in self.focus.displayedGroupCounts) total += count.integerValue;
+    XCTAssertEqual(total, 23); XCTAssertGreaterThanOrEqual(self.focus.displayedPoolCount, 0); XCTAssertLessThanOrEqual(self.focus.inFlightCount, 1);
+}
+- (NSArray<UILabel *> *)labels {
+    NSMutableArray *labels = [NSMutableArray array]; for (UIView *view in self.focus.subviews) if ([view isKindOfClass:UILabel.class]) [labels addObject:view]; return labels;
+}
+- (void)assertTextAndCounterContainment {
+    for (UILabel *label in self.labels) {
+        CGRect text = [label.text boundingRectWithSize:CGSizeMake(label.bounds.size.width, CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:@{NSFontAttributeName:label.font} context:nil];
+        XCTAssertLessThanOrEqual(ceil(text.size.height), label.bounds.size.height + 0.5, @"%@", label.text);
+        XCTAssertTrue(CGRectContainsRect(self.focus.bounds, label.frame));
+    }
+    NSDictionary<NSNumber *, UIView *> *counters = [self.focus valueForKey:@"counters"];
+    for (UIView *counter in counters.allValues) {
+        XCTAssertEqualWithAccuracy(counter.bounds.size.width, 20, 0.01); XCTAssertEqualWithAccuracy(counter.bounds.size.height, 20, 0.01);
+        XCTAssertTrue(CGRectContainsRect(self.focus.requiredActionRect, counter.frame));
+    }
+}
+- (void)testFixedCounterSizeAndReadableGeometryAtCompactWideAndMaximumText {
+    NSArray *actions = @[[self actionSharing:YES last:NO full:NO], [self actionSharing:YES last:YES full:NO], [self actionSharing:NO last:NO full:YES], [self actionSharing:NO last:YES full:YES]];
+    for (NSString *category in @[UIContentSizeCategoryLarge, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
+        self.focus.traitOverrides.preferredContentSizeCategory = category;
+        for (NSNumber *width in @[@288, @361, @680]) for (GroupingTeachingAction *action in actions) {
+            [self fitAction:action width:width.doubleValue]; [self assertTextAndCounterContainment]; [self assertConservation];
+            XCTAssertGreaterThan(self.focus.traitCollection.displayScale, 0); XCTAssertEqualObjects(self.focus.traitCollection.preferredContentSizeCategory, category);
+            [self.focus showBeforeState]; [self assertTextAndCounterContainment]; [self assertConservation];
+        }
+    }
+}
+- (void)testRealActionGeometryFitsCompactAndMaximumTextPortraitButRejectsLandscape {
+    [self fitAction:[self actionSharing:YES last:NO full:NO] width:288]; XCTAssertLessThanOrEqual(self.focus.requiredActionRect.size.height, 355);
+    UILabel *caption = [self.focus valueForKey:@"captionLabel"];
+    XCTAssertTrue([caption.text containsString:@"這輪每位只再拿 1 顆"]);
+    self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self fitAction:[self actionSharing:YES last:YES full:NO] width:361];
+    XCTAssertLessThanOrEqual(self.focus.requiredActionRect.size.height, 577); XCTAssertGreaterThan(self.focus.requiredActionRect.size.height, 208);
+    XCTAssertFalse([self.focus playInVisibleRect:CGRectMake(0, 0, 361, 208)]);
+    XCTAssertEqualObjects(self.focus.playbackState, @"paused-visibility"); XCTAssertNil([self.focus valueForKey:@"clock"]);
+    XCTAssertEqual(self.focus.displayedPoolCount, 3); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@5, @5, @5, @5]));
+    XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]);
+}
+- (void)testOneExistingObjectMovesAtATimeWithoutCrossingAnyLabelOrStationaryCounter {
+    for (GroupingTeachingAction *action in @[[self actionSharing:YES last:NO full:YES], [self actionSharing:NO last:YES full:YES]]) {
+        [self fitAction:action width:361]; XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+        NSDictionary<NSNumber *, UIView *> *counters = [[self.focus valueForKey:@"counters"] copy]; NSArray<NSNumber *> *moving = [self.focus valueForKey:@"movingIDs"];
+        for (NSInteger index = 0; index < (NSInteger)moving.count; index++) for (NSInteger sample = 0; sample <= 80; sample++) {
+            CGFloat progress = sample / 80.0; [self.focus renderElapsed:0.28 + 0.82 * (index + progress * 0.839)]; [self assertConservation];
+            UIView *mover = counters[moving[index]]; NSDictionary *current = [self.focus valueForKey:@"counters"];
+            XCTAssertEqual(mover, current[moving[index]]); XCTAssertTrue(CGRectContainsRect(self.focus.requiredActionRect, mover.frame));
+            for (UILabel *label in self.labels) XCTAssertFalse(CGRectIntersectsRect(mover.frame, label.frame), @"%@ crossed %@ at %.3f", moving[index], label.text, progress);
+            for (NSNumber *identity in counters) if (![identity isEqual:moving[index]]) XCTAssertFalse(CGRectIntersectsRect(mover.frame, counters[identity].frame), @"%@ crossed %@ at %.3f", moving[index], identity, progress);
+        }
+        [self.focus renderElapsed:20]; XCTAssertEqualObjects(self.focus.playbackState, @"completed"); [self assertConservation];
+        XCTAssertEqualObjects(self.focus.displayedGroupCounts, action.snapshot.groupCountsAfter); XCTAssertEqual(self.focus.displayedPoolCount, action.snapshot.poolCountAfter.integerValue);
+    }
+}
+- (void)testReplayUsesTheSameViewsAndBeforeStateAfterCompletingTheSelectedFourthRecipient {
+    NSArray *actions = [GroupingTeachingAction focusedActionsForSequence:[self sequence:YES] stepIndex:2];
+    [self fitAction:actions.lastObject width:361]; NSDictionary *counters = [[self.focus valueForKey:@"counters"] copy];
+    for (NSUInteger replay = 0; replay < 3; replay++) {
+        XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+        XCTAssertEqual(self.focus.displayedPoolCount, 20); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@1, @1, @1, @0]));
+        [self.focus renderElapsed:20]; XCTAssertEqual(self.focus.displayedPoolCount, 19); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@1, @1, @1, @1]));
+        NSDictionary *now = [self.focus valueForKey:@"counters"]; for (NSNumber *identity in counters) XCTAssertEqual(counters[identity], now[identity]);
+    }
+}
+- (void)testBackgroundAndMotionPreferenceCancellationIgnoreOldClockCallbacks {
+    [self fitAction:[self actionSharing:NO last:YES full:YES] width:361];
+    for (NSString *notification in @[UIApplicationWillResignActiveNotification, UIAccessibilityReduceMotionStatusDidChangeNotification]) {
+        XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]); CADisplayLink *old = [self.focus valueForKey:@"clock"]; NSUInteger generation = self.focus.playbackGeneration;
+        [NSNotificationCenter.defaultCenter postNotificationName:notification object:nil];
+        XCTAssertNil([self.focus valueForKey:@"clock"]); XCTAssertGreaterThan(self.focus.playbackGeneration, generation); XCTAssertEqualObjects(self.focus.playbackState, @"cancelled");
+        [self.focus tick:old generation:generation]; [self.focus renderElapsed:20];
+        XCTAssertEqualObjects(self.focus.playbackState, @"cancelled"); XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]); [self assertConservation];
+    }
+}
+- (void)testResizeHideAndDetachCancelWithoutSelectingAnotherAction {
+    GroupingTeachingAction *action = [self actionSharing:NO last:YES full:YES]; [self fitAction:action width:361];
+    XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]); self.focus.frame = CGRectMake(0, 0, 680, 500); [self.focus setNeedsLayout]; [self.focus layoutIfNeeded];
+    XCTAssertNil([self.focus valueForKey:@"clock"]); XCTAssertEqual(self.focus.action, action); XCTAssertEqual(self.focus.displayedPoolCount, 3);
+    XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]); self.focus.hidden = YES; XCTAssertNil([self.focus valueForKey:@"clock"]);
+    self.focus.hidden = NO; XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]); [self.focus removeFromSuperview];
+    XCTAssertNil([self.focus valueForKey:@"clock"]); XCTAssertEqual(self.focus.action, action); XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]);
+}
+- (void)testReducedMotionIsASeparateSettledStateWithManualBeforeAfter {
+    [self fitAction:[self actionSharing:NO last:NO full:YES] width:361]; self.focus.testMotionAllowed = NO;
+    XCTAssertFalse([self.focus playInVisibleRect:self.focus.bounds]); XCTAssertEqualObjects(self.focus.playbackState, @"reduced-motion");
+    XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]); XCTAssertNil([self.focus valueForKey:@"clock"]);
+    XCTAssertEqual(self.focus.displayedPoolCount, 19); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@4]));
+    [self.focus showBeforeState]; XCTAssertEqual(self.focus.displayedPoolCount, 23); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@0]));
+    XCTAssertTrue([self.focus.spokenDescription containsString:@"動作前"]); XCTAssertFalse([self.focus.spokenDescription containsString:@"這輪分完了"]);
+    [self.focus showAfterState]; XCTAssertEqual(self.focus.displayedPoolCount, 19); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@4]));
+}
+- (void)testActualMotionPreferenceDependencyClearsStaleCompletionWithoutAdvancing {
+    GroupingTeachingAction *action = [self actionSharing:NO last:NO full:YES];
+    [self fitAction:action width:361]; XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+    CADisplayLink *old = [self.focus valueForKey:@"clock"]; NSUInteger generation = self.focus.playbackGeneration;
+    self.focus.testMotionAllowed = NO;
+    [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+    XCTAssertEqualObjects(self.focus.playbackState, @"reduced-motion"); XCTAssertNil([self.focus valueForKey:@"clock"]);
+    [self.focus tick:old generation:generation]; [self.focus renderElapsed:20];
+    XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]); XCTAssertEqual(self.focus.action, action); [self assertConservation];
+    [self.focus showBeforeState]; XCTAssertEqual(self.focus.displayedPoolCount, 23); XCTAssertEqualObjects(self.focus.playbackState, @"reduced-motion");
+    self.focus.testMotionAllowed = YES;
+    [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+    XCTAssertEqualObjects(self.focus.playbackState, @"before"); XCTAssertTrue(self.focus.isShowingBeforeState); XCTAssertNil([self.focus valueForKey:@"clock"]);
+    XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]); [self.focus renderElapsed:20]; XCTAssertEqualObjects(self.focus.playbackState, @"completed");
+    self.focus.testMotionAllowed = NO;
+    [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+    XCTAssertEqualObjects(self.focus.playbackState, @"reduced-motion"); XCTAssertFalse([self.focus.accessibilityValue containsString:@"播放完成"]);
+    [self.focus pauseForVisibility];
+    [NSNotificationCenter.defaultCenter postNotificationName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
+    XCTAssertEqualObjects(self.focus.playbackState, @"paused-visibility"); XCTAssertEqual(self.focus.action, action);
+}
+- (void)testAVisibleRectClaimCannotOverrideActualAncestorClipping {
+    [self fitAction:[self actionSharing:YES last:NO full:NO] width:361];
+    UIScrollView *clipped = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 361, 180)]; clipped.clipsToBounds = YES;
+    [self.window.rootViewController.view addSubview:clipped];
+    GroupingTeachingFocusView *realView = [[GroupingTeachingFocusView alloc] initWithFrame:self.focus.frame]; [clipped addSubview:realView];
+    [realView configureWithAction:self.focus.action]; [realView setNeedsLayout]; [realView layoutIfNeeded];
+    XCTAssertFalse([realView playInVisibleRect:realView.bounds]); XCTAssertEqualObjects(realView.playbackState, @"paused-visibility"); XCTAssertNil([realView valueForKey:@"clock"]);
+    [realView cancelPlayback]; [clipped removeFromSuperview];
+}
+- (void)testExplicitBeforeInspectionSurvivesPassiveResizeTextAndBackground {
+    [self fitAction:[self actionSharing:NO last:NO full:YES] width:361]; [self.focus showBeforeState];
+    self.focus.frame = CGRectMake(0, 0, 680, 500); [self.focus setNeedsLayout]; [self.focus layoutIfNeeded];
+    XCTAssertTrue(self.focus.isShowingBeforeState); XCTAssertEqual(self.focus.displayedPoolCount, 23);
+    self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    [self.focus setNeedsLayout]; [self.focus layoutIfNeeded]; [self.focus pauseForVisibility];
+    [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+    XCTAssertTrue(self.focus.isShowingBeforeState); XCTAssertEqual(self.focus.displayedPoolCount, 23); XCTAssertEqualObjects(self.focus.displayedGroupCounts, (@[@0]));
+    XCTAssertNil([self.focus valueForKey:@"clock"]); [self.focus showAfterState]; XCTAssertEqual(self.focus.displayedPoolCount, 19);
+}
+- (void)testOnlyNaturalClockEndMarksTheSelectedActionCompleted {
+    [self fitAction:[self actionSharing:YES last:NO full:NO] width:361]; XCTAssertTrue([self.focus playInVisibleRect:self.focus.bounds]);
+    NSPredicate *finished = [NSPredicate predicateWithFormat:@"playbackState == %@", @"completed"];
+    XCTestExpectation *completion = [self expectationForPredicate:finished evaluatedWithObject:self.focus handler:nil];
+    [self waitForExpectations:@[completion] timeout:2.5];
+    XCTAssertNil([self.focus valueForKey:@"clock"]); XCTAssertTrue([self.focus.accessibilityValue containsString:@"播放完成"]); [self assertConservation];
+}
+- (void)testOverviewUsesExactPartialSnapshotRatherThanCompletedRound {
+    GroupingTeachingAction *action = [self actionSharing:YES last:NO full:NO];
+    GroupingTeachingBoardView *overview = [[GroupingTeachingBoardView alloc] initWithFrame:CGRectMake(0, 0, 361, 1600)];
+    XCTAssertTrue([overview configureWithAction:action]); XCTAssertEqual(overview.currentStep, action.snapshot);
+    XCTAssertTrue([overview.accessibilityValue containsString:@"第 1 個小朋友有 1 顆"]); XCTAssertTrue([overview.accessibilityValue containsString:@"第 4 個小朋友有 0 顆"]);
+    XCTAssertTrue([overview.accessibilityValue containsString:@"待分的糖果：22 顆"]); XCTAssertTrue([overview.accessibilityValue containsString:@"這輪還沒分完"]);
+    XCTAssertNil([overview valueForKey:@"animationDisplayLink"]);
+}
+- (void)testSourceSurvivorsKeepTheirPositionsAcrossTenToNineDigitWrap {
+    NSArray<GroupingTeachingAction *> *actions = [GroupingTeachingAction focusedActionsForSequence:[self sequence:YES] stepIndex:8];
+    XCTAssertEqualObjects(actions[1].snapshot.poolCountBefore, @10); XCTAssertEqualObjects(actions[2].snapshot.poolCountBefore, @9);
+    self.focus.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    for (NSInteger width = 288; width <= 398; width++) {
+        [self fitAction:actions[1] width:width]; NSDictionary *before = [[self.focus valueForKey:@"sourcePoints"] copy];
+        [self fitAction:actions[2] width:width]; NSDictionary *after = [self.focus valueForKey:@"sourcePoints"];
+        for (NSInteger identity = 0; identity < 8; identity++) XCTAssertTrue(CGPointEqualToPoint([before[@(identity)] CGPointValue], [after[@(identity)] CGPointValue]), @"width %ld identity %ld", (long)width, (long)identity);
+    }
+}
+- (void)testPartialAndFinalRecipientOverviewFramesStayStable {
+    NSArray<GroupingTeachingAction *> *actions = [GroupingTeachingAction focusedActionsForSequence:[self sequence:YES] stepIndex:2];
+    GroupingTeachingBoardView *overview = [[GroupingTeachingBoardView alloc] initWithFrame:CGRectMake(0, 0, 361, 2000)];
+    [self.window.rootViewController.view addSubview:overview]; overview.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+    for (NSNumber *width in @[@288, @361, @680]) {
+        CGRect first = CGRectNull;
+        for (GroupingTeachingAction *action in actions) {
+            [overview configureWithAction:action]; CGSize size = [overview sizeThatFits:CGSizeMake(width.doubleValue, CGFLOAT_MAX)]; overview.frame = CGRectMake(0, 0, size.width, size.height); [overview setNeedsLayout]; [overview layoutIfNeeded];
+            UIView *group = [[overview valueForKey:@"groupViews"] firstObject];
+            if (CGRectIsNull(first)) first = group.frame;
+            XCTAssertTrue(CGRectEqualToRect(group.frame, first));
+        }
+    }
+    [overview.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class]; [overview removeFromSuperview];
+}
+@end

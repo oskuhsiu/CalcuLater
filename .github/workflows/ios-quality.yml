@@ -35,6 +35,10 @@ jobs:
       max-parallel: 2
       matrix:
         include:
+          # The previous combined command took 862.53s of its 900s bound.
+          # Preserve every component and UI case in disjoint bounded commands.
+          - scenario: components
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPad-10th-generation
           - scenario: standard
             device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
           - scenario: compact
@@ -42,6 +46,22 @@ jobs:
           - scenario: tablet
             device_type: com.apple.CoreSimulator.SimDeviceType.iPad-10th-generation
           - scenario: maximumAccessibilityText
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+          # Keep the added flows in bounded, disjoint UI selections rather
+          # than growing the original standard command past its 900s limit.
+          - scenario: focusedGroupingCompact
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation
+          - scenario: focusedGroupingMaximumText
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+          - scenario: conceptCore
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+          - scenario: conceptDivision
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+          - scenario: conceptCoreMaximumText
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+          - scenario: conceptDivisionMaximumText
+            device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+          - scenario: reducedMotion
             device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer

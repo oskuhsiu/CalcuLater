@@ -834,3 +834,7 @@ testFractionChoicesAlwaysIncludeCorrect  4 選項唯一、皆真分數、含正�
 | `DistractorGenerator.h/m` | 二步驟 forced aux；`fractionChoicesForNumerator:denominator:outCorrectIndex:` |
 | `MultipleChoiceAnswerView.h/m` | `configureWithChoiceTitles:correctIndex:` 字串模式 |
 | `Calcu LaterTests/WordProblemGeneratorTests.m` | 新增 12 個測試 |
+
+### 2026-10-22：最大輔助字級設定測試的捲動距離
+
+原生 run 39693320883 的設定測試在十次小幅拖曳後仍未碰得到加法開關；實際影片與階層顯示持續往正確方向移動，不是逾時或來回震盪。僅調整測試 helper：很遠的表格列使用半個視窗的拖曳上限，接近目標時保留原本小幅校正、十次上限與嚴格 hittability。新增每次拖曳證據與可攜式幾何檢查，未更動產品字級、版面或儲存行為。原生驗證尚待執行；完整證據與下一次驗證條件見 [決策記錄](docs/quality/2026-10-22-maximum-text-settings-reveal.md)。

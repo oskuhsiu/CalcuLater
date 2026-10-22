@@ -172,7 +172,7 @@ static NSString *ATUnitName(NSInteger column, NSInteger width) {
     NSString *symbol = [problem.operatorSymbol isEqualToString:@"-"] ? @"−" : @"+";
     [builder appendKind:ArithmeticTeachingStepKindCompletion
                    title:@"把每一位連起來"
-             explanation:[NSString stringWithFormat:@"%ld %@ %ld = %ld。每一步交換，數量都沒有改變。",
+             explanation:[NSString stringWithFormat:@"%ld %@ %ld = %ld。從個位開始，逐位算完，再把每一位連起來。可以回到題目，也可以重看。",
                           (long)problem.number1, symbol, (long)problem.number2, (long)problem.answer]
                   prompt:@"" expected:nil column:NSNotFound source:NSNotFound destination:NSNotFound
                   before:builder.working value:nil];

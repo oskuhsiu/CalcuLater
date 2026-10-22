@@ -7,7 +7,12 @@
 #import "SpeechManager.h"
 #import <math.h>
 
-@interface VerticalTeachingViewController ()
+typedef NS_ENUM(NSInteger, VTInspectionAnchor) {
+    VTInspectionAnchorHeading, VTInspectionAnchorAction, VTInspectionAnchorWritten,
+    VTInspectionAnchorFeedback, VTInspectionAnchorChoices, VTInspectionAnchorNotice
+};
+
+@interface VerticalTeachingViewController () <UIScrollViewDelegate>
 @property (nonatomic, strong) ArithmeticTeachingSequence *sequence;
 @property (nonatomic, strong) WordProblem *wordProblem;
 @property (nonatomic) NSUInteger stepIndex;
@@ -27,6 +32,14 @@
 @property (nonatomic, strong) ChildButton *replayButton;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableSet<NSNumber *> *> *attemptedValues;
 @property (nonatomic, strong) NSMutableIndexSet *answeredSteps;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *lastAttemptedValues;
+@property (nonatomic, strong) ChildButton *focusButton;
+@property (nonatomic, strong) UILabel *playbackNotice;
+@property (nonatomic) VTInspectionAnchor inspectionAnchor;
+@property (nonatomic) BOOL hasManualInspection;
+@property (nonatomic) BOOL framingContent;
+@property (nonatomic) BOOL needsSemanticReframe;
+@property (nonatomic) CGSize lastViewportSize;
 - (BOOL)frameCurrentTransformation;
 @end
 
@@ -45,6 +58,7 @@
         _wordProblem = wordProblem;
         _attemptedValues = [NSMutableDictionary dictionary];
         _answeredSteps = [NSMutableIndexSet indexSet];
+        _lastAttemptedValues = [NSMutableDictionary dictionary];
         self.modalPresentationStyle = UIModalPresentationPageSheet;
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(pausePlayback)
             name:UIApplicationWillResignActiveNotification object:nil];
@@ -91,12 +105,10 @@
     close.accessibilityIdentifier = @"explanation.close";
     close.translatesAutoresizingMaskIntoConstraints = NO;
     [toolbar addSubview:close];
-    UILabel *title = [self labelWithSize:22 weight:UIFontWeightBold];
-    title.text = @"一步一步算";
-    title.font = [ChildUI scaledRoundedFontOfSize:22 weight:UIFontWeightBold textStyle:UIFontTextStyleHeadline maximumPointSize:26];
-    title.numberOfLines = 1;
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [toolbar addSubview:title];
+    self.focusButton = [self button:@"看直式" color:ChildUI.eggYolk action:@selector(focusCurrentContent)];
+    self.focusButton.accessibilityIdentifier = @"teaching.focus";
+    self.focusButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [toolbar addSubview:self.focusButton];
 
     UIStackView *navigation = [[UIStackView alloc] init];
     navigation.axis = UILayoutConstraintAxisHorizontal;
@@ -118,6 +130,8 @@
     self.scroll = [[UIScrollView alloc] init];
     self.scroll.translatesAutoresizingMaskIntoConstraints = NO;
     self.scroll.alwaysBounceVertical = YES;
+    self.scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.scroll.delegate = self;
     self.scroll.accessibilityIdentifier = @"teaching.content";
     [self.view addSubview:self.scroll];
     UIStackView *content = [self stack];
@@ -135,9 +149,9 @@
         [close.trailingAnchor constraintEqualToAnchor:toolbar.trailingAnchor],
         [close.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         [close.widthAnchor constraintEqualToConstant:120],
-        [title.leadingAnchor constraintEqualToAnchor:toolbar.leadingAnchor],
-        [title.trailingAnchor constraintLessThanOrEqualToAnchor:close.leadingAnchor constant:-12],
-        [title.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
+        [self.focusButton.leadingAnchor constraintEqualToAnchor:toolbar.leadingAnchor],
+        [self.focusButton.trailingAnchor constraintEqualToAnchor:close.leadingAnchor constant:-12],
+        [self.focusButton.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         [navigation.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
         [navigation.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
         [navigation.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-12],
@@ -181,6 +195,8 @@
     [self.predictionStack addArrangedSubview:self.choiceFeedback];
     [content addArrangedSubview:self.predictionStack];
 
+    self.playbackNotice = [self labelWithSize:18 weight:UIFontWeightSemibold];
+    self.playbackNotice.accessibilityIdentifier = @"teaching.playbackNotice";
     [content addArrangedSubview:self.board];
     ChildButton *read = [self button:@"聽聽這一步" color:ChildUI.skyBlue action:@selector(readStep)];
     read.accessibilityIdentifier = @"teaching.read";
@@ -201,6 +217,9 @@
 }
 - (void)showCurrentStepAnimated:(BOOL)animated {
     [SpeechManager.sharedInstance stop];
+    [self.playbackNotice removeFromSuperview];
+    self.inspectionAnchor = VTInspectionAnchorHeading;
+    self.hasManualInspection = NO;
     ArithmeticTeachingStep *step = self.currentStep;
     if (!step) {
         self.heading.text = @"先回到題目看看";
@@ -230,7 +249,10 @@
         : prediction && ![self.answeredSteps containsIndex:self.stepIndex] ? @"先看示範" : @"下一小步"
         forState:UIControlStateNormal];
     if (prediction) [self configurePrediction];
+    [self updateFocusButton];
+    self.framingContent = YES;
     [self.scroll setContentOffset:CGPointZero animated:NO];
+    self.framingContent = NO;
     // Fit the selected snapshot before animation. A later size change rightly
     // cancels board motion, so animation must start only after final layout.
     [self.view setNeedsLayout];
@@ -238,30 +260,149 @@
     [self updateBoardHeight];
     [self.view layoutIfNeeded];
     BOOL framedTransformation = NO;
-    if (animated) {
-        framedTransformation = [self frameCurrentTransformation];
-        [self.board showStepAtIndex:self.stepIndex animated:YES];
-    }
-    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
-        framedTransformation ? self.board : self.heading);
+    if (animated) framedTransformation = [self playCurrentAction];
+    id focus = self.playbackNotice.superview ? self.playbackNotice
+        : framedTransformation ? self.board.accessibilityElements.lastObject : self.heading;
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, focus);
+}
+- (CGRect)unobscuredViewport {
+    return UIEdgeInsetsInsetRect(self.scroll.bounds, UIEdgeInsetsMake(8, 0, 8, 0));
+}
+- (BOOL)viewportContainsBoardRect:(CGRect)rect {
+    return !CGRectIsNull(rect) && !CGRectIsEmpty(rect)
+        && CGRectContainsRect(self.unobscuredViewport, [self.board convertRect:rect toView:self.scroll]);
+}
+- (BOOL)frameRect:(CGRect)rect inView:(UIView *)view {
+    if (!view || CGRectIsNull(rect) || CGRectIsEmpty(rect) || self.scroll.bounds.size.height <= 16) return NO;
+    CGRect target = [view convertRect:rect toView:self.scroll];
+    CGRect viewport = self.unobscuredViewport;
+    if (CGRectContainsRect(viewport, target)) return NO;
+    CGFloat proposed = CGRectGetMinY(target) - MAX(8, (self.scroll.bounds.size.height - target.size.height) / 2);
+    CGFloat maximum = MAX(0, self.scroll.contentSize.height - self.scroll.bounds.size.height);
+    self.framingContent = YES;
+    [self.scroll setContentOffset:CGPointMake(0, MIN(maximum, MAX(0, proposed))) animated:NO];
+    self.framingContent = NO;
+    return YES;
 }
 - (BOOL)frameCurrentTransformation {
     CGRect focus = self.board.currentTransformationRect;
-    CGFloat viewportHeight = self.scroll.bounds.size.height;
-    if (CGRectIsNull(focus) || CGRectIsEmpty(focus) || viewportHeight <= 0) return NO;
-    // Keep the full written/concrete relationship when it fits. In landscape,
-    // prioritize the countable exchange instead of playing it below the fold.
-    // The rest remains scrollable; Replay never resets the inspection position.
-    if (focus.size.height > viewportHeight - 16) focus = self.board.currentConcreteTransformationRect;
     if (CGRectIsNull(focus) || CGRectIsEmpty(focus)) return NO;
-    CGRect inContent = [self.board convertRect:focus toView:self.scroll];
-    CGRect viewport = self.scroll.bounds;
-    if (CGRectGetMinY(inContent) >= CGRectGetMinY(viewport) + 8
-        && CGRectGetMaxY(inContent) <= CGRectGetMaxY(viewport) - 8) return NO;
-    CGFloat proposed = CGRectGetMinY(inContent) - MAX(8, (viewportHeight - inContent.size.height) / 2);
-    CGFloat maximum = MAX(0, self.scroll.contentSize.height - viewportHeight);
-    [self.scroll setContentOffset:CGPointMake(0, MIN(maximum, MAX(0, proposed))) animated:NO];
-    return YES;
+    // Reframe semantically after inspection/rotation; playback is checked only
+    // AFTER scrolling, against the complete action and real clipping ancestors.
+    if (focus.size.height > self.unobscuredViewport.size.height || focus.size.width > self.unobscuredViewport.size.width)
+        focus = self.board.currentConcreteTransformationRect;
+    return [self frameRect:focus inView:self.board];
+}
+- (void)updateFocusButton {
+    BOOL prediction = self.currentStep.kind == ArithmeticTeachingStepKindPrediction;
+    BOOL exchange = self.currentStep.kind == ArithmeticTeachingStepKindRegroup;
+    NSString *title = prediction ? (self.inspectionAnchor == VTInspectionAnchorWritten ? @"回到選項" : @"看數量")
+        : exchange && self.inspectionAnchor != VTInspectionAnchorAction ? @"看交換" : @"看直式";
+    [self.focusButton setTitle:title forState:UIControlStateNormal];
+    self.focusButton.accessibilityHint = prediction ? @"只換看的位置，不換步驟，也不計分"
+        : @"只換看的位置；要播放這一步，請按重看";
+}
+- (void)focusCurrentContent {
+    [self pausePlayback];
+    self.hasManualInspection = NO;
+    if (self.currentStep.kind == ArithmeticTeachingStepKindPrediction && self.inspectionAnchor == VTInspectionAnchorWritten) {
+        self.inspectionAnchor = VTInspectionAnchorChoices;
+        [self framePredictionChoices];
+    } else if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup && self.inspectionAnchor != VTInspectionAnchorAction) {
+        self.inspectionAnchor = VTInspectionAnchorAction;
+        [self frameRect:self.board.currentConcreteTransformationRect inView:self.board];
+    } else {
+        self.inspectionAnchor = VTInspectionAnchorWritten;
+        [self frameRect:self.board.currentWrittenRect inView:self.board];
+    }
+    [self updateFocusButton];
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
+        self.inspectionAnchor == VTInspectionAnchorChoices ? self.prompt
+            : self.inspectionAnchor == VTInspectionAnchorAction ? self.board.accessibilityElements.lastObject
+            : self.board.accessibilityElements.firstObject);
+}
+- (BOOL)playCurrentAction {
+    CGRect action = self.board.currentActionRect;
+    if (CGRectIsNull(action) || CGRectIsEmpty(action)) {
+        if (self.currentStep.kind == ArithmeticTeachingStepKindWriteAnswer) {
+            // Leading zeroes deliberately stay blank. Keep the explanation in
+            // view, including when Replay follows inspection of the written work.
+            self.hasManualInspection = NO;
+            self.inspectionAnchor = VTInspectionAnchorHeading;
+            CGRect narration = [self.narration convertRect:self.narration.bounds toView:self.content];
+            CGRect explanation = CGRectUnion(narration, [self.heading convertRect:self.heading.bounds toView:self.content]);
+            if (explanation.size.height > self.unobscuredViewport.size.height) explanation = narration;
+            [self frameRect:explanation inView:self.content];
+            [self updateFocusButton];
+        }
+        return NO;
+    }
+    self.hasManualInspection = NO;
+    self.inspectionAnchor = VTInspectionAnchorAction;
+    if (self.currentStep.kind == ArithmeticTeachingStepKindRegroup) [self frameCurrentTransformation];
+    else [self frameRect:action inView:self.board];
+    CGRect visible = [self.scroll convertRect:self.unobscuredViewport toView:self.board];
+    if ([self.board playCurrentActionInVisibleRect:visible]) {
+        [self updateFocusButton];
+        return YES;
+    }
+    // Never start a partially visible action. Everything remains inspectable.
+    self.playbackNotice.text = @"畫面放不下完整動作，先停在這一步。\n直拿手機後按「重看」，或用上方按鈕慢慢看。";
+    if (!self.playbackNotice.superview) [self.content insertArrangedSubview:self.playbackNotice
+        atIndex:[self.content.arrangedSubviews indexOfObject:self.board]];
+    self.inspectionAnchor = VTInspectionAnchorNotice;
+    [self.view layoutIfNeeded];
+    [self frameRect:self.playbackNotice.bounds inView:self.playbackNotice];
+    [self updateFocusButton];
+    return NO;
+}
+- (void)framePredictionChoices {
+    CGRect choices = [self.choices convertRect:self.choices.bounds toView:self.content];
+    CGRect prompt = [self.prompt convertRect:self.prompt.bounds toView:self.content];
+    CGRect combined = CGRectUnion(choices, prompt);
+    [self frameRect:combined.size.height <= self.unobscuredViewport.size.height ? combined : choices inView:self.content];
+}
+- (void)framePredictionFeedback {
+    CGRect feedback = [self.choiceFeedback convertRect:self.choiceFeedback.bounds toView:self.content];
+    CGRect choices = [self.choices convertRect:self.choices.bounds toView:self.content];
+    CGRect combined = CGRectUnion(choices, feedback);
+    [self frameRect:combined.size.height <= self.unobscuredViewport.size.height ? combined : feedback inView:self.content];
+}
+- (NSString *)unitForColumn:(NSInteger)column {
+    NSInteger place = self.sequence.columnCount - 1 - column;
+    return place >= 0 && place < 5 ? @[@"一", @"十", @"百", @"千", @"萬"][place] : @"";
+}
+- (NSString *)placeForColumn:(NSInteger)column {
+    NSInteger place = self.sequence.columnCount - 1 - column;
+    return place >= 0 && place < 5 ? @[@"個位", @"十位", @"百位", @"千位", @"萬位"][place] : @"";
+}
+- (NSString *)feedbackForSelection:(NSNumber *)selection answered:(BOOL)answered {
+    if (!selection) return @"可以先想想，也可以直接看示範。";
+    ArithmeticTeachingStep *step = self.currentStep;
+    NSInteger column = step.activeColumn;
+    NSString *unit = [self unitForColumn:column];
+    NSString *detail;
+    ArithmeticTeachingStep *next = self.stepIndex + 1 < self.sequence.steps.count ? self.sequence.steps[self.stepIndex + 1] : nil;
+    if (next.kind == ArithmeticTeachingStepKindRegroup && next) {
+        NSString *sourceUnit = [self unitForColumn:next.sourceColumn];
+        NSString *comparison = answered ? @"" : [NSString stringWithFormat:@"，比 1 個%@%@", sourceUnit,
+            selection.integerValue < step.expectedAnswer.integerValue ? @"少" : @"多"];
+        detail = [NSString stringWithFormat:@"你選 %@ 個%@%@。1 個%@ = 10 個%@，數量不變。", selection, unit, comparison, sourceUnit, unit];
+    } else if ([self.sequence.problem.operatorSymbol isEqualToString:@"+"]) {
+        NSInteger first = step.firstDigits[column].integerValue;
+        NSInteger second = step.secondDigits[column].integerValue;
+        NSInteger carry = step.carryDigits[column].integerValue;
+        NSString *expression = carry > 0 ? [NSString stringWithFormat:@"%ld + %ld + %ld", (long)first, (long)second, (long)carry]
+            : [NSString stringWithFormat:@"%ld + %ld", (long)first, (long)second];
+        detail = answered ? [NSString stringWithFormat:@"%@ = %@ 個%@。", expression, selection, unit]
+            : [NSString stringWithFormat:@"你選 %@ 個%@。再看%@的 %@ 個%@，把這些數量合起來。", selection, unit, [self placeForColumn:column], expression, unit];
+    } else {
+        NSInteger first = step.workingDigits[column].integerValue;
+        NSInteger second = step.secondDigits[column].integerValue;
+        detail = answered ? [NSString stringWithFormat:@"%ld − %ld = %@ 個%@。", (long)first, (long)second, selection, unit]
+            : [NSString stringWithFormat:@"你選 %@ 個%@。%@有 %ld 個%@，拿走 %ld 個%@，再數剩下的。", selection, unit, [self placeForColumn:column], (long)first, unit, (long)second, unit];
+    }
+    return [detail stringByAppendingString:answered ? @"準備好再看下一步。" : @"可按「看數量」再想想，不計分。"];
 }
 - (NSArray<NSNumber *> *)choiceValuesForStep:(ArithmeticTeachingStep *)step {
     NSInteger answer = step.expectedAnswer.integerValue;
@@ -303,12 +444,11 @@
         button.layer.borderWidth = correctChosen || tried ? 2 : 0;
         button.layer.borderColor = ChildUI.brownText.CGColor;
         button.backgroundColor = correctChosen ? ChildUI.mintGreen : tried ? ChildUI.wrongPink : ChildUI.eggYolk;
-        button.accessibilityValue = correctChosen ? @"對，想通這一步了" : tried ? @"再想一想" : @"還沒選擇";
+        button.accessibilityValue = correctChosen ? @"和這一步的數量相同" : tried ? @"再想一想" : @"還沒選擇";
         [button setTitle:[NSString stringWithFormat:@"%@%ld", correctChosen ? @"✓ " : tried ? @"↻ " : @"", (long)button.tag]
             forState:UIControlStateNormal];
     }
-    self.choiceFeedback.text = answered ? @"對！準備好了，就看看下一小步。"
-        : attempts.count ? @"再看看這一位，也可以先看示範。這裡不計分。" : @"可以先想想，也可以直接看示範。";
+    self.choiceFeedback.text = [self feedbackForSelection:self.lastAttemptedValues[@(self.stepIndex)] answered:answered];
 }
 - (void)choosePrediction:(UIButton *)button {
     ArithmeticTeachingStep *step = self.currentStep;
@@ -318,13 +458,19 @@
     NSMutableSet<NSNumber *> *attempts = self.attemptedValues[key];
     if (!attempts) self.attemptedValues[key] = attempts = [NSMutableSet set];
     [attempts addObject:@(button.tag)];
+    self.lastAttemptedValues[key] = @(button.tag);
     if (button.tag == step.expectedAnswer.integerValue) {
         [self.answeredSteps addIndex:self.stepIndex];
         [SoundManager.sharedInstance play:SoundEffectCorrect];
         [self.nextButton setTitle:@"下一小步" forState:UIControlStateNormal];
     }
     [self updatePredictionFeedback];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.choiceFeedback.text);
+    self.inspectionAnchor = VTInspectionAnchorFeedback;
+    self.hasManualInspection = NO;
+    [self updateFocusButton];
+    [self.view layoutIfNeeded];
+    [self framePredictionFeedback];
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, self.choiceFeedback);
 }
 - (void)next {
     if (!self.sequence.isValid || self.stepIndex + 1 >= self.sequence.steps.count) { [self close]; return; }
@@ -338,14 +484,29 @@
 }
 - (void)replay {
     [SpeechManager.sharedInstance stop];
-    // Keep the part the child chose to inspect in view. Jumping to the heading
-    // here hides the exchange on compact-height and large-text screens.
-    [self.board showStepAtIndex:self.stepIndex animated:YES];
-    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, self.board);
+    // Replay recovers semantic focus, not an obsolete numerical offset.
+    [self.playbackNotice removeFromSuperview];
+    [self.board showStepAtIndex:self.stepIndex animated:NO];
+    [self.view layoutIfNeeded];
+    [self updateBoardHeight];
+    [self.view layoutIfNeeded];
+    BOOL focused = [self playCurrentAction];
+    if (!focused && self.currentStep.kind == ArithmeticTeachingStepKindPrediction) {
+        self.inspectionAnchor = VTInspectionAnchorChoices;
+        [self framePredictionChoices];
+        [self updateFocusButton];
+    }
+    id focus = self.playbackNotice.superview ? self.playbackNotice
+        : self.currentStep.kind == ArithmeticTeachingStepKindRegroup ? self.board.accessibilityElements.lastObject
+        : self.currentStep.kind == ArithmeticTeachingStepKindPrediction ? self.prompt
+        : !focused && self.currentStep.kind == ArithmeticTeachingStepKindWriteAnswer ? self.heading
+        : self.board.accessibilityElements.firstObject;
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, focus);
 }
 - (void)restart {
     [self.answeredSteps removeAllIndexes];
     [self.attemptedValues removeAllObjects];
+    [self.lastAttemptedValues removeAllObjects];
     self.stepIndex = 0;
     [self showCurrentStepAnimated:NO];
 }
@@ -370,6 +531,32 @@
     [self updateBoardHeight];
     BOOL largeText = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
     self.choices.axis = largeText ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
+    if (!CGSizeEqualToSize(self.lastViewportSize, self.scroll.bounds.size)) {
+        self.lastViewportSize = self.scroll.bounds.size;
+        self.needsSemanticReframe = YES;
+        [self.board cancelAnimations];
+    }
+    // Wait for final board height; rotation never starts another playback.
+    if (self.needsSemanticReframe && !self.framingContent && fabs(self.board.bounds.size.height - self.boardHeight.constant) < 0.5) {
+        self.needsSemanticReframe = NO;
+        [self.board layoutIfNeeded];
+        if (!self.hasManualInspection) {
+            if (self.inspectionAnchor == VTInspectionAnchorAction) [self frameCurrentTransformation];
+            else if (self.inspectionAnchor == VTInspectionAnchorFeedback) [self framePredictionFeedback];
+            else if (self.inspectionAnchor == VTInspectionAnchorChoices) [self framePredictionChoices];
+            else if (self.inspectionAnchor == VTInspectionAnchorWritten) [self frameRect:self.board.currentWrittenRect inView:self.board];
+            else if (self.inspectionAnchor == VTInspectionAnchorNotice) [self frameRect:self.playbackNotice.bounds inView:self.playbackNotice];
+        }
+    }
+    // Wrapping can displace an action without changing the viewport size.
+    if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) [self.board cancelAnimations];
+}
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    self.hasManualInspection = YES;
+    [self pausePlayback];
+}
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (self.board.isPlaying && ![self viewportContainsBoardRect:self.board.currentPlaybackRect]) [self.board cancelAnimations];
 }
 - (void)updateBoardHeight {
     CGFloat width = self.board.bounds.size.width;

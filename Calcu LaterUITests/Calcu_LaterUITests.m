@@ -369,6 +369,30 @@
     XCTestExpectation *ready = [self expectationForPredicate:settled evaluatedWithObject:board handler:nil];
     [self waitForExpectations:@[ready] timeout:3];
 }
+- (void)finishFocusedSharingRound {
+    // Recipient subactions are explicit child choices, not a completed round.
+    for (NSUInteger recipient = 0; recipient < 9 && [self.app.buttons[@"grouping.next"].label isEqualToString:@"下一位"]; recipient++) [self.app.buttons[@"grouping.next"] tap];
+    XCTAssertNotEqualObjects(self.app.buttons[@"grouping.next"].label, @"下一位");
+}
+- (void)previousOriginalGroupingStep {
+    NSString *original = self.app.staticTexts[@"grouping.progress"].label;
+    for (NSUInteger recipient = 0; recipient < 10; recipient++) {
+        [self.app.buttons[@"grouping.previous"] tap];
+        if (![self.app.staticTexts[@"grouping.progress"].label isEqualToString:original]) return;
+    }
+    XCTFail(@"Previous must leave the bounded recipient subactions without changing the original lesson.");
+}
+- (void)waitForVisibleGroupingActionNaturalEnd {
+    NSString *value = self.groupingBoardValue;
+    XCTAssertTrue([value containsString:@"播放狀態："],
+        @"A division action must expose its renderer lifecycle before completion can be accepted.");
+    NSUInteger transfers = [value containsString:@" / "] ? 1 : 4; // These story fixtures are23÷4.
+    NSTimeInterval declaredActionDuration = 0.28 + 0.82 * transfers + 0.24;
+    NSPredicate *completed = [NSPredicate predicateWithFormat:@"value ENDSWITH %@", @"。播放完成。播放狀態：completed"];
+    XCTestExpectation *ready = [self expectationForPredicate:completed evaluatedWithObject:[self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"] handler:nil];
+    [self waitForExpectations:@[ready] timeout:declaredActionDuration + 1.0];
+    // The existing separate quantity/model wait remains at3seconds, unchanged.
+}
 - (void)frameBoardForInspection:(XCUIElement *)board in:(XCUIElement *)content {
     for (NSUInteger attempt = 0; attempt < 8; attempt++) {
         CGRect before = board.frame, viewport = content.frame;
@@ -413,11 +437,13 @@
         [self addAttachment:trace];
     }
 }
-- (void)inspectGroupingBoard {
+- (void)inspectGroupingBoardExpectingFocusedAction:(BOOL)expectsFocusedAction {
     XCUIElement *board = [self.app descendantsMatchingType:XCUIElementTypeAny][@"groupingTeachingBoard"];
     XCUIElement *content = self.app.scrollViews[@"grouping.content"];
     XCTAssertTrue(board.exists);
     XCTAssertTrue(content.exists);
+    if (expectsFocusedAction) XCTAssertTrue([self.groupingBoardValue containsString:@"播放狀態："],
+        @"This selected division transfer must use the visible action renderer, not a static overview.");
     CGRect viewport = content.frame;
     CGRect boardFrame = board.frame;
     XCTAssertTrue(isfinite(viewport.origin.x) && isfinite(viewport.origin.y)
@@ -438,6 +464,11 @@
     XCTAssertLessThanOrEqual(CGRectGetMaxX(board.frame), CGRectGetMaxX(content.frame) + 1);
     XCTAssertGreaterThanOrEqual(CGRectGetMinX(board.frame), CGRectGetMinX(content.frame) - 1);
     [self.app.buttons[@"grouping.replay"] tap];
+    // Remainder and multiplication snapshots legitimately use the overview.
+    // The explicit division-action requirement survives Replay, so a lost mode
+    // marker cannot silently take that separate static route.
+    if (expectsFocusedAction || [self.groupingBoardValue containsString:@"播放狀態："])
+        [self waitForVisibleGroupingActionNaturalEnd];
 }
 - (void)testSharedRemainderLeavesOneCommonPool {
     [self openGroupingStory:@"sharing"];
@@ -454,24 +485,27 @@
     XCTAssertFalse(choice.enabled);
     XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, progress);
     [self.app.buttons[@"grouping.next"] tap];
+    [self finishFocusedSharingRound];
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"這一輪共分出 4 顆"]);
-    [self inspectGroupingBoard];
+    [self inspectGroupingBoardExpectingFocusedAction:YES];
     [self waitForGroupingValue:@"第 4 個小朋友有 1 顆"];
     XCTAssertTrue([self.groupingBoardValue containsString:@"第 4 個小朋友有 1 顆"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"待分的糖果：19 顆"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"答案還沒寫"]);
     [self capture:@"31-sharing-one-each"];
-    [self.app.buttons[@"grouping.previous"] tap];
+    [self previousOriginalGroupingStep];
     XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, progress);
     XCTAssertFalse(self.app.buttons[@"grouping.choice.1"].enabled);
     [self.app.buttons[@"grouping.next"] tap];
-    for (NSUInteger step = 2; step < 11; step++) [self.app.buttons[@"grouping.next"] tap];
+    for (NSUInteger step = 2; step < 11; step++) {
+        [self finishFocusedSharingRound]; [self.app.buttons[@"grouping.next"] tap];
+    }
     XCTAssertTrue([self.app.staticTexts[@"grouping.prompt"].label containsString:@"還能讓每個小朋友再拿 1 顆嗎"]);
     [self.app.buttons[@"grouping.choice.0"] tap];
     XCTAssertEqualObjects([self.app.buttons[@"grouping.choice.0"].value description], @"對，想通這一步了");
     [self.app.buttons[@"grouping.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"不是每個小朋友各剩一份"]);
-    [self inspectGroupingBoard];
+    [self inspectGroupingBoardExpectingFocusedAction:NO];
     XCTAssertTrue([self.groupingBoardValue containsString:@"第 4 個小朋友有 5 顆"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"待分的糖果：3 顆"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"答案還沒寫"]);
@@ -496,7 +530,7 @@
     [self.app.buttons[@"grouping.next"] tap];
     [self.app.buttons[@"grouping.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"拿出糖果 4 顆"]);
-    [self inspectGroupingBoard];
+    [self inspectGroupingBoardExpectingFocusedAction:YES];
     [self waitForGroupingValue:@"第 1 包有 4 顆"];
     XCTAssertTrue([self.groupingBoardValue containsString:@"已分成 1 包"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"第 1 包有 4 顆"]);
@@ -505,7 +539,7 @@
     [self capture:@"35-packing-first-complete-bag"];
     for (NSUInteger step = 2; step < 12; step++) [self.app.buttons[@"grouping.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"不是完整的包"]);
-    [self inspectGroupingBoard];
+    [self inspectGroupingBoardExpectingFocusedAction:NO];
     XCTAssertTrue([self.groupingBoardValue containsString:@"已分成 5 包"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"第 5 包有 4 顆"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"待分組的糖果：3 顆"]);
@@ -529,7 +563,7 @@
     XCTAssertTrue(self.app.buttons[@"grouping.choice.3"].hittable);
     [self.app.buttons[@"grouping.choice.3"] tap];
     [self.app.buttons[@"grouping.next"] tap];
-    [self inspectGroupingBoard];
+    [self inspectGroupingBoardExpectingFocusedAction:NO];
     [self waitForGroupingValue:@"第 1 包有 3 顆"];
     XCTAssertTrue([self.groupingBoardValue containsString:@"已建立 1 包"]);
     XCTAssertTrue([self.groupingBoardValue containsString:@"還有 3 包尚未建立"]);
@@ -537,7 +571,7 @@
     [self capture:@"38-multiplication-one-group"];
     for (NSUInteger step = 2; step < 9; step++) [self.app.buttons[@"grouping.next"] tap];
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"一共有 12 顆"]);
-    [self inspectGroupingBoard];
+    [self inspectGroupingBoardExpectingFocusedAction:NO];
     [self capture:@"39-multiplication-total-written"];
     [self.app.buttons[@"explanation.close"] tap];
     XCTAssertTrue(self.app.buttons[@"answer.0"].enabled);
@@ -610,6 +644,7 @@
     [self waitForExpectations:@[completed] timeout:8];
     XCTAssertEqualObjects([progress.value description], expected);
     XCTAssertEqual([self tenFramePlaybackGeneration], previous + 1);
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
 }
 - (void)inspectTenFrameStage {
     XCUIElement *stage = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"];
@@ -632,23 +667,36 @@
     XCTAssertLessThanOrEqual(CGRectGetMaxX(stage.frame), CGRectGetMaxX(scroll.frame));
     // Reconstruct the move only after the diagram is framed in retained video.
     [self.app.buttons[@"lessonIntro.replay"] tap];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
 }
-- (void)assertTenFrameFirstPlayFramingWhenWholeStageFits {
+- (void)assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused {
     XCUIElement *stage = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"];
     XCUIElement *scroll = self.app.scrollViews[@"lessonIntro.content"];
     XCTAssertTrue(stage.exists && scroll.exists);
-    CGRect diagram = stage.frame, viewport = scroll.frame;
+    // The stage's live VoiceOver focus frame is the actual required causal
+    // region: before/after counters, both frames, count labels and entire route.
+    // It is not a Boolean test hook or the model's completion claim.
+    CGRect diagram = stage.frame, viewport = scroll.frame, window = self.app.windows.firstMatch.frame;
     XCTAssertTrue(isfinite(diagram.origin.y) && isfinite(diagram.size.height)
         && isfinite(viewport.origin.y) && isfinite(viewport.size.height));
     XCTAssertGreaterThan(diagram.size.height, 100);
     XCTAssertGreaterThan(viewport.size.height, 44);
-    // Check the untouched new-step position, before any reveal gesture or Replay.
-    // Shorter viewports still need separate native inspection of both endpoints.
-    if (diagram.size.height + 8 <= viewport.size.height) {
-        XCTAssertGreaterThanOrEqual(CGRectGetMinY(diagram), CGRectGetMinY(viewport) - 4);
-        XCTAssertLessThanOrEqual(CGRectGetMaxY(diagram), CGRectGetMaxY(viewport) + 4);
+    NSString *state = [self.app.staticTexts[@"lessonIntro.progress"].value description];
+    if ([state containsString:@"點點圖未完整顯示，先看圖再重播"]) {
+        XCUIElement *instruction = self.app.staticTexts[@"lessonIntro.visibilityInstruction"];
+        XCTAssertTrue(instruction.exists && instruction.hittable);
+        XCTAssertTrue(self.app.buttons[@"lessonIntro.replay"].hittable);
+        XCTAssertFalse([state containsString:@"動態播放中"] || [state containsString:@"動態播放完成"]);
+        XCTAssertFalse(CGRectIntersectsRect(instruction.frame, viewport));
+        XCTAssertTrue(CGRectContainsRect(window, instruction.frame));
+    } else {
+        // No conditional skip when the stage is taller than the viewport.
+        // A playing/completed scene must be completely visible now.
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -0.5, -0.5), diagram));
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(window, -0.5, -0.5), diagram));
     }
 }
+
 - (void)assertTenFrameReturnedToUnansweredQuestion:(NSString *)question {
     XCUIElement *label = self.app.staticTexts[@"lesson.problem"];
     XCTAssertTrue([label waitForExistenceWithTimeout:5]);
@@ -666,7 +714,7 @@
     XCTAssertFalse(self.app.buttons[@"lessonIntro.previous"].enabled);
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 2 個，第二框 9 個"]);
-    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
     [self capture:@"41a-make-ten-incoming-first-play-before-inspection"];
     [self inspectTenFrameStage];
     [self capture:@"41-make-ten-all-nine-incoming-dots"];
@@ -677,7 +725,7 @@
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     NSString *progress = self.app.staticTexts[@"lessonIntro.progress"].label;
-    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
     [self capture:@"43a-make-ten-transfer-first-play-before-inspection"];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeFirstTransfer step:3];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
@@ -731,6 +779,15 @@
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
     [self capture:@"44-make-ten-rotation-preserves-selected-step"];
+    // Explicit landscape Replay must recover the historical onscreen-button /
+    // clipped-diagram path without a helper scroll. Rotation itself stays quiet.
+    NSUInteger beforeLandscapeReplay = [self tenFramePlaybackGeneration];
+    [self.app.buttons[@"lessonIntro.replay"] tap];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeLandscapeReplay step:3];
+    XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"44a-make-ten-landscape-replay-naturally-completed"];
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
     NSPredicate *portrait = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
         XCUIElement *window = object;
@@ -753,7 +810,7 @@
     [self capture:@"45a-break-ten-initial-before-inspection"];
     // Initial presentation, not only Next, must show both original quantities
     // when the complete stage fits. Inspect/Replay may not repair this assertion.
-    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
     [self inspectTenFrameStage];
     [self capture:@"45-break-ten-ten-and-eight-original-ones"];
     [self.app.buttons[@"lessonIntro.next"] tap];
@@ -761,7 +818,7 @@
     [self capture:@"46-break-ten-cross-nine-only-from-ten"];
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 1 個，第二框 8 個"]);
-    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
     [self capture:@"47a-break-ten-removal-first-play-before-inspection"];
     [self.app.buttons[@"lessonIntro.previous"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個；劃掉 9 個"]);
@@ -793,7 +850,7 @@
     [self capture:@"48a-make-ten-select-one-leave-eight-in-original-slots"];
     NSUInteger beforeTransfer = [self tenFramePlaybackGeneration];
     [self.app.buttons[@"lessonIntro.next"] tap];
-    [self assertTenFrameFirstPlayFramingWhenWholeStageFits];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
     [self capture:@"48b-make-ten-one-transfer-first-play-before-inspection"];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeTransfer step:3];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
@@ -805,6 +862,15 @@
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
     [self capture:@"48d-make-ten-one-transfer-replay-naturally-completed"];
+    [self.app.buttons[@"lessonIntro.previous"] tap];
+    XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 9 個，第二框 9 個"]);
+    NSUInteger beforeBackNext = [self tenFramePlaybackGeneration];
+    [self.app.buttons[@"lessonIntro.next"] tap];
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeBackNext step:3];
+    XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 8 個"]);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"48e-make-ten-one-transfer-back-next-eight-original-remainders"];
     [self.app.buttons[@"explanation.vertical"] tap];
     XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
     XCUIElement *vertical = [self.app descendantsMatchingType:XCUIElementTypeAny][@"teaching.screen"];

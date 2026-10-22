@@ -10,6 +10,9 @@ typedef NS_ENUM(NSInteger, LessonIntroPlaybackState) {
     LessonIntroPlaybackStateCompleted,
     LessonIntroPlaybackStateCancelled,
     LessonIntroPlaybackStateReducedMotion,
+    /// The complete action is clipped. Static inspection is available; only a
+    /// later explicit Next/Replay may reframe and start another generation.
+    LessonIntroPlaybackStateVisibilityPaused,
 };
 
 @protocol LessonIntroViewDelegate <NSObject>
@@ -28,7 +31,7 @@ typedef NS_ENUM(NSInteger, LessonIntroPlaybackState) {
 /// Describes the latest requested playback, not the synchronous model-layer
 /// endpoint. Every Next/Replay playback has a new generation and captured step.
 /// Only the matching animator's natural .end is Completed. A static settlement
-/// after interruption is Cancelled (or ReducedMotion), never Completed.
+/// after interruption is Cancelled, VisibilityPaused or ReducedMotion, never Completed.
 @property (nonatomic, readonly) LessonIntroPlaybackState playbackState;
 @property (nonatomic, readonly) NSUInteger playbackGeneration;
 @property (nonatomic, readonly) NSInteger playbackStepIndex;
@@ -48,6 +51,9 @@ typedef NS_ENUM(NSInteger, LessonIntroPlaybackState) {
 - (void)goToPreviousStep;
 - (void)goToNextStep;
 /// Reconstructs this step's own before-state, without restarting the lesson.
+/// Keeps an already visible scene at the exact chosen offset. If clipped, this
+/// explicit action may minimally frame the complete scene; an impossible fit
+/// stays static with an instruction, never running a hidden demonstration.
 - (void)replayCurrentStep;
 
 /// Cancels motion and speech and settles the selected state, never a future

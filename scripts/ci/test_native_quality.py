@@ -7,6 +7,7 @@ from contextlib import nullcontext
 import copy
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -418,17 +419,98 @@ class SourceInventoryTests(unittest.TestCase):
 
 
 class RepositorySelectionTests(unittest.TestCase):
+    EXPECTED_COUNTS = {
+        "components": 329, "standard": 15, "compact": 9, "tablet": 9, "maximumAccessibilityText": 9,
+        "focusedGroupingCompact": 4, "focusedGroupingMaximumText": 4,
+        "conceptCore": 3, "conceptDivision": 1,
+        "conceptCoreMaximumText": 3, "conceptDivisionMaximumText": 1,
+        "reducedMotion": 1,
+    }
+
     def test_current_source_filters_round_trip_generated_schema_not_native_execution(self):
+        self.assertEqual(set(quality.SCENARIOS), set(self.EXPECTED_COUNTS))
         for name, scenario in quality.SCENARIOS.items():
             with self.subTest(scenario=name):
                 required = quality.required_test_inventory(scenario["onlyTesting"])
-                self.assertEqual(len(required), 260 if name == "standard" else 8)
-                self.assertEqual(set(required.values()), set(quality.TEST_BUNDLE_TYPES)
-                                 if name == "standard" else {"Calcu LaterUITests"})
+                self.assertEqual(len(required), self.EXPECTED_COUNTS[name])
+                self.assertEqual(set(required.values()), {"Calcu LaterTests"}
+                                 if name == "components" else {"Calcu LaterUITests"})
                 data = generated_tree(required)
                 result = quality.structured_execution_report(json.dumps(data), required, data["devices"][0])
                 self.assertEqual(result["status"], "verified")
                 self.assertEqual(len(result["observedTests"]), len(required))
+
+    def test_all_source_methods_are_selected_except_the_unchanged_launch_boilerplate(self):
+        all_source = quality.required_test_inventory(list(quality.TEST_BUNDLE_TYPES))
+        selected = set()
+        for scenario in quality.SCENARIOS.values():
+            selected.update(quality.required_test_inventory(scenario["onlyTesting"]))
+        # The original acceptance deliberately excludes repetitive launch-only
+        # boilerplate, not any teaching, layout, model or user-navigation method.
+        excluded = {"Calcu_LaterUITestsLaunchTests/testLaunch"}
+        self.assertTrue(excluded.issubset(all_source))
+        self.assertEqual(selected, set(all_source) - excluded)
+        self.assertEqual(len(selected), 359)
+        self.assertEqual(sum(self.EXPECTED_COUNTS.values()), 388)
+
+    def test_preserved_baseline_and_new_ui_classes_have_exact_selection_coverage(self):
+        standard = quality.required_test_inventory(quality.SCENARIOS["standard"]["onlyTesting"])
+        components = quality.required_test_inventory(quality.SCENARIOS["components"]["onlyTesting"])
+        self.assertFalse(set(components).intersection(standard))
+        self.assertEqual(components, quality.required_test_inventory(["Calcu LaterTests"]))
+        self.assertEqual(standard, quality.required_test_inventory([
+            "Calcu LaterUITests/Calcu_LaterUITests"]))
+        self.assertEqual(dict(components, **standard), quality.required_test_inventory([
+            "Calcu LaterTests", "Calcu LaterUITests/Calcu_LaterUITests"]))
+        layout = quality.required_test_inventory([
+            "Calcu LaterUITests/Calcu_LaterLayoutUITests"] + quality.TEN_FRAME_TESTS)
+        for name in ("compact", "tablet", "maximumAccessibilityText"):
+            self.assertEqual(quality.required_test_inventory(quality.SCENARIOS[name]["onlyTesting"]), layout)
+        grouping = quality.required_test_inventory(["Calcu LaterUITests/GroupingFocusedActionUITests"])
+        for name in ("focusedGroupingCompact", "focusedGroupingMaximumText"):
+            self.assertEqual(quality.required_test_inventory(quality.SCENARIOS[name]["onlyTesting"]), grouping)
+        concept = quality.required_test_inventory(["Calcu LaterUITests/ConceptDiscoveryUITests"])
+        for suffix in ("", "MaximumText"):
+            core = quality.required_test_inventory(quality.SCENARIOS["conceptCore" + suffix]["onlyTesting"])
+            division = quality.required_test_inventory(quality.SCENARIOS["conceptDivision" + suffix]["onlyTesting"])
+            self.assertFalse(set(core).intersection(division))
+            self.assertEqual(dict(core, **division), concept)
+
+    def test_real_reduce_motion_is_selected_only_on_its_owned_settings_lane(self):
+        expected = quality.required_test_inventory(["Calcu LaterUITests/ReducedMotionTeachingUITests"])
+        for name, scenario in quality.SCENARIOS.items():
+            selected = quality.required_test_inventory(scenario["onlyTesting"])
+            if name == "reducedMotion":
+                self.assertEqual(selected, expected)
+                self.assertEqual(scenario["contentSize"], "large")
+                intent = scenario["systemSettingsIntent"]["reduceMotion"]
+                self.assertEqual(intent["mechanism"], "Settings UI")
+                self.assertEqual(intent["requested"], "on")
+                self.assertNotIn("verified", intent)
+            else:
+                self.assertFalse(set(selected).intersection(expected))
+                self.assertNotIn("systemSettingsIntent", scenario)
+
+    def test_workflow_matches_reviewed_devices_and_does_not_expand_runner_bounds(self):
+        workflow = (quality.ROOT / ".github/workflows/ios-quality.yml").read_text()
+        pairs = re.findall(r"^          - scenario: (\w+)\n            device_type: ([\w.-]+)$", workflow, re.MULTILINE)
+        self.assertEqual(len(pairs), len(quality.SCENARIOS))
+        self.assertEqual(dict(pairs), {name: value["deviceType"] for name, value in quality.SCENARIOS.items()})
+        self.assertIn("max-parallel: 2", workflow)
+        self.assertIn("timeout-minutes: 35", workflow)
+        self.assertIn("runs-on: macos-15", workflow)
+        self.assertIn("if: github.event.repository.private == false", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertEqual(quality.TEST_TIMEOUT, 900)
+        maximum = {"maximumAccessibilityText", "focusedGroupingMaximumText",
+                   "conceptCoreMaximumText", "conceptDivisionMaximumText"}
+        compact = {"compact", "focusedGroupingCompact"}
+        for name, scenario in quality.SCENARIOS.items():
+            self.assertEqual(scenario["contentSize"],
+                             "accessibility-extra-extra-extra-large" if name in maximum else "large")
+            device = ("iPhone-SE-3rd-generation" if name in compact
+                      else "iPad-10th-generation" if name in {"tablet", "components"} else "iPhone-16")
+            self.assertEqual(scenario["deviceType"], "com.apple.CoreSimulator.SimDeviceType." + device)
 
 
 if __name__ == "__main__":

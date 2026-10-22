@@ -6,6 +6,22 @@
 @interface VerticalTeachingViewController (ViewportTesting)
 - (BOOL)frameCurrentTransformation;
 - (void)replay;
+- (BOOL)playCurrentAction;
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView;
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView;
+@end
+
+// Keep synthetic geometry isolated from viewDidLoad's real sheet constraints.
+@interface VTViewportController : VerticalTeachingViewController
+@end
+@implementation VTViewportController
+- (void)loadView { self.view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 1000)]; }
+- (void)viewDidLoad {}
+@end
+@interface VTViewportBoard : VerticalArithmeticBoardView
+@end
+@implementation VTViewportBoard
+- (BOOL)canAnimate { return YES; }
 @end
 
 @interface VerticalTeachingViewportTests : XCTestCase
@@ -21,7 +37,8 @@
 - (void)setUp {
     [super setUp];
     ArithmeticProblem *problem = [[ArithmeticProblem alloc] initWithNumber1:500 number2:128 operator:@"-" answer:372];
-    self.controller = [[VerticalTeachingViewController alloc] initWithProblem:problem wordProblem:nil];
+    self.controller = [[VTViewportController alloc] initWithProblem:problem wordProblem:nil];
+    [self.controller loadViewIfNeeded];
     self.sequence = [self.controller valueForKey:@"sequence"];
     self.regroupIndex = [self.sequence.steps indexOfObjectPassingTest:^BOOL(ArithmeticTeachingStep *step, NSUInteger index, BOOL *stop) {
         return step.kind == ArithmeticTeachingStepKindRegroup;
@@ -34,8 +51,9 @@
     self.scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 320, 400)];
     self.scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     self.scroll.contentSize = CGSizeMake(320, 2400);
-    self.board = [[VerticalArithmeticBoardView alloc] initWithFrame:CGRectMake(16, 640, 288, 500)];
+    self.board = [[VTViewportBoard alloc] initWithFrame:CGRectMake(16, 640, 288, 500)];
     [self.scroll addSubview:self.board];
+    [self.controller.view addSubview:self.scroll];
     [self.controller setValue:self.scroll forKey:@"scroll"];
     [self.controller setValue:self.board forKey:@"board"];
     [self selectStep:self.regroupIndex];
@@ -119,20 +137,70 @@
     XCTAssertFalse([self.controller frameCurrentTransformation]);
 
     XCTAssertTrue(CGPointEqualToPoint(self.scroll.contentOffset, inspection));
-}
-
-- (void)testReplayPreservesTheChosenInspectionOffsetAndStep {
-    [self setViewportHeight:self.board.currentConcreteTransformationRect.size.height + 32];
-    CGPoint inspection = CGPointMake(0, 140);
-    [self.scroll setContentOffset:inspection animated:NO];
-    XCTAssertFalse([self viewportContainsBoardRect:self.board.currentConcreteTransformationRect]);
-
+    NSString *snapshot = self.board.accessibilityValue;
     [self.controller replay];
-
-    XCTAssertTrue(CGPointEqualToPoint(self.scroll.contentOffset, inspection));
+    XCTAssertTrue(CGPointEqualToPoint(self.scroll.contentOffset, inspection),
+        @"Replay retains an inspection position when the complete causal action already fits.");
     XCTAssertEqual(self.board.currentStepIndex, (NSInteger)self.regroupIndex);
     XCTAssertEqualObjects([self.controller valueForKey:@"currentStep"], self.board.currentStep);
+    XCTAssertEqualObjects(self.board.accessibilityValue, snapshot);
+}
+
+- (void)testReplayRecoversTheEntireConcreteExchangeWithoutChangingTheStep {
+    [self setViewportHeight:self.board.currentConcreteTransformationRect.size.height + 32];
+    [self.scroll setContentOffset:CGPointMake(0, 140) animated:NO];
+    XCTAssertFalse([self viewportContainsBoardRect:self.board.currentConcreteTransformationRect]);
+    NSString *snapshot = self.board.accessibilityValue;
+    // Replaces the old unchanged-offset assertion: an offset that hides counters
+    // is not successful Replay. Require semantic containment and real playback.
+    [self.controller replay];
+    XCTAssertTrue([self viewportContainsBoardRect:self.board.currentConcreteTransformationRect]);
+    XCTAssertTrue(self.board.isPlaying);
+    XCTAssertFalse([[self.board valueForKey:@"playsWrittenExchange"] boolValue]);
+    XCTAssertEqual(self.board.currentStepIndex, (NSInteger)self.regroupIndex);
+    XCTAssertEqualObjects([self.controller valueForKey:@"currentStep"], self.board.currentStep);
+    XCTAssertFalse(CGRectIsNull(self.board.currentConcreteTransformationRect));
     XCTAssertFalse(CGRectIsEmpty(self.board.currentConcreteTransformationRect));
+    XCTAssertEqualObjects(self.board.accessibilityValue, snapshot);
+    XCTAssertTrue([snapshot containsString:@"答案還沒寫"]);
+}
+- (void)testReplayAfterPortraitToLandscapeResizeFramesCurrentActionBeforePlaying {
+    [self setViewportHeight:self.board.currentTransformationRect.size.height + 48];
+    [self.controller replay];
+    XCTAssertTrue([self viewportContainsBoardRect:self.board.currentTransformationRect]);
+    XCTAssertTrue([[self.board valueForKey:@"playsWrittenExchange"] boolValue]);
+    NSString *snapshot = self.board.accessibilityValue;
+    [self setViewportHeight:self.board.currentConcreteTransformationRect.size.height + 32];
+    [self.controller replay];
+    XCTAssertTrue([self viewportContainsBoardRect:self.board.currentConcreteTransformationRect]);
+    XCTAssertFalse([[self.board valueForKey:@"playsWrittenExchange"] boolValue]);
+    XCTAssertTrue(self.board.isPlaying);
+    XCTAssertEqualObjects(self.board.accessibilityValue, snapshot);
+    XCTAssertEqual(self.board.currentStepIndex, (NSInteger)self.regroupIndex);
+}
+- (void)testTooShortViewportDoesNotStartAPartiallyVisibleExchange {
+    [self setViewportHeight:self.board.currentConcreteTransformationRect.size.height - 1];
+    NSString *snapshot = self.board.accessibilityValue;
+    XCTAssertFalse([self.controller playCurrentAction]);
+    XCTAssertFalse([self viewportContainsBoardRect:self.board.currentConcreteTransformationRect]);
+    XCTAssertFalse(self.board.isPlaying);
+    XCTAssertEqual([[self.board valueForKey:@"animatedLayers"] count], 0u);
+    XCTAssertNil([self.board valueForKey:@"animationDisplayLink"]);
+    XCTAssertEqualObjects(self.board.accessibilityValue, snapshot);
+}
+- (void)testManualInspectionOrAProgrammaticLossOfContainmentStopsMotion {
+    [self setViewportHeight:self.board.currentConcreteTransformationRect.size.height + 32];
+    [self.controller replay];
+    XCTAssertTrue(self.board.isPlaying);
+    [self.controller scrollViewWillBeginDragging:self.scroll];
+    XCTAssertFalse(self.board.isPlaying);
+    XCTAssertEqual(self.board.playbackState, VerticalArithmeticPlaybackStateInterrupted);
+    [self.controller replay];
+    XCTAssertTrue(self.board.isPlaying);
+    [self.scroll setContentOffset:CGPointZero animated:NO];
+    [self.controller scrollViewDidScroll:self.scroll];
+    XCTAssertFalse(self.board.isPlaying);
+    XCTAssertEqual(self.board.currentStepIndex, (NSInteger)self.regroupIndex);
 }
 
 - (void)testNonRegroupAndInvalidStepsRefuseToScroll {

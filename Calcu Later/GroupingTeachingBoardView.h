@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 #import "GroupingTeachingSequence.h"
 
+@class GroupingTeachingAction;
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// Renders only the selected immutable grouping snapshot. The owner controls
@@ -19,6 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)configureWithSequence:(nullable GroupingTeachingSequence *)sequence
                    stepIndex:(NSInteger)stepIndex
                     animated:(BOOL)animated;
+/// Static exact selected partial state, never an after-round substitution.
+- (BOOL)configureWithAction:(GroupingTeachingAction *)action;
 - (BOOL)showStepAtIndex:(NSInteger)stepIndex animated:(BOOL)animated;
 
 /// Stops finite motion and restores the selected after-state, never a later one.

@@ -1,4 +1,5 @@
 #import "GroupingTeachingBoardView.h"
+#import "GroupingTeachingAction.h"
 #import "ChildUIKit.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
@@ -75,6 +76,7 @@ typedef NS_ENUM(NSInteger, GBTDisplayPhase) {
 @property (nonatomic, strong) UIView *contentView;
 @property (nonatomic, strong) UILabel *stateLabel;
 @property (nonatomic, strong) UILabel *actionLabel;
+@property (nonatomic, strong) GroupingTeachingAction *selectedAction;
 @property (nonatomic, strong) UIView *sourceView;
 @property (nonatomic, strong) UILabel *sourceLabel;
 @property (nonatomic, strong) UILabel *sourceEmptyLabel;
@@ -148,6 +150,7 @@ typedef NS_ENUM(NSInteger, GBTDisplayPhase) {
 }
 - (BOOL)configureWithSequence:(GroupingTeachingSequence *)sequence stepIndex:(NSInteger)stepIndex animated:(BOOL)animated {
     [self cancelAnimations];
+    self.selectedAction = nil;
     GroupingTeachingStep *step = sequence.isSupported && stepIndex >= 0 && stepIndex < (NSInteger)sequence.steps.count
         ? sequence.steps[stepIndex] : nil;
     if (!step || !sequence.context || ![self countsAreBounded:step.groupCountsBefore] || ![self countsAreBounded:step.groupCountsAfter]
@@ -173,6 +176,13 @@ typedef NS_ENUM(NSInteger, GBTDisplayPhase) {
     [self layoutIfNeeded];
     [self updateStateLabels];
     if (animated && [self canAnimate]) [self animateCurrentAction];
+    return YES;
+}
+- (BOOL)configureWithAction:(GroupingTeachingAction *)action {
+    if (![self configureWithSequence:action.sequence stepIndex:action.stepIndex animated:NO]) return NO;
+    self.selectedAction = action; self.currentStep = action.snapshot;
+    self.needsSnapshotLayout = YES;
+    [self invalidateIntrinsicContentSize]; [self setNeedsLayout]; [self layoutIfNeeded]; [self updateStateLabels];
     return YES;
 }
 - (BOOL)showStepAtIndex:(NSInteger)stepIndex animated:(BOOL)animated {
@@ -220,7 +230,8 @@ typedef NS_ENUM(NSInteger, GBTDisplayPhase) {
         if (phase != GBTDisplayPhaseSettled) unopened += step.groupCountsAfter.count - step.groupCountsBefore.count;
         return [NSString stringWithFormat:@"已建立 %ld %@\n還有 %ld %@尚未建立", (long)groups, context.groupName, (long)unopened, context.groupName];
     }
-    if (self.isShare) return [NSString stringWithFormat:@"平均分給 %ld %@", (long)groups, context.groupName];
+    if (self.isShare && self.selectedAction && !self.selectedAction.isRoundComplete) return [NSString stringWithFormat:@"動作後總覽\n%@\n這輪還沒分完，不是每位都一樣多", self.selectedAction.progressText];
+    if (self.isShare) return [NSString stringWithFormat:@"%@平均分給 %ld %@", self.selectedAction ? @"動作後總覽\n" : @"", (long)groups, context.groupName];
     return [NSString stringWithFormat:@"已分成 %ld %@", (long)groups, context.groupName];
 }
 - (NSString *)actionTextForPhase:(GBTDisplayPhase)phase {
@@ -295,6 +306,10 @@ typedef NS_ENUM(NSInteger, GBTDisplayPhase) {
     NSString *boundedAction = self.isBuild ? [@"建立一" stringByAppendingString:context.groupName]
         : (self.isShare ? [NSString stringWithFormat:@"每%@再分 1 %@", context.groupName, context.itemUnit]
                        : [@"分出一" stringByAppendingString:context.groupName]);
+    if (self.isShare && self.selectedAction) {
+        boundedState = @"動作後總覽\n第 10 輪 · 第 9 / 9 位\n這輪還沒分完，不是每位都一樣多";
+        boundedAction = [NSString stringWithFormat:@"第 9 %@再拿 1 %@", context.groupName, context.itemUnit];
+    }
     NSString *boundedMovingText = [NSString stringWithFormat:@"正在：%@\n移動中：10 %@", boundedAction, context.itemUnit];
     CGFloat h = [self heightForText:self.legendText font:body width:innerWidth];
     layout.legendFrame = CGRectMake(GBTInset, y, innerWidth, h); y += h + 8;

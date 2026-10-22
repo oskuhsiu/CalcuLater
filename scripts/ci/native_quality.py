@@ -41,11 +41,35 @@ TEN_FRAME_TESTS = [
     "Calcu LaterUITests/Calcu_LaterUITests/testTenFrameVerticalComparisonAndSwipeReturnToTheOriginalQuestion",
 ]
 LAYOUT_TESTS = ["Calcu LaterUITests/Calcu_LaterLayoutUITests"] + TEN_FRAME_TESTS
+FOCUSED_GROUPING_TESTS = [
+    "Calcu LaterUITests/GroupingFocusedActionUITests/testSharingFirstPlayReplayAndFourthRecipientStayFullyVisible",
+    "Calcu LaterUITests/GroupingFocusedActionUITests/testPackingFirstAndFifthBagUseOneVisibleSourceToTargetRoute",
+    "Calcu LaterUITests/GroupingFocusedActionUITests/testWrongCountAndContinuationCoachTheChosenQuantityWithoutAdvancing",
+    "Calcu LaterUITests/GroupingFocusedActionUITests/testLandscapePausePreservesSelectionUntilExplicitReplay",
+]
+CONCEPT_CORE_TESTS = [
+    "Calcu LaterUITests/ConceptDiscoveryUITests/testCarryDiscoveryKeepsQuestionsAcrossTeachingBackAndChangedNumbers",
+    "Calcu LaterUITests/ConceptDiscoveryUITests/testBorrowingDirectlyExposesZeroRegrouping",
+    "Calcu LaterUITests/ConceptDiscoveryUITests/testEqualGroupsDiscoveryDoesNotRequireOpeningTheMultiplicationTable",
+]
+CONCEPT_DIVISION_TESTS = [
+    "Calcu LaterUITests/ConceptDiscoveryUITests/testSharingAndPackingKeepDifferentQuestionsForTheSameNumbers",
+]
+REDUCED_MOTION_TESTS = [
+    "Calcu LaterUITests/ReducedMotionTeachingUITests/testSystemReduceMotionPreservesStaticTeachingAndUnansweredQuestions",
+]
 SCENARIOS = {
+    "components": {
+        # Real paused-presentation probes include a 736-point-wide teaching
+        # surface. Use a physically fitting host, never an oversized fake window.
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPad-10th-generation",
+        "contentSize": "large",
+        "onlyTesting": ["Calcu LaterTests"],
+    },
     "standard": {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
         "contentSize": "large",
-        "onlyTesting": ["Calcu LaterTests", "Calcu LaterUITests/Calcu_LaterUITests"],
+        "onlyTesting": ["Calcu LaterUITests/Calcu_LaterUITests"],
     },
     "compact": {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
@@ -61,6 +85,51 @@ SCENARIOS = {
         "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
         "contentSize": "accessibility-extra-extra-extra-large",
         "onlyTesting": LAYOUT_TESTS,
+    },
+    "focusedGroupingCompact": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+        "contentSize": "large",
+        "onlyTesting": FOCUSED_GROUPING_TESTS,
+    },
+    "focusedGroupingMaximumText": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "accessibility-extra-extra-extra-large",
+        "onlyTesting": FOCUSED_GROUPING_TESTS,
+    },
+    "conceptCore": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "large",
+        "onlyTesting": CONCEPT_CORE_TESTS,
+    },
+    "conceptDivision": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "large",
+        "onlyTesting": CONCEPT_DIVISION_TESTS,
+    },
+    "conceptCoreMaximumText": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "accessibility-extra-extra-extra-large",
+        "onlyTesting": CONCEPT_CORE_TESTS,
+    },
+    "conceptDivisionMaximumText": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "accessibility-extra-extra-extra-large",
+        "onlyTesting": CONCEPT_DIVISION_TESTS,
+    },
+    "reducedMotion": {
+        "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "contentSize": "large",
+        "onlyTesting": REDUCED_MOTION_TESTS,
+        # This is intent, not configuration proof. Only the retained Settings
+        # UI readbacks and real renderer states establish the system preference.
+        "systemSettingsIntent": {
+            "reduceMotion": {
+                "requested": "on",
+                "mechanism": "Settings UI",
+                "verification": "exact switch readback and real renderer state",
+                "restoration": "original switch value in test teardown",
+            },
+        },
     },
 }
 
@@ -650,6 +719,7 @@ def prepare():
         "requestedDeviceType": device_type,
         "requestedContentSize": selected["contentSize"],
         "onlyTesting": selected["onlyTesting"],
+        "systemSettingsIntent": selected.get("systemSettingsIntent", {}),
         "triggerSHA": os.environ.get("GITHUB_SHA"),
         "workflowSHA": os.environ.get("GITHUB_WORKFLOW_SHA"),
         "workflowRef": os.environ.get("GITHUB_WORKFLOW_REF"),
@@ -672,6 +742,7 @@ def prepare():
         "arguments": [f"-only-testing:{identifier}" for identifier in selected["onlyTesting"]],
         "requiredPassedTests": list(required),
         "requiredTestTargets": required,
+        "systemSettingsIntent": selected.get("systemSettingsIntent", {}),
         "inventorySource": "checked-out Objective-C test implementations",
         "sourceSHA": fingerprint["sourceSHA"],
         "selectionIsNotExecutionEvidence": True,
@@ -738,7 +809,9 @@ def configure():
     query = ["xcrun", "simctl", "ui", owned["udid"], "content_size"]
     result = {"scenario": scenario_name, "ownedSimulatorUDID": owned["udid"],
               "sourceSHA": os.environ.get("GITHUB_SHA"), "status": "unverified",
+              "statusScope": "system Dynamic Type only",
               "requestedContentSize": selected["contentSize"],
+              "systemSettingsIntent": selected.get("systemSettingsIntent", {}),
               "helpCommand": ["xcrun", "simctl", "help", "ui"],
               "setCommand": query + [selected["contentSize"]], "queryCommand": query,
               "automaticRetryAllowed": False}
@@ -837,10 +910,16 @@ def export():
                          "record-video.json/log report startup, termination and evidence gaps separately "
                          "from test.json. A nonempty video is not a visual or animation pass: inspect "
                          "the actual teaching exchanges before claiming motion validation. "
-                         "A missing test result is not a pass. Standard retains the model/component target "
-                         "plus Calcu_LaterUITests; the three layout variants retain all five "
-                         "Calcu_LaterLayoutUITests flows and add the actual-question 2 + 9, "
-                         "9 + 9 and18 − 9 ten-frame methods. Every selected source method must have a "
+                         "A missing test result is not a pass. Components retains the complete component target; "
+                         "standard retains Calcu_LaterUITests in a separate bounded command. "
+                         "The three original layout variants retain the complete "
+                         "Calcu_LaterLayoutUITests class and all three actual-question ten-frame flows. "
+                         "Additional bounded lanes cover focused grouping on compact/maximum text, "
+                         "concept core and division on normal/maximum text, and actual system Reduce Motion. "
+                         "System-setting intent is not proof: scenario-configuration verifies Dynamic Type only; "
+                         "the dedicated Reduce Motion UI test must retain real Settings switch readbacks, "
+                         "renderer states and restoration of the original preference. "
+                         "Every selected source method must have a "
                          "unique Passed case in the expected xcresult bundle on the owned device; "
                          "test-execution.json lists missing, non-passing, duplicate and unexpected results. "
                          "xcresult-tests-help.log retains the selected tool contract; console output is "

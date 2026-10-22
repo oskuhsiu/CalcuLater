@@ -1,0 +1,37 @@
+{
+  "status": "authored-native-unrun",
+  "target": "Calcu LaterTests",
+  "onlyTesting": [
+    "Calcu LaterTests/MultiplicativeTeachingSequenceTests",
+    "Calcu LaterTests/MultiplicativeTeachingActionTests"
+  ],
+  "selectors": {
+    "MultiplicativeTeachingSequenceTests": [
+      "MultiplicativeTeachingSequenceTests/testBoundedRangeContractsCoverEveryGeneratedD3ProblemAndRemainders",
+      "MultiplicativeTeachingSequenceTests/test126Times4CarriesTwoThenOneAndWritesInternalZero",
+      "MultiplicativeTeachingSequenceTests/testZeroInputDigitConsumesCarryAndFinalCarryIsNotMultiplied",
+      "MultiplicativeTeachingSequenceTests/test108DividedBy4SeparatesRegroupingFromBringingDown",
+      "MultiplicativeTeachingSequenceTests/test408DividedBy4WritesInternalZeroWithoutMovingPhantomUnits",
+      "MultiplicativeTeachingSequenceTests/testOneCommonRemainderAndMaximumPartialQuantity",
+      "MultiplicativeTeachingSequenceTests/testZeroIdentityAliasesAndFixedThreePlaces",
+      "MultiplicativeTeachingSequenceTests/testUnsupportedInputFailsBeforeAllocationOrArithmetic",
+      "MultiplicativeTeachingSequenceTests/testInputAndNestedSnapshotsCannotMutateAnExistingLesson"
+    ],
+    "MultiplicativeTeachingActionTests": [
+      "MultiplicativeTeachingActionTests/testEveryBoundedProblemMapsCanonicalSourceEndpoints",
+      "MultiplicativeTeachingActionTests/testNinetyNineTimesNineBuildsNineCountableGroupsBeforeEightSingleExchanges",
+      "MultiplicativeTeachingActionTests/testIncomingCarryIsOwnedOnceAndNeverIncludedInGeneratedGroups",
+      "MultiplicativeTeachingActionTests/testZeroDigitUsesOneStationaryActionAndKeepsIncomingCarry",
+      "MultiplicativeTeachingActionTests/testDivisionUsesOneCommonPoolAndOneRecipientPerAction",
+      "MultiplicativeTeachingActionTests/testHundredSplitsOneAtATimeWithoutMovingOriginalTensEarly",
+      "MultiplicativeTeachingActionTests/testWriteDigitAndWorkRowsAreNotRevealedByResultInspection",
+      "MultiplicativeTeachingActionTests/testLeadingZeroAndInteriorZeroHaveDifferentCompletedWriteStates",
+      "MultiplicativeTeachingActionTests/testCommonRemainderIsRevealedOnlyByOriginalInspection",
+      "MultiplicativeTeachingActionTests/testZeroProblemsDoNotInventUnitsOrNineEmptyActions",
+      "MultiplicativeTeachingActionTests/testInspectionReplayAndCallerMutationCannotChangeSettledSnapshots",
+      "MultiplicativeTeachingActionTests/testUnsupportedSourcesAndInvalidIndicesReturnEmptyWithoutFallback"
+    ]
+  },
+  "expectedMethodCount": 21,
+  "portableCoverageIsNotNativeExecution": true
+}

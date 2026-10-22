@@ -5,15 +5,26 @@
 #import "ChildUIKit.h"
 #import "SoundManager.h"
 #import <math.h>
+#import <QuartzCore/QuartzCore.h>
 
 /// Auto Layout reaches this nested scroll/stack child after the intro's own
 /// layout callback. Only the stage knows when its actual bounds have changed.
 @interface CLIntroStageView : UIView
 @property (nonatomic, copy) void (^sizeDidLayout)(void);
 @property (nonatomic) CGSize lastLaidOutSize;
+@property (nonatomic) CGRect requiredActionBounds;
 @end
 
 @implementation CLIntroStageView
+- (CGRect)accessibilityFrame {
+    // VoiceOver focuses the real causal scene, including its source, target,
+    // stationary context and route, rather than unused stage whitespace. This
+    // conversion is live, so scrolling never leaves a stale accessibility box.
+    if (!CGRectIsEmpty(self.requiredActionBounds) && !CGRectIsNull(self.requiredActionBounds)) {
+        return UIAccessibilityConvertFrameToScreenCoordinates(self.requiredActionBounds, self);
+    }
+    return [super accessibilityFrame];
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (CGSizeEqualToSize(self.lastLaidOutSize, self.bounds.size)) return;
@@ -131,19 +142,21 @@ static const CGFloat CLIntroCompactAnnotationGap = 2;
 static const NSTimeInterval CLIntroTransferMoveDuration = 0.70;
 static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 
-@interface LessonIntroView ()
+@interface LessonIntroView () <UIScrollViewDelegate>
 @property (nonatomic) LessonKind lessonKind;
 @property (nonatomic) NSInteger a;
 @property (nonatomic) NSInteger b;
 @property (nonatomic) NSInteger answer;
 @property (nonatomic) BOOL currentProblem;
 @property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) NSLayoutConstraint *scrollBottomSpacing;
 @property (nonatomic, strong) UILabel *headerLabel;
 @property (nonatomic, strong) UILabel *progressLabel;
 @property (nonatomic, strong) UILabel *problemLabel;
 @property (nonatomic, strong) UIView *stage;
 @property (nonatomic, strong) NSLayoutConstraint *stageHeight;
 @property (nonatomic, strong) UILabel *narration;
+@property (nonatomic, strong) UILabel *visibilityInstruction;
 @property (nonatomic, strong) UIStackView *buttonStack;
 @property (nonatomic, strong) NSLayoutConstraint *buttonStackHeight;
 @property (nonatomic, strong) ChildButton *previousButton;
@@ -161,12 +174,25 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 @property (nonatomic) NSUInteger playbackGeneration;
 @property (nonatomic) NSInteger playbackStepIndex;
 @property (nonatomic) NSUInteger activeAnimationGeneration;
+@property (nonatomic) CGRect requiredActionBounds;
+@property (nonatomic, strong, nullable) CADisplayLink *visibilityDisplayLink;
 @property (nonatomic) BOOL finished;
 @property (nonatomic) BOOL hasPresentedInitialScene;
 @property (nonatomic) NSInteger step;
+@property (nonatomic) NSInteger renderedSnapshotStep;
 @property (nonatomic) CGSize lastBoundsSize;
 - (BOOL)prepareStageDots;
 - (void)settleStageAfterLayout;
+- (void)validatePlaybackVisibility;
+@end
+
+/// CADisplayLink retains its target. The target must not retain this teaching
+/// surface, including if a parent removes it before the next display frame.
+@interface CLIntroVisibilityTarget : NSObject
+@property (nonatomic, weak) LessonIntroView *intro;
+@end
+@implementation CLIntroVisibilityTarget
+- (void)checkVisibility:(CADisplayLink *)link { [self.intro validatePlaybackVisibility]; }
 @end
 
 @implementation LessonIntroView
@@ -224,6 +250,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 
 - (void)finishInitialization {
     _dots = [NSMutableArray array];
+    _renderedSnapshotStep = NSIntegerMin;
     self.backgroundColor = ChildUI.creamBackground;
     self.layer.cornerRadius = 28;
     [ChildUI applySoftShadowOnLayer:self.layer];
@@ -235,6 +262,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 
 - (void)dealloc {
+    [_visibilityDisplayLink invalidate];
     if (_stepAnimator.state == UIViewAnimatingStateActive) [_stepAnimator stopAnimation:YES];
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
@@ -269,6 +297,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     self.scrollView = [[UIScrollView alloc] init];
     self.scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     self.scrollView.alwaysBounceVertical = NO;
+    self.scrollView.delegate = self;
     self.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     self.scrollView.accessibilityIdentifier = @"lessonIntro.content";
     [self addSubview:self.scrollView];
@@ -345,6 +374,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     self.buttonStack.spacing = 12;
     [self addSubview:self.buttonStack];
     self.buttonStackHeight = [self.buttonStack.heightAnchor constraintEqualToConstant:132];
+    self.scrollBottomSpacing = [self.scrollView.bottomAnchor constraintEqualToAnchor:self.buttonStack.topAnchor constant:-12];
     [NSLayoutConstraint activateConstraints:@[
         [self.buttonStack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:16],
         [self.buttonStack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16],
@@ -353,12 +383,29 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
         [self.scrollView.topAnchor constraintEqualToAnchor:self.topAnchor constant:16],
         [self.scrollView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
         [self.scrollView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [self.scrollView.bottomAnchor constraintEqualToAnchor:self.buttonStack.topAnchor constant:-12],
+        self.scrollBottomSpacing,
         [content.topAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.topAnchor constant:4],
         [content.bottomAnchor constraintEqualToAnchor:self.scrollView.contentLayoutGuide.bottomAnchor constant:-12],
         [content.centerXAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.centerXAnchor],
         [content.widthAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.widthAnchor constant:-32],
         [self.scrollView.contentLayoutGuide.widthAnchor constraintEqualToAnchor:self.scrollView.frameLayoutGuide.widthAnchor],
+    ]];
+    // Keep the recovery instruction visible beside the fixed action controls.
+    // Its full intrinsic height is reserved outside the scroll viewport. It
+    // never covers counters/captions or resizes the action buttons. Only a new
+    // explicit playback hides it before checking the larger usable viewport.
+    self.visibilityInstruction = [self labelWithSize:18 weight:UIFontWeightSemibold];
+    self.visibilityInstruction.text = @"滑動看圖，前後步比一比。";
+    self.visibilityInstruction.accessibilityIdentifier = @"lessonIntro.visibilityInstruction";
+    self.visibilityInstruction.backgroundColor = ChildUI.creamBackground;
+    self.visibilityInstruction.layer.cornerRadius = 12;
+    self.visibilityInstruction.hidden = YES;
+    self.visibilityInstruction.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:self.visibilityInstruction];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.visibilityInstruction.leadingAnchor constraintEqualToAnchor:self.scrollView.leadingAnchor constant:16],
+        [self.visibilityInstruction.trailingAnchor constraintEqualToAnchor:self.scrollView.trailingAnchor constant:-16],
+        [self.visibilityInstruction.bottomAnchor constraintEqualToAnchor:self.buttonStack.topAnchor constant:-8],
     ]];
     [self updateStepText];
 }
@@ -371,7 +418,13 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     return [self isTenStrategy] && width >= 512;
 }
 
+- (void)layoutVisibilityInstruction {
+    CGFloat height = self.visibilityInstruction.hidden ? 0 : ceil([self.visibilityInstruction
+        sizeThatFits:CGSizeMake(MAX(1, self.bounds.size.width - 32), CGFLOAT_MAX)].height) + 8;
+    self.scrollBottomSpacing.constant = -12 - height;
+}
 - (void)layoutSubviews {
+    [self layoutVisibilityInstruction];
     CGFloat titleWidth = 0, lineHeight = 0;
     for (UIButton *button in @[self.previousButton, self.nextButton, self.replayButton, self.startButton]) {
         titleWidth = MAX(titleWidth, [button.titleLabel.text sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}].width);
@@ -395,6 +448,8 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
         // If nested layout has not resized the stage yet, its callback will
         // render this same selected step again using the final child bounds.
         [self stopPlayback];
+    } else {
+        [self validatePlaybackVisibility];
     }
 }
 
@@ -412,15 +467,60 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 - (BOOL)isEffectivelyVisible {
     if (!self.window) return NO;
-    for (UIView *view = self; view; view = view.superview) {
+    for (UIView *view = self.stage ?: self; view; view = view.superview) {
         if (view.hidden || view.alpha <= 0.01) return NO;
     }
     return YES;
 }
+/// Actual clipping is independent of nominal stage/scroll sizes. Convert every
+/// clip into the same stage coordinate space, including the real window.
+- (CGRect)visibleStageRect {
+    if (![self isEffectivelyVisible]) return CGRectNull;
+    CGRect visible = [self.stage convertRect:self.window.bounds fromView:self.window];
+    for (UIView *view = self.stage; view; view = view.superview) {
+        if (view.clipsToBounds) {
+            visible = CGRectIntersection(visible, [self.stage convertRect:view.bounds fromView:view]);
+        }
+    }
+    return visible;
+}
+- (BOOL)stageRectIsFullyVisible:(CGRect)rect {
+    if (![self isEffectivelyVisible] || CGRectIsNull(rect) || CGRectIsEmpty(rect)) return NO;
+    // Test the required scene in each clip's own coordinates. Converting a
+    // rotated clip into stage space gives an enclosing box, not the actual
+    // visible polygon, and must never admit its invisible corners.
+    CGRect inWindow = [self.stage convertRect:rect toView:self.window];
+    if (!CGRectContainsRect(CGRectInset(self.window.bounds, -0.5, -0.5), inWindow)) return NO;
+    for (UIView *view = self.stage; view; view = view.superview) {
+        if (view.clipsToBounds && !CGRectContainsRect(CGRectInset(view.bounds, -0.5, -0.5),
+            [self.stage convertRect:rect toView:view])) return NO;
+    }
+    return YES;
+}
+- (BOOL)isRequiredActionVisible { return [self stageRectIsFullyVisible:self.requiredActionBounds]; }
+- (void)setRequiredActionBounds:(CGRect)bounds {
+    _requiredActionBounds = bounds;
+    ((CLIntroStageView *)self.stage).requiredActionBounds = bounds;
+}
+- (void)validatePlaybackVisibility {
+    if (self.playbackState != LessonIntroPlaybackStateRunning || ![self isTenStrategy]
+        || [self isRequiredActionVisible]) return;
+    // Invalidate first. Neither a queued natural-end callback nor restored
+    // visibility may revive this generation. Never chase a child's scrolling.
+    [self cancelStepAnimation];
+    [SpeechManager.sharedInstance stop];
+    self.playbackState = [self isEffectivelyVisible] ? LessonIntroPlaybackStateVisibilityPaused
+        : LessonIntroPlaybackStateCancelled;
+    [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
+    [self updateStageAccessibility];
+}
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView { [self validatePlaybackVisibility]; }
 - (void)cancelStepAnimation {
     // Invalidate before stopping: even an already-queued callback from an old
     // animator must not certify this or a later selected step as completed.
     self.activeAnimationGeneration = 0;
+    [self.visibilityDisplayLink invalidate];
+    self.visibilityDisplayLink = nil;
     if (self.playbackState == LessonIntroPlaybackStateRunning) self.playbackState = LessonIntroPlaybackStateCancelled;
     UIViewPropertyAnimator *animator = self.stepAnimator;
     self.stepAnimator = nil;
@@ -440,6 +540,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     // The child owns only its manual diagram layout. Do not reassign sibling
     // labels/buttons here: that can invalidate the surrounding stack mid-pass.
     [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
+    self.requiredActionBounds = [self visibleDiagramBoundsWithFrames:YES annotations:YES];
     [self updateStageAccessibility];
 }
 - (void)applicationWillResignActive:(NSNotification *)notification { [self stopPlayback]; }
@@ -458,7 +559,12 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     if (!animator || animator != self.stepAnimator || generation != self.activeAnimationGeneration
         || generation != self.playbackGeneration || step != self.playbackStepIndex || step != self.step
         || self.playbackState != LessonIntroPlaybackStateRunning) return;
+    // A natural timeline end is not completion if the actual scene is clipped.
+    [self validatePlaybackVisibility];
+    if (self.playbackState != LessonIntroPlaybackStateRunning) return;
     self.activeAnimationGeneration = 0;
+    [self.visibilityDisplayLink invalidate];
+    self.visibilityDisplayLink = nil;
     self.stepAnimator = nil;
     self.playbackState = position == UIViewAnimatingPositionEnd
         ? LessonIntroPlaybackStateCompleted : LessonIntroPlaybackStateCancelled;
@@ -483,6 +589,12 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     [animator addCompletion:^(UIViewAnimatingPosition position) {
         [weakSelf completeStepAnimation:weakAnimator generation:generation step:step position:position];
     }];
+    if ([self isTenStrategy]) {
+        CLIntroVisibilityTarget *target = [[CLIntroVisibilityTarget alloc] init];
+        target.intro = self;
+        self.visibilityDisplayLink = [CADisplayLink displayLinkWithTarget:target selector:@selector(checkVisibility:)];
+        [self.visibilityDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
     [animator startAnimation];
 }
 
@@ -679,6 +791,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
         CGPoint point = [target centerForIndex:slot];
         dot.center = CGPointMake(target.frame.origin.x + point.x, target.frame.origin.y + point.y);
     }
+    self.renderedSnapshotStep = step;
 }
 
 /// Source order vacates a row from left to right. In the wide layout a counter
@@ -764,6 +877,13 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 
 - (void)updateStageAccessibility {
+    BOOL paused = self.playbackState == LessonIntroPlaybackStateVisibilityPaused && self.playbackStepIndex == self.step;
+    self.visibilityInstruction.hidden = !paused;
+    [self layoutVisibilityInstruction];
+    [self setNeedsLayout];
+    self.replayButton.accessibilityHint = paused
+        ? @"可滑動看圖，或用上一步和下一步比較。完整點點圖能顯示時，再按重看這一步。"
+        : @"重看目前這一步，不會跳到下一步。";
     NSInteger first = 0, second = 0, crossed = 0;
     for (CLIntroDotView *dot in self.dots) {
         if (dot.alpha < 0.5) continue;
@@ -783,6 +903,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
         case LessonIntroPlaybackStateCompleted: state = @"動態播放完成"; break;
         case LessonIntroPlaybackStateCancelled: state = @"動態已停止，顯示目前這一步"; break;
         case LessonIntroPlaybackStateReducedMotion: state = @"減少動態，直接顯示這一步"; break;
+        case LessonIntroPlaybackStateVisibilityPaused: state = @"點點圖未完整顯示，先看圖再重播"; break;
         default: state = @"靜止圖示，尚未播放"; break;
     }
     if (self.playbackStepIndex == self.step) {
@@ -821,65 +942,92 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 }
 
 - (void)frameNewStepScene:(CGRect)scene frames:(CGRect)frames counters:(CGRect)counters {
-    // Prefer the complete annotated diagram. If only the actual transformation
-    // fits, show every source/destination counter, not just its final location.
-    // An even shorter viewport stays scrollable; never shrink or omit counters.
+    // An already safe child-chosen viewport must be exactly preserved. Initial
+    // static presentation may try smaller snapshots; motion passes the complete
+    // action for all three candidates, never dropping a frame or count label.
+    if ([self stageRectIsFullyVisible:scene]) return;
+    CGRect actualViewport = [self visibleStageRect];
+    if (CGRectIsNull(actualViewport) || CGRectIsEmpty(actualViewport)) return;
     for (NSValue *candidate in @[[NSValue valueWithCGRect:scene], [NSValue valueWithCGRect:frames],
         [NSValue valueWithCGRect:counters]]) {
         CGRect bounds = candidate.CGRectValue;
         if (CGRectIsNull(bounds) || CGRectIsEmpty(bounds)) continue;
-        bounds = CGRectInset(bounds, -4, -4);
-        if (bounds.size.width > self.scrollView.bounds.size.width
-            || bounds.size.height > self.scrollView.bounds.size.height) continue;
+        if (bounds.size.width > actualViewport.size.width || bounds.size.height > actualViewport.size.height) continue;
+        CGRect padded = CGRectInset(bounds, -4, -4);
+        if (padded.size.width <= actualViewport.size.width && padded.size.height <= actualViewport.size.height) bounds = padded;
         CGRect target = [self.stage convertRect:bounds toView:self.scrollView];
-        [self.scrollView scrollRectToVisible:target animated:NO];
-        return;
+        CGRect viewport = [self.stage convertRect:actualViewport toView:self.scrollView];
+        CGFloat dx = CGRectGetMinX(target) < CGRectGetMinX(viewport) ? CGRectGetMinX(target) - CGRectGetMinX(viewport)
+            : MAX(0, CGRectGetMaxX(target) - CGRectGetMaxX(viewport));
+        CGFloat dy = CGRectGetMinY(target) < CGRectGetMinY(viewport) ? CGRectGetMinY(target) - CGRectGetMinY(viewport)
+            : MAX(0, CGRectGetMaxY(target) - CGRectGetMaxY(viewport));
+        UIEdgeInsets insets = self.scrollView.adjustedContentInset;
+        CGPoint offset = self.scrollView.contentOffset;
+        offset.x = MAX(-insets.left, MIN(offset.x + dx,
+            MAX(-insets.left, self.scrollView.contentSize.width - self.scrollView.bounds.size.width + insets.right)));
+        offset.y = MAX(-insets.top, MIN(offset.y + dy,
+            MAX(-insets.top, self.scrollView.contentSize.height - self.scrollView.bounds.size.height + insets.bottom)));
+        [self.scrollView setContentOffset:offset animated:NO];
+        return; // The admission gate independently verifies real containment.
     }
 }
 
 - (void)renderStepAnimated:(BOOL)animated frameNewStep:(BOOL)frameNewStep {
     [self cancelStepAnimation];
     [self updateStepText];
-    if (frameNewStep) {
-        // Narration can change content height. Complete layout before choosing
-        // the viewport and before an animator gets its source/destination.
+    if (animated) {
+        self.visibilityInstruction.hidden = YES;
+        // Replay also needs final layout before computing its own complete
+        // before/after scene. Layout itself has no framing permission.
         [self setNeedsLayout];
         [self layoutIfNeeded];
         [self.scrollView layoutIfNeeded];
-    }
-    if (animated) {
         self.playbackGeneration++;
         self.playbackStepIndex = self.step;
-        // A requested playback that cannot render is cancelled, not idle or
-        // completed. Even pre-layout requests have a unique identity.
         self.playbackState = LessonIntroPlaybackStateCancelled;
     }
     if (![self prepareStageDots]) { [self updateStageAccessibility]; return; }
-    CGRect scene = CGRectNull, frames = CGRectNull, counters = CGRectNull;
-    if (frameNewStep) {
+    // Replay already owns this selected endpoint (also while UIKit presents a
+    // moving counter). Read that actual snapshot instead of applying an extra
+    // target before its source. A new step/layout builds its own endpoint once.
+    if (!animated || frameNewStep || self.renderedSnapshotStep != self.step) {
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
-        scene = [self visibleDiagramBoundsWithFrames:YES annotations:YES];
-        frames = [self visibleDiagramBoundsWithFrames:YES annotations:NO];
-        counters = [self visibleDiagramBoundsWithFrames:NO annotations:NO];
     }
+    CGRect required = [self visibleDiagramBoundsWithFrames:YES annotations:YES];
+    CGRect frames = [self visibleDiagramBoundsWithFrames:YES annotations:NO];
+    CGRect counters = [self visibleDiagramBoundsWithFrames:NO annotations:NO];
     if (animated) {
-        // Replay always rebuilds the selected step's own before-state. Starting
-        // from an already settled model frame would otherwise produce no motion.
+        // Reconstruct the selected step's own source. Sampling the two real
+        // snapshots never changes the original source→target Replay sequence.
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step - 1]; }];
+        required = CGRectUnion(required, [self visibleDiagramBoundsWithFrames:YES annotations:YES]);
+        frames = CGRectUnion(frames, [self visibleDiagramBoundsWithFrames:YES annotations:NO]);
+        counters = CGRectUnion(counters, [self visibleDiagramBoundsWithFrames:NO annotations:NO]);
     }
     NSArray<CLIntroTransferLeg *> *transferLegs = self.lessonKind == LessonKindMakeTen && self.step == 3
         ? [self makeTenTransferLegs] : nil;
-    if (frameNewStep) {
-        // Include the entire routed path, not only its source and destination.
-        CGRect path = transferLegs ? [self makeTenTransferBounds:transferLegs] : CGRectNull;
-        scene = CGRectUnion(scene, path); frames = CGRectUnion(frames, path); counters = CGRectUnion(counters, path);
-        [self frameNewStepScene:CGRectUnion(scene, [self visibleDiagramBoundsWithFrames:YES annotations:YES])
-            frames:CGRectUnion(frames, [self visibleDiagramBoundsWithFrames:YES annotations:NO])
-            counters:CGRectUnion(counters, [self visibleDiagramBoundsWithFrames:NO annotations:NO])];
+    if (animated && transferLegs.count) required = CGRectUnion(required, [self makeTenTransferBounds:transferLegs]);
+    self.requiredActionBounds = required;
+    if (animated && (frameNewStep || ([self isTenStrategy] && ![self isRequiredActionVisible]))) {
+        // Intentional Replay contract: only an explicit request may minimally
+        // reframe a clipped causal scene. A fully visible Replay never scrolls.
+        [self frameNewStepScene:required frames:[self isTenStrategy] ? required : frames
+            counters:[self isTenStrategy] ? required : counters];
     }
     if (animated) {
         self.playbackState = [self prefersReducedMotion] ? LessonIntroPlaybackStateReducedMotion
-            : [self isEffectivelyVisible] ? LessonIntroPlaybackStateRunning : LessonIntroPlaybackStateCancelled;
+            : ![self isEffectivelyVisible] ? LessonIntroPlaybackStateCancelled
+            : [self isTenStrategy] && ![self isRequiredActionVisible] ? LessonIntroPlaybackStateVisibilityPaused
+            : LessonIntroPlaybackStateRunning;
+    }
+    if (animated && self.playbackState == LessonIntroPlaybackStateRunning && [self isTenStrategy]) {
+        // Replay may begin with a committed destination presentation. Merely
+        // assigning the model source in this same transaction leaves delayed
+        // keyframes inheriting that old presentation while they wait. Commit
+        // the complete source now, before UIKit captures any new keyframe.
+        // This introduces no timer, pre-roll delay or forced animation finish.
+        [CATransaction flush];
+        [self validatePlaybackVisibility];
     }
     if (animated && self.playbackState == LessonIntroPlaybackStateRunning) {
         if (transferLegs.count) [self animateMakeTenTransfer:transferLegs];
@@ -891,7 +1039,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
             }];
             [self startStepAnimator:animator];
         }
-    } else {
+    } else if (animated) {
         [UIView performWithoutAnimation:^{ [self applyDotStateForStep:self.step]; }];
     }
     [self updateStageAccessibility];

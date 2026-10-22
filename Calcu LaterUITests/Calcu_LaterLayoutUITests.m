@@ -55,8 +55,10 @@
         XCTAssertGreaterThan(viewport.size.width, 44.0);
         XCTAssertGreaterThan(viewport.size.height, 44.0);
         CGFloat distance = (down ? -1 : 1) * viewport.size.height * 0.3;
+        CGFloat travelFraction = 0.3;
+        XCUIElement *scrollTarget = element;
+        CGRect target = CGRectNull;
         if (element.exists) {
-            XCUIElement *scrollTarget = element;
             if (container.elementType == XCUIElementTypeTable && element.elementType != XCUIElementTypeCell
                 && element.identifier.length > 0) {
                 // Offscreen table accessories can expose stale child frames.
@@ -64,7 +66,7 @@
                 XCUIElement *row = [container.cells containingType:XCUIElementTypeAny identifier:element.identifier].firstMatch;
                 if (row.exists) scrollTarget = row;
             }
-            CGRect target = scrollTarget.frame;
+            target = scrollTarget.frame;
             BOOL hasGeometry = isfinite(target.origin.x) && isfinite(target.origin.y)
                 && isfinite(target.size.width) && isfinite(target.size.height)
                 && target.size.width > 0 && target.size.height > 0;
@@ -74,9 +76,19 @@
                 // A broad swipe can pass a row; its new frame must bring us back.
                 distance = CGRectGetMidY(target) - CGRectGetMidY(viewport);
                 if (fabs(distance) < 1) distance = down ? -24 : 24;
+                // AX5 Settings rows can be several screens away. Ten 30% drags
+                // exhausted their travel budget before the first switch arrived.
+                // Use a half-viewport drag only for a real table row still more
+                // than one small drag outside the viewport. Keep the compact
+                // overshoot correction unchanged once the row approaches it.
+                BOOL farTableRow = container.elementType == XCUIElementTypeTable
+                    && scrollTarget.elementType == XCUIElementTypeCell
+                    && (CGRectGetMinY(target) > CGRectGetMaxY(viewport) + viewport.size.height * 0.3
+                        || CGRectGetMaxY(target) < CGRectGetMinY(viewport) - viewport.size.height * 0.3);
+                if (farTableRow) travelFraction = 0.5;
             }
         }
-        CGFloat travel = MIN(MAX(fabs(distance), 24), viewport.size.height * 0.3);
+        CGFloat travel = MIN(MAX(fabs(distance), 24), viewport.size.height * travelFraction);
         CGFloat startY = CGRectGetMinY(viewport) + viewport.size.height * (distance > 0 ? 0.65 : 0.35);
         CGFloat endY = startY + (distance > 0 ? -travel : travel);
         XCUICoordinate *origin = [container coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
@@ -84,6 +96,17 @@
         XCUICoordinate *start = [origin coordinateWithOffset:CGVectorMake(x, startY - CGRectGetMinY(containerFrame))];
         XCUICoordinate *end = [origin coordinateWithOffset:CGVectorMake(x, endY - CGRectGetMinY(containerFrame))];
         [start pressForDuration:0.05 thenDragToCoordinate:end];
+        if (container.elementType == XCUIElementTypeTable) {
+            CGRect after = scrollTarget.exists ? scrollTarget.frame : CGRectNull;
+            XCTAttachment *trace = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
+                @"attempt=%lu identifier=%@ viewport=%@ targetBefore=%@ targetAfter=%@ requested=%g travel=%g fraction=%g startY=%g endY=%g hittable=%d",
+                (unsigned long)attempt + 1, element.identifier, NSStringFromCGRect(viewport),
+                NSStringFromCGRect(target), NSStringFromCGRect(after), (double)distance,
+                (double)travel, (double)travelFraction, (double)startY, (double)endY, element.hittable]];
+            trace.name = @"settings-reveal-scroll";
+            trace.lifetime = XCTAttachmentLifetimeKeepAlways;
+            [self addAttachment:trace];
+        }
     }
     XCTAssertTrue(element.hittable, @"A child must be able to reach %@ by scrolling.", element.identifier);
 }
@@ -206,7 +229,44 @@
     trace.lifetime = XCTAttachmentLifetimeKeepAlways;
     [self addAttachment:trace];
 }
+- (void)assertCompleteGroupingActionVisible {
+    XCTAssertEqual([[self.app descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"groupingTeachingBoard"].count, 1u);
+    CGRect action = [self checkedFrame:[self element:@"groupingTeachingBoard"]];
+    CGRect viewport = [self checkedFrame:self.app.scrollViews[@"grouping.content"]];
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -1, -1), action),
+        @"The complete source, active target, labels and route must fit before inspection: %@ in %@", NSStringFromCGRect(action), NSStringFromCGRect(viewport));
+}
+- (void)waitForGroupingActionNaturalEnd {
+    NSString *value = self.groupingBoardValue;
+    XCTAssertTrue([value containsString:@"播放狀態："],
+        @"A division action must expose its renderer lifecycle; a static overview is not motion evidence.");
+    NSUInteger transfers = [value containsString:@" / "] ? 1 : 4; // These story fixtures are 23 ÷ 4.
+    NSTimeInterval duration = 0.28 + 0.82 * transfers + 0.24;
+    NSPredicate *completed = [NSPredicate predicateWithFormat:@"value ENDSWITH %@", @"。播放完成。播放狀態：completed"];
+    XCTestExpectation *ready = [self expectationForPredicate:completed evaluatedWithObject:[self element:@"groupingTeachingBoard"] handler:nil];
+    [self waitForExpectations:@[ready] timeout:duration + 1.0];
+}
+- (void)finishFocusedSharingRoundWatchingActions:(BOOL)watch {
+    for (NSUInteger recipient = 0; recipient < 9; recipient++) {
+        if (watch) { [self assertCompleteGroupingActionVisible]; [self waitForGroupingActionNaturalEnd]; }
+        if (![self.app.buttons[@"grouping.next"].label isEqualToString:@"下一位"]) return;
+        [self.app.buttons[@"grouping.next"] tap];
+    }
+    XCTFail(@"The bounded sharing round must finish after at most nine explicit recipient choices.");
+}
+- (void)previousOriginalGroupingStep {
+    NSString *original = self.app.staticTexts[@"grouping.progress"].label;
+    for (NSUInteger recipient = 0; recipient < 10; recipient++) {
+        [self.app.buttons[@"grouping.previous"] tap];
+        if (![self.app.staticTexts[@"grouping.progress"].label isEqualToString:original]) return;
+    }
+    XCTFail(@"Previous must leave the bounded recipient subactions.");
+}
 - (void)captureGroupingBoardSlices:(NSString *)name {
+    if ([self.groupingBoardValue containsString:@"播放狀態："]) {
+        [self assertCompleteGroupingActionVisible]; [self waitForGroupingActionNaturalEnd];
+        [self.app.buttons[@"grouping.viewMode"] tap]; // Inspect the exact selected partial/full snapshot, not a different round.
+    }
     XCUIElement *board = [self element:@"groupingTeachingBoard"];
     XCUIElement *content = self.app.scrollViews[@"grouping.content"];
     // Start at the board's top, not whichever portion makes a tall AX element
@@ -264,10 +324,16 @@
     CGRect inspectedFrame = [self checkedFrame:board];
     NSString *progress = self.app.staticTexts[@"grouping.progress"].label;
     [self.app.buttons[@"grouping.replay"] tap];
+    // Both callers selected a real division action. Replay must return to that
+    // complete causal scene; a static overview cannot bypass natural-end proof.
+    [self assertCompleteGroupingActionVisible]; [self waitForGroupingActionNaturalEnd];
+    [self capture:[name stringByAppendingString:@"-visible-action-natural-end"]];
+    // Restore the explicit overview before checking its original inspection anchor.
+    [self.app.buttons[@"grouping.viewMode"] tap];
     XCTAssertEqualWithAccuracy(board.frame.origin.y, inspectedFrame.origin.y, 1.0,
-        @"Replay must keep the selected lower portion in view.");
-    // Replay resets to before/moving counts for the real one-second animation.
-    // A tap returning is not evidence that those quantities have settled.
+        @"Returning to inspection after Replay must keep the selected lower portion in view.");
+    // Keep the existing separate quantity wait and its three-second bound.
+    // Natural renderer completion is established above, never inferred from totals.
     [self waitForGroupingValues:settledValues];
     XCTAssertEqualWithAccuracy(board.frame.origin.y, inspectedFrame.origin.y, 1.0);
     XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, progress);
@@ -328,40 +394,36 @@
     [self capture:@"layout-03-guided-summary"];
 }
 
-- (void)testTeachingPredictionReplayAndLandscapeBounds {
-    [self launchScenario:@"carry"];
-    [self tapHomeCard:@"home.practice"];
-    [self.app.buttons[@"看怎麼算"] tap];
-    XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
-    [self assertTeachingControls];
-    [self capture:@"layout-04-place-value-alignment"];
-    [self.app.buttons[@"teaching.next"] tap];
+- (void)assertVerticalExchangeVisible {
+    XCUIElement *exchange = [self element:@"verticalTeachingExchange"];
     XCUIElement *content = self.app.scrollViews[@"teaching.content"];
-    XCUIElement *choice = self.app.buttons[@"teaching.choice.12"];
-    [self reveal:choice in:content down:NO];
-    [self assertHorizontalBounds:choice in:content];
-    NSString *predictionProgress = self.app.staticTexts[@"teaching.progress"].label;
-    [choice tap];
-    XCTAssertFalse(choice.enabled);
-    XCTAssertEqualObjects([choice.value description], @"對，想通這一步了");
-    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, predictionProgress);
-    [self capture:@"layout-05-child-prediction"];
-    [self.app.buttons[@"teaching.next"] tap];
-    [self.app.buttons[@"teaching.next"] tap];
-    XCUIElement *board = [self element:@"verticalTeachingBoard"];
-    XCTAssertTrue([[board.value description] containsString:@"個位 12 → 2"]);
-    [self assertHorizontalBounds:board in:content];
-    [self assertTeachingControls];
-    [self capture:@"layout-06-carry-exchange"];
-    CGRect beforeInspection = board.frame;
-    BOOL needsScrolling = CGRectGetMaxY(self.app.buttons[@"teaching.restart"].frame) > CGRectGetMaxY(content.frame) + 1;
-    [content swipeUp];
-    CGRect inspectedFrame = board.frame;
-    if (needsScrolling) XCTAssertLessThan(inspectedFrame.origin.y, beforeInspection.origin.y - 1);
-    [self.app.buttons[@"teaching.replay"] tap];
-    XCTAssertEqualWithAccuracy(board.frame.origin.y, inspectedFrame.origin.y, 1.0,
-        @"Replay must preserve the part of the board the child scrolled to inspect.");
-    [self capture:@"layout-07-replay-preserves-inspection"];
+    CGRect action = [self checkedFrame:exchange];
+    CGRect viewport = CGRectIntersection(content.frame, self.app.windows.firstMatch.frame);
+    XCTAssertGreaterThan(action.size.height, 100.0);
+    XCTAssertGreaterThanOrEqual(CGRectGetMinX(action), CGRectGetMinX(viewport) - 1);
+    XCTAssertLessThanOrEqual(CGRectGetMaxX(action), CGRectGetMaxX(viewport) + 1);
+    XCTAssertGreaterThanOrEqual(CGRectGetMinY(action), CGRectGetMinY(viewport) + 7);
+    XCTAssertLessThanOrEqual(CGRectGetMaxY(action), CGRectGetMaxY(viewport) - 7,
+        @"The complete source, destination, movement region and written-column caption must fit, not merely 40 points of the board.");
+}
+- (void)assertVerticalFeedbackVisible {
+    XCUIElement *feedback = self.app.staticTexts[@"teaching.feedback"];
+    CGRect viewport = self.app.scrollViews[@"teaching.content"].frame;
+    XCTAssertTrue(feedback.exists);
+    XCTAssertGreaterThanOrEqual(CGRectGetMinY(feedback.frame), CGRectGetMinY(viewport) + 7);
+    XCTAssertLessThanOrEqual(CGRectGetMaxY(feedback.frame), CGRectGetMaxY(viewport) - 7);
+    [self assertHorizontalBounds:feedback in:self.app.scrollViews[@"teaching.content"]];
+}
+- (void)waitForVerticalNaturalCompletion {
+    // No scroll, Back, resize, background or cancellation before this check.
+    // The dedicated Settings suite owns static Reduce Motion acceptance. Normal
+    // layout evidence must prove natural completion, never a static endpoint.
+    NSPredicate *settled = [NSPredicate predicateWithFormat:@"value ENDSWITH %@", @"。動態已播放完成"];
+    XCTestExpectation *completed = [self expectationForPredicate:settled
+        evaluatedWithObject:[self element:@"verticalTeachingExchange"] handler:nil];
+    [self waitForExpectations:@[completed] timeout:3];
+}
+- (void)rotateVerticalLandscape {
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationLandscapeLeft;
     NSPredicate *landscape = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
         CGSize size = self.app.windows.firstMatch.frame.size;
@@ -369,18 +431,159 @@
     }];
     XCTestExpectation *rotated = [self expectationForPredicate:landscape evaluatedWithObject:self.app handler:nil];
     [self waitForExpectations:@[rotated] timeout:5];
+}
+- (void)assertOriginalPracticeQuestionUnanswered:(NSString *)question {
+    XCTAssertEqualObjects(self.app.staticTexts[@"practice.problem"].label, question);
+    for (NSInteger index = 0; index < 4; index++) {
+        NSString *identifier = [NSString stringWithFormat:@"answer.%ld", (long)index];
+        XCUIElement *choice = self.app.buttons[identifier];
+        XCTAssertTrue(choice.exists);
+        XCTAssertTrue(choice.enabled);
+        XCTAssertFalse(choice.selected);
+        XCTAssertEqualObjects([choice.value description], @"尚未作答");
+    }
+    XCTAssertFalse(self.app.buttons[@"session.next"].exists);
+}
+- (void)testTeachingPredictionReplayAndLandscapeBounds {
+    [self launchScenario:@"carry"];
+    [self tapHomeCard:@"home.practice"];
+    NSString *question = self.app.staticTexts[@"practice.problem"].label;
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
+    [self assertTeachingControls];
+    [self capture:@"layout-04-place-value-alignment"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCUIElement *content = self.app.scrollViews[@"teaching.content"];
+    XCUIElement *wrong = self.app.buttons[@"teaching.choice.11"];
+    [self reveal:wrong in:content down:NO];
+    NSString *predictionProgress = self.app.staticTexts[@"teaching.progress"].label;
+    [wrong tap];
+    [self capture:@"layout-05-wrong-prediction-before-helper"];
+    [self assertVerticalFeedbackVisible];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.feedback"].label containsString:@"你選 11 個一"]);
+    XCTAssertTrue([self.app.staticTexts[@"teaching.feedback"].label containsString:@"7 + 5"]);
+    XCTAssertFalse(wrong.enabled);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, predictionProgress);
+    [self.app.buttons[@"teaching.focus"] tap];
+    XCTAssertEqualObjects(self.app.buttons[@"teaching.focus"].label, @"回到選項");
+    [self.app.buttons[@"teaching.focus"] tap];
+    XCUIElement *choice = self.app.buttons[@"teaching.choice.12"];
+    [self reveal:choice in:content down:NO];
+    [self assertHorizontalBounds:choice in:content];
+    [choice tap];
+    [self capture:@"layout-05-correct-prediction-before-helper"];
+    [self assertVerticalFeedbackVisible];
+    XCTAssertFalse(choice.enabled);
+    XCTAssertEqualObjects([choice.value description], @"和這一步的數量相同");
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, predictionProgress);
+    [self.app.buttons[@"teaching.next"] tap];
+    [self.app.buttons[@"teaching.next"] tap];
+    [self capture:@"layout-06-carry-first-play-before-helper"];
+    XCUIElement *board = [self element:@"verticalTeachingBoard"];
+    NSString *snapshot = [board.value description];
+    NSString *progress = self.app.staticTexts[@"teaching.progress"].label;
+    XCTAssertTrue([snapshot containsString:@"個位 12 → 2"]);
+    XCTAssertTrue([snapshot containsString:@"答案還沒寫"]);
+    [self assertHorizontalBounds:board in:content];
+    [self assertTeachingControls];
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    [self capture:@"layout-06-carry-naturally-completed"];
+    [self.app.buttons[@"teaching.focus"] tap];
+    [self capture:@"layout-07-written-work-inspection"];
+    [self.app.buttons[@"teaching.replay"] tap];
+    [self capture:@"layout-07-replay-recovers-entire-exchange-before-helper"];
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    XCTAssertEqualObjects([board.value description], snapshot);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, progress);
+    [self rotateVerticalLandscape];
+    [self capture:@"layout-08-landscape-before-helper"];
+    // Verify rotation itself recovered semantic focus before inspection or Replay
+    // has any chance to repair a hidden exchange.
+    [self assertVerticalExchangeVisible];
     [self assertTeachingControls];
     [self assertHorizontalBounds:board in:content];
-    [self capture:@"layout-08-landscape-teaching"];
-    [self reveal:board in:content down:NO];
-    CGRect visibleBoard = CGRectIntersection(board.frame, content.frame);
-    XCTAssertGreaterThan(visibleBoard.size.height, 40.0);
-    CGFloat landscapeBoardY = board.frame.origin.y;
+    [self.app.buttons[@"teaching.focus"] tap];
+    [self capture:@"layout-08-landscape-written-inspection"];
     [self.app.buttons[@"teaching.replay"] tap];
-    XCTAssertEqualWithAccuracy(board.frame.origin.y, landscapeBoardY, 1.0);
-    [self capture:@"layout-09-landscape-inspect-and-replay"];
+    [self capture:@"layout-09-landscape-replay-before-helper"];
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    [self capture:@"layout-09-landscape-naturally-completed"];
+    XCTAssertEqualObjects([board.value description], snapshot);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, progress);
     [self.app.buttons[@"explanation.close"] tap];
+    [self assertOriginalPracticeQuestionUnanswered:question];
     XCTAssertTrue(self.app.buttons[@"answer.0"].hittable);
+}
+- (void)testTwoZeroBorrowExchangesRemainVisibleAfterRotateAndReplay {
+    [self launchScenario:@"borrow"];
+    [self tapHomeCard:@"home.practice"];
+    NSString *question = self.app.staticTexts[@"practice.problem"].label;
+    [self.app.buttons[@"看怎麼算"] tap];
+    XCTAssertTrue([self.app.buttons[@"teaching.next"] waitForExistenceWithTimeout:5]);
+    XCUIElement *content = self.app.scrollViews[@"teaching.content"];
+    [self.app.buttons[@"teaching.next"] tap];
+    XCUIElement *wrong = self.app.buttons[@"teaching.choice.1"];
+    [self reveal:wrong in:content down:NO];
+    [wrong tap];
+    [self capture:@"borrow-01-first-wrong-prediction-before-helper"];
+    [self assertVerticalFeedbackVisible];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.feedback"].label containsString:@"1 個百 = 10 個十"]);
+    [self.app.buttons[@"teaching.next"] tap];
+    [self capture:@"borrow-02-first-exchange-first-play-before-helper"];
+    XCUIElement *board = [self element:@"verticalTeachingBoard"];
+    NSString *firstSnapshot = [board.value description];
+    NSString *firstProgress = self.app.staticTexts[@"teaching.progress"].label;
+    XCTAssertTrue([firstSnapshot containsString:@"百位 5 → 4"]);
+    XCTAssertTrue([firstSnapshot containsString:@"十位 0 → 10"]);
+    XCTAssertFalse([firstSnapshot containsString:@"個位 0 → 10"]);
+    XCTAssertTrue([firstSnapshot containsString:@"答案還沒寫"]);
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    [self capture:@"borrow-03-first-exchange-naturally-completed"];
+    [self.app.buttons[@"teaching.next"] tap];
+    wrong = self.app.buttons[@"teaching.choice.1"];
+    [self reveal:wrong in:content down:NO];
+    [wrong tap];
+    [self capture:@"borrow-04-second-wrong-prediction-before-helper"];
+    [self assertVerticalFeedbackVisible];
+    XCTAssertTrue([self.app.staticTexts[@"teaching.feedback"].label containsString:@"1 個十 = 10 個一"]);
+    [self.app.buttons[@"teaching.next"] tap];
+    [self capture:@"borrow-05-second-exchange-first-play-before-helper"];
+    NSString *secondSnapshot = [board.value description];
+    NSString *secondProgress = self.app.staticTexts[@"teaching.progress"].label;
+    XCTAssertTrue([secondSnapshot containsString:@"十位 10 → 9"]);
+    XCTAssertTrue([secondSnapshot containsString:@"個位 0 → 10"]);
+    XCTAssertTrue([secondSnapshot containsString:@"答案還沒寫"]);
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    [self capture:@"borrow-06-second-exchange-naturally-completed"];
+    [self rotateVerticalLandscape];
+    [self capture:@"borrow-07-landscape-before-helper"];
+    [self.app.buttons[@"teaching.focus"] tap];
+    [self.app.buttons[@"teaching.replay"] tap];
+    [self capture:@"borrow-08-landscape-replay-before-helper"];
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    XCTAssertEqualObjects([board.value description], secondSnapshot);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, secondProgress);
+    [[XCUIDevice sharedDevice] pressButton:XCUIDeviceButtonHome];
+    [self.app activate];
+    XCTAssertEqualObjects([board.value description], secondSnapshot);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, secondProgress);
+    [self.app.buttons[@"teaching.previous"] tap];
+    [self.app.buttons[@"teaching.previous"] tap];
+    XCTAssertEqualObjects([board.value description], firstSnapshot);
+    XCTAssertEqualObjects(self.app.staticTexts[@"teaching.progress"].label, firstProgress);
+    [self.app.buttons[@"teaching.replay"] tap];
+    [self capture:@"borrow-09-first-exchange-back-and-replay-before-helper"];
+    [self assertVerticalExchangeVisible];
+    [self waitForVerticalNaturalCompletion];
+    [self assertTeachingControls];
+    [self.app.buttons[@"explanation.close"] tap];
+    [self assertOriginalPracticeQuestionUnanswered:question];
 }
 
 - (void)testSettingsSelectionPersistsAndLastOperationStaysAvailable {
@@ -459,6 +662,9 @@
     [self capture:@"layout-14-sharing-child-prediction"];
 
     [self.app.buttons[@"grouping.next"] tap]; // Index 2: first real transfer.
+    [self assertCompleteGroupingActionVisible];
+    [self capture:@"layout-15-sharing-first-recipient-entry"];
+    [self finishFocusedSharingRoundWatchingActions:YES];
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"這一輪共分出 4 顆"]);
     // Do not scroll before recording the controller's first-play framing.
     // The existing native recording preserves before/mid/after, unmodified.
@@ -470,12 +676,14 @@
     [self captureGroupingBoardSlices:@"layout-16-sharing-first-round"];
     [self replayGroupingPreservingInspection:firstRound capture:@"layout-17-sharing-lower-replay-settled"];
 
-    [self.app.buttons[@"grouping.previous"] tap];
+    [self previousOriginalGroupingStep];
     XCTAssertEqualObjects(self.app.staticTexts[@"grouping.progress"].label, predictionProgress);
     XCTAssertFalse(self.app.buttons[@"grouping.choice.1"].enabled);
     XCTAssertEqualObjects([self.app.buttons[@"grouping.choice.1"].value description], @"對，想通這一步了");
     [self.app.buttons[@"grouping.next"] tap]; // Back to index 2; other predictions may be skipped.
-    for (NSUInteger step = 2; step < 11; step++) [self.app.buttons[@"grouping.next"] tap];
+    for (NSUInteger step = 2; step < 11; step++) {
+        [self finishFocusedSharingRoundWatchingActions:NO]; [self.app.buttons[@"grouping.next"] tap];
+    }
     XCTAssertTrue([self.app.staticTexts[@"grouping.prompt"].label containsString:@"還能讓每個小朋友再拿 1 顆嗎"]);
     XCUIElement *notEnough = self.app.buttons[@"grouping.choice.0"];
     [self reveal:notEnough in:content down:NO];
@@ -517,6 +725,7 @@
     XCTAssertTrue([self.app.staticTexts[@"grouping.explanation"].label containsString:@"拿出糖果 4 顆"]);
     [self assertGroupingBoardVisible];
     NSArray<NSString *> *firstBag = @[@"已分成 1 包", @"第 1 包有 4 顆", @"待分組的糖果：19 顆", @"答案還沒寫"];
+    [self assertCompleteGroupingActionVisible]; [self waitForGroupingActionNaturalEnd];
     [self waitForGroupingValues:firstBag];
     XCTAssertFalse([self.groupingBoardValue containsString:@"第 2 包有"]);
     [self capture:@"layout-23-packing-first-play-viewport"];

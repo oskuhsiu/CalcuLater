@@ -1,4 +1,5 @@
 #import "GroupingTeachingSequence.h"
+#import "GroupingTeachingAction.h"
 #import "WordProblem.h"
 
 static ArithmeticProblem *GTCopyArithmetic(ArithmeticProblem *problem) {
@@ -375,8 +376,141 @@ static NSInteger GTSum(NSArray<NSNumber *> *counts) {
     if (!build) verify = [verify stringByAppendingFormat:@"加上共同剩下的 %ld %@，正好是原來的%@ %ld %@。",
         (long)r, unit, item, (long)self.sequence.total, unit];
     [self appendSettledKind:GroupingTeachingStepKindVerify title:@"放回原來的題目檢查" explanation:verify];
-    [self appendSettledKind:GroupingTeachingStepKindCompletion title:@"換你試試看"
-        explanation:@"可以回到原來的題目，自己選出答案；這個示範不會替你作答。"];
+    [self appendSettledKind:GroupingTeachingStepKindCompletion title:@"回頭想一想"
+        explanation:@"可以回到題目，想想每一步為什麼這樣做；也可以重看剛才的步驟。"];
 }
 
+@end
+
+#pragma mark - Immutable views of a selected division action
+@interface GroupingTeachingAction ()
+@property (nonatomic, strong, readwrite) GroupingTeachingSequence *sequence;
+@property (nonatomic, assign, readwrite) NSInteger stepIndex;
+@property (nonatomic, assign, readwrite) NSInteger actionIndex;
+@property (nonatomic, assign, readwrite) NSInteger actionCount;
+@property (nonatomic, assign, readwrite, getter=isFullAction) BOOL fullAction;
+@property (nonatomic, assign, readwrite, getter=isRoundComplete) BOOL roundComplete;
+@property (nonatomic, strong, readwrite) GroupingTeachingStep *snapshot;
+@property (nonatomic, copy, readwrite) NSString *progressText;
+@property (nonatomic, copy, readwrite) NSArray<NSArray<NSNumber *> *> *groupIdentitiesBefore;
+@property (nonatomic, copy, readwrite) NSArray<NSArray<NSNumber *> *> *groupIdentitiesAfter;
+@end
+static NSArray<NSArray<NSNumber *> *> *GTIdentityCopy(NSArray<NSArray<NSNumber *> *> *groups) {
+    NSMutableArray *copy = [NSMutableArray arrayWithCapacity:groups.count];
+    for (NSArray *group in groups) [copy addObject:[group copy]];
+    return [copy copy];
+}
+static NSArray<NSNumber *> *GTIdentityCounts(NSArray<NSArray<NSNumber *> *> *groups) {
+    NSMutableArray *counts = [NSMutableArray arrayWithCapacity:groups.count];
+    for (NSArray *group in groups) [counts addObject:@(group.count)];
+    return [counts copy];
+}
+@implementation GroupingTeachingAction
+- (instancetype)initPrivate { return [super init]; }
++ (BOOL)hasDivisionAction:(GroupingTeachingSequence *)sequence index:(NSInteger)index {
+    if (!sequence.isSupported || index < 0 || index >= (NSInteger)sequence.steps.count) return NO;
+    GroupingTeachingStep *step = sequence.steps[index];
+    return step.kind == GroupingTeachingStepKindShareRound || step.kind == GroupingTeachingStepKindPackGroup;
+}
++ (NSArray<GroupingTeachingAction *> *)focusedActionsForSequence:(GroupingTeachingSequence *)sequence stepIndex:(NSInteger)index {
+    if (![self hasDivisionAction:sequence index:index]) return @[];
+    BOOL share = sequence.context.meaning == GroupingStoryMeaningShareEqually;
+    NSInteger pool = sequence.problem.number1;
+    NSMutableArray<NSMutableArray<NSNumber *> *> *groups = [NSMutableArray array];
+    NSMutableArray<GroupingTeachingAction *> *actions = [NSMutableArray array];
+    for (NSInteger stepIndex = 0; stepIndex <= index; stepIndex++) {
+        GroupingTeachingStep *step = sequence.steps[stepIndex];
+        while (groups.count < step.groupCountsAfter.count) [groups addObject:[NSMutableArray array]];
+        // The packing before-state does not contain the newly prepared empty bag.
+        NSArray *roundBeforeIDs = GTIdentityCopy([groups subarrayWithRange:NSMakeRange(0, step.groupCountsBefore.count)]);
+        NSInteger roundPoolBefore = pool;
+        for (NSNumber *active in step.activeGroupIndices) {
+            NSInteger groupIndex = active.integerValue;
+            NSArray *beforeIDs = GTIdentityCopy(groups);
+            NSInteger poolBefore = pool;
+            NSInteger targetCount = step.groupCountsAfter[groupIndex].integerValue;
+            while ((NSInteger)groups[groupIndex].count < targetCount) {
+                if (pool <= 0) return @[];
+                [groups[groupIndex] addObject:@(--pool)];
+            }
+            if (stepIndex != index) continue;
+            GroupingTeachingAction *action = [[self alloc] initPrivate];
+            action.sequence = sequence; action.stepIndex = index;
+            action.actionIndex = share ? actions.count : 0;
+            action.actionCount = share ? step.activeGroupIndices.count : 1;
+            action.fullAction = NO;
+            action.roundComplete = action.actionIndex + 1 == action.actionCount;
+            action.groupIdentitiesBefore = share ? beforeIDs : roundBeforeIDs;
+            action.groupIdentitiesAfter = GTIdentityCopy(groups);
+            GroupingTeachingStep *snapshot = [[GroupingTeachingStep alloc] initPrivate];
+            snapshot.kind = step.kind; snapshot.title = step.title;
+            snapshot.actionTitle = share ? [NSString stringWithFormat:@"第 %ld %@再拿 1 %@", (long)groupIndex + 1, sequence.context.groupName, sequence.context.itemUnit] : step.actionTitle;
+            snapshot.prompt = @""; snapshot.predictionKind = GroupingTeachingPredictionKindNone;
+            snapshot.groupCountsBefore = GTIdentityCounts(action.groupIdentitiesBefore);
+            snapshot.groupCountsAfter = GTIdentityCounts(action.groupIdentitiesAfter);
+            snapshot.poolCountBefore = @(share ? poolBefore : roundPoolBefore);
+            snapshot.poolCountAfter = @(pool);
+            snapshot.activeGroupIndices = @[active]; snapshot.transferCount = share ? 1 : step.transferCount;
+            snapshot.visibleAnswer = step.visibleAnswer; snapshot.visibleRemainder = step.visibleRemainder;
+            GroupingStoryContext *context = sequence.context;
+            if (share) {
+                NSInteger round = step.groupCountsAfter[groupIndex].integerValue;
+                action.progressText = [NSString stringWithFormat:@"第 %ld 輪 · 第 %ld / %ld 位", (long)round, (long)action.actionIndex + 1, (long)action.actionCount];
+                snapshot.explanation = [NSString stringWithFormat:@"這輪每%@只再拿 1 %@。現在給第 %ld %@；共同待分的%@從 %ld %@變成 %ld %@。%@", context.groupName, context.itemUnit, (long)groupIndex + 1, context.groupName, context.itemName, (long)poolBefore, context.itemUnit, (long)pool, context.itemUnit, action.roundComplete ? @"這輪分完了，大家的數量又一樣多。" : @"這輪還沒分完，其他人要等下一小步。"];
+                if (action.roundComplete) snapshot.explanation = [snapshot.explanation stringByAppendingString:step.explanation];
+            } else {
+                action.progressText = [NSString stringWithFormat:@"第 %ld %@ · 每%@ %ld %@", (long)groupIndex + 1, context.groupName, context.groupName, (long)step.transferCount, context.itemUnit];
+                snapshot.explanation = step.explanation;
+            }
+            snapshot.spokenExplanation = [NSString stringWithFormat:@"%@。%@", action.progressText, snapshot.explanation];
+            action.snapshot = snapshot;
+            [actions addObject:action];
+        }
+    }
+    return [actions copy];
+}
++ (instancetype)fullActionForSequence:(GroupingTeachingSequence *)sequence stepIndex:(NSInteger)index {
+    NSArray<GroupingTeachingAction *> *focused = [self focusedActionsForSequence:sequence stepIndex:index];
+    if (!focused.count) return nil;
+    GroupingTeachingAction *first = focused.firstObject, *last = focused.lastObject;
+    GroupingTeachingAction *action = [[self alloc] initPrivate];
+    action.sequence = sequence; action.stepIndex = index; action.actionIndex = NSNotFound;
+    action.actionCount = focused.count; action.fullAction = YES; action.roundComplete = YES;
+    action.snapshot = sequence.steps[index];
+    action.groupIdentitiesBefore = first.groupIdentitiesBefore; action.groupIdentitiesAfter = last.groupIdentitiesAfter;
+    action.progressText = sequence.context.meaning == GroupingStoryMeaningShareEqually
+        ? [NSString stringWithFormat:@"第 %@ 輪 · 每位再拿 1 %@", action.snapshot.groupCountsAfter.firstObject, sequence.context.itemUnit]
+        : first.progressText;
+    return action;
+}
+@end
+
+@implementation GroupingPredictionFeedback
++ (NSString *)feedbackForSequence:(GroupingTeachingSequence *)sequence stepIndex:(NSInteger)index chosenValue:(NSInteger)value {
+    if (!sequence.isSupported || index < 0 || index >= (NSInteger)sequence.steps.count) return @"";
+    GroupingTeachingStep *step = sequence.steps[index];
+    if (step.kind != GroupingTeachingStepKindPredict) return @"";
+    GroupingStoryContext *context = sequence.context;
+    BOOL share = context.meaning == GroupingStoryMeaningShareEqually;
+    BOOL build = context.meaning == GroupingStoryMeaningBuildEqualGroups;
+    NSString *unit = context.itemUnit, *group = context.groupName;
+    BOOL correct = value == step.expectedAnswer.integerValue;
+    if (step.predictionKind == GroupingTeachingPredictionKindCanContinue) {
+        NSInteger available = step.poolCountAfter.integerValue;
+        NSInteger needed = share ? step.groupCountsAfter.count : sequence.problem.number2;
+        NSString *rule = share ? [NSString stringWithFormat:@"%ld %@各再拿 1 %@，要 %ld %@", (long)needed, group, unit, (long)needed, unit]
+            : [NSString stringWithFormat:@"完整的一%@要 %ld %@", group, (long)needed, unit];
+        return [NSString stringWithFormat:@"你選「%@」。共同待分只有 %ld %@；%@，還差 %ld %@。%@", value ? @"還可以" : @"不夠了", (long)available, unit, rule, (long)MAX(0, needed - available), unit, correct ? @"對，所以先停下來。這裡不計分。" : (share ? [NSString stringWithFormat:@"只給其中幾位，就沒有讓每位都再拿 1 %@。看圖數一數，再選也可以。", unit] : @"不完整的一組還不能算一組。看圖數一數，再選也可以。")];
+    }
+    if (share) {
+        NSInteger before = step.groupCountsAfter.firstObject.integerValue;
+        return [NSString stringWithFormat:@"你選 %ld %@。每%@現在有 %ld %@，下一輪每位只再拿 1 %@，是 %ld 加 1。共同待分還有 %ld %@。%@", (long)value, unit, group, (long)before, unit, unit, (long)before, (long)step.poolCountAfter.integerValue, unit, correct ? @"這樣想對了；準備好再看動作。" : @"先數原來的，再加這 1 個圓點；不用把整個待分區都算給一個人。"];
+    }
+    if (build) {
+        NSInteger existing = GTSum(step.groupCountsAfter), size = sequence.problem.number1;
+        return [NSString stringWithFormat:@"你選 %ld %@。已建立的%@共有 %ld %@，下一%@再放 %ld %@，是 %ld 加 %ld。%@", (long)value, unit, group, (long)existing, unit, group, (long)size, unit, (long)existing, (long)size, correct ? @"想清楚了，就看下一小步。" : @"把原來的和新的一組分開數，再合起來；這裡不計分。"];
+    }
+    NSInteger before = step.groupCountsAfter.count, size = sequence.problem.number2;
+    return [NSString stringWithFormat:@"你選 %ld %@。現在有 %ld %@完整的，待分區有 %ld %@；再拿 %ld %@，只會多 1 %@，是 %ld 加 1。%@", (long)value, group, (long)before, group, (long)step.poolCountAfter.integerValue, unit, (long)size, unit, group, (long)before, correct ? @"對，數的是完整的組，不是物件。" : @"先數完整的組，再想一想；這裡不計分。"];
+}
 @end
