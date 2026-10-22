@@ -92,8 +92,8 @@ The native 900-second test deadline, existing command timeout defaults, owned
 process-group interruption and cancellation handling, video behavior, Simulator
 ownership, configuration, build, cleanup, workflow, app and native assertions are
 unchanged. There is no native rerun, retry, longer timeout, reset, missing-test
-inference, or failure masking. A failed/cancelled xcodebuild never reaches the new
-read-only probes. Tool failures/cancellation retain their original exception or
+inference, or failure masking. A failed/cancelled xcodebuild never reaches the
+acceptance gate's read-only probes. Tool failures/cancellation retain their original exception or
 exit status, with diagnostic JSON when writable.
 
 ## Portable checks and exact archived replay
@@ -143,3 +143,63 @@ execution on source `37256a7`; it does not retroactively make that workflow gree
 claim another source passed natively, or claim live end-to-end integration of the
 new gate. A subsequent independently authorized native run must exercise the
 new gate on its own exact source before claiming that integration.
+
+## 2026-10-22: Retain failed-run trees as diagnostics, not acceptance
+
+On source `47b2ffa24a5c8641c757c7bd4606e4705b3f21ee`, `test()` still stops at
+nonzero xcodebuild and never calls the proof gate. The always-run export step
+already retains the raw Build/Tests bundles, attachments, summary and final
+device evidence. It now attempts an additional read-only tree inspection
+**after those existing exports**, only when neither `xcresult-tests.log` nor
+`xcresult-tests.json` exists:
+
+```sh
+xcrun xcresulttool help get test-results tests
+xcrun xcresulttool get test-results tests --path build/Tests.xcresult
+```
+
+The actual bundle argument is the absolute checkout-local path, matching the
+other export commands. The existing command runner retains output unchanged in
+`xcresult-tests-diagnostic-help.log` and `xcresult-tests-diagnostic.log`, with
+separate `.json` command, exit-code, elapsed-time, source-SHA and scenario
+metadata. These filenames deliberately differ from the acceptance evidence.
+No parser runs, no console fallback occurs, and no `test-execution.json` is
+created or changed. A successfully exported diagnostic tree is not a passing
+native test. Failed/skipped/missing cases remain exactly as the tool reports
+them; malformed, incomplete or unknown output is retained without inference.
+
+Both inspections use the existing 120-second command bound and cleanup policy,
+with `check=False`. Nonzero tool exits and timeouts remain in their metadata;
+ordinary start/write errors emit warnings without discarding other evidence.
+Each inspection is independent, so help failure does not prevent collecting
+the tree. Existing proof attempts and existing diagnostic log/metadata pairs,
+including partial pairs, are preserved rather than overwritten or retried.
+Missing bundles do not trigger inspection.
+
+The diagnostic helper temporarily latches SIGINT/SIGTERM and restores the prior
+handlers. An already-captured `KeyboardInterrupt` or `SystemExit` now remains
+authoritative if the runner's subsequent log/metadata writes or output printing
+fail. The cancellation branch also preserves its captured interruption if
+`interrupt_command()` raises a secondary ordinary error; that error remains
+available as the exception context. Neither guard changes cleanup internals,
+process scope or timeout policy. Ordinary write errors still raise when no
+interruption was captured, and timeout cleanup failures are not reclassified as
+cancellation. A cleanup error can prevent the interrupted diagnostic's own
+log/metadata from being written; prior exported evidence remains, and the
+interruption propagates instead of starting the next inspection.
+There is no new native invocation, reset, retry, accepted inventory, proof
+schema, simulator configuration, toolchain, workflow matrix or deadline change.
+The 900-second native command and 35-minute job bounds remain unchanged.
+
+All **72 portable CI tests pass**, including 15 new export regressions for
+exact/mixed output, original xcodebuild failure preservation, existing/partial
+proof protection, missing bundles, tool failure, timeout, disk errors and
+cancellation. AST comparison confirms only `export()` and the two narrow
+cancellation-preservation guards in `run()` changed among existing function/class
+definitions. Flattening those guards recovers the original runner AST exactly;
+all its other statements and the existing cleanup function are unchanged. The diagnostic
+helper is the sole new function.
+All subprocesses in these regressions are mocked. No macOS/native run or remote
+write was performed, so live failed-run tree export remains to be verified on
+an independently authorized native run. Partial or absent artifacts still
+remain evidence gaps, never inferred passes.

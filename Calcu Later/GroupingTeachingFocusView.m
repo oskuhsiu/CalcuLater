@@ -288,7 +288,7 @@ static const NSTimeInterval GFTTail = 0.24;
     if (!self.action) return;
     completed = MAX(0, MIN(completed, (NSInteger)self.movingIDs.count));
     self.showingBeforeState = before;
-    NSMutableArray *counts = [self.action.snapshot.groupCountsBefore mutableCopy];
+    NSMutableArray<NSNumber *> *counts = [self.action.snapshot.groupCountsBefore mutableCopy];
     while (counts.count < self.action.snapshot.groupCountsAfter.count) [counts addObject:@0];
     NSSet *completeIDs = [NSSet setWithArray:[self.movingIDs subarrayWithRange:NSMakeRange(0, completed)]];
     NSNumber *movingID = progress >= 0 && completed < (NSInteger)self.movingIDs.count ? self.movingIDs[completed] : nil;

@@ -457,20 +457,29 @@ def run(name, command, timeout=120, check=True):
     except (KeyboardInterrupt, SystemExit) as error:
         # On cancellation, retain the interrupted command's evidence too.
         interruption = error
-        output = interrupt_command(process)
+        try:
+            output = interrupt_command(process)
+        except Exception:
+            # A secondary cleanup error must not turn a captured cancellation
+            # into an ordinary best-effort export failure.
+            raise interruption
         code = error.code if isinstance(error, SystemExit) and isinstance(error.code, int) else 130
         output += "\nCOMMAND CANCELLED; interrupted owned process group\n"
-    (EVIDENCE / f"{name}.log").write_text(output)
-    (EVIDENCE / f"{name}.json").write_text(json.dumps({
-        "command": command, "exitCode": code,
-        "elapsedSeconds": round(time.monotonic() - started, 2),
-        "sourceSHA": os.environ.get("GITHUB_SHA"),
-        "scenario": os.environ.get("NATIVE_SCENARIO", "standard"),
-        "automaticRetryAllowed": False,
-    }, indent=2))
-    print(output, flush=True)
-    if interruption is not None:
-        raise interruption
+    try:
+        (EVIDENCE / f"{name}.log").write_text(output)
+        (EVIDENCE / f"{name}.json").write_text(json.dumps({
+            "command": command, "exitCode": code,
+            "elapsedSeconds": round(time.monotonic() - started, 2),
+            "sourceSHA": os.environ.get("GITHUB_SHA"),
+            "scenario": os.environ.get("NATIVE_SCENARIO", "standard"),
+            "automaticRetryAllowed": False,
+        }, indent=2))
+        print(output, flush=True)
+    finally:
+        # An evidence-write failure must not replace cancellation already caught
+        # above. Without cancellation, every existing write/error path is unchanged.
+        if interruption is not None:
+            raise interruption
     if code and check:
         raise SystemExit(code)
     return output
@@ -868,6 +877,56 @@ def test():
     verify_test_execution(output, required, owned, scenario_name, selected)
 
 
+def export_diagnostic_test_tree(result):
+    """Retain a missing structured tree, never evaluate or replace acceptance.
+
+    A failed xcodebuild does not reach verify_test_execution(). Inspect its
+    existing bundle read-only under distinct names, after other evidence saves.
+    check=False retains tool failure/timeout metadata but still raises genuine
+    cancellation; only ordinary collection errors are best-effort here.
+    """
+    commands = (
+        ("xcresult-tests-diagnostic-help", ["xcrun", "xcresulttool", "help", "get",
+                                            "test-results", "tests"]),
+        ("xcresult-tests-diagnostic", ["xcrun", "xcresulttool", "get", "test-results",
+                                      "tests", "--path", str(result)]),
+    )
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    cancellation = None
+
+    def cancel(signum, _frame):
+        nonlocal cancellation
+        if cancellation is None:
+            cancellation = SystemExit(128 + signum)
+        raise cancellation
+
+    try:
+        for sig in previous:
+            signal.signal(sig, cancel)
+        for name, command in commands:
+            try:
+                # Preserve successful proof and failed/partial proof attempts alike.
+                # Export must not retry the gate or overwrite any retained output.
+                if any((EVIDENCE / f"xcresult-tests.{suffix}").exists() for suffix in ("log", "json")):
+                    return
+                if any((EVIDENCE / f"{name}.{suffix}").exists() for suffix in ("log", "json")):
+                    print(f"::warning::Preserving existing {name} output; no repeated inspection.", flush=True)
+                    continue
+                run(name, command, timeout=120, check=False)
+            except Exception as error:
+                # run() saves output before rethrowing cancellation. A simultaneous
+                # write error must not hide that cancellation or start another probe.
+                if cancellation is not None:
+                    raise cancellation
+                print(f"::warning::Could not retain {name}: {error}. "
+                      "The original test result is unchanged.", flush=True)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if cancellation is not None:
+            raise cancellation
+
+
 def export():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     # Retain raw bundles even when a timed-out test left incomplete metadata.
@@ -924,7 +983,15 @@ def export():
                          "test-execution.json lists missing, non-passing, duplicate and unexpected results. "
                          "xcresult-tests-help.log retains the selected tool contract; console output is "
                          "diagnostic only, never an alternative passing path. "
+                         "When the proof collector did not retain a test tree, export attempts "
+                         "xcresult-tests-diagnostic.log/json and xcresult-tests-diagnostic-help.log/json "
+                         "from the existing bundle. These are diagnostic only: tool exit status and "
+                         "partial output are retained, never promoted to test-execution.json or a pass. "
                          "Boilerplate repeated launch configurations are excluded.\n")
+    # Save the existing raw bundles, attachments, summary and device evidence
+    # first, so this additional best-effort inspection cannot prevent them.
+    if result.exists():
+        export_diagnostic_test_tree(result)
 
 
 def cleanup():
