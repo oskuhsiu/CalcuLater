@@ -111,6 +111,103 @@ static NSString *MTPCurrentParentPaintDiagnostic(CALayer *parent, CALayer *cover
         (unsigned long)count, count == children.count, (unsigned long)markerMatches, [cover.name isEqualToString:MTPNativeCoverMarker]]];
     return [lines componentsJoinedByString:@"\n"];
 }
+// Observation only: current public trees are not a compositor/display fence.
+// Fixed role/model links identify owned layers; detached getters are kept separate.
+static NSString *MTPNativeCoverLayerState(CALayer *layer) {
+    if (!layer) return @"exists=0";
+    NSArray<NSString *> *keys = layer.animationKeys;
+    NSMutableArray<NSString *> *boundedKeys = [NSMutableArray array];
+    for (NSUInteger index = 0; index < MIN(keys.count,8u); index++)
+        [boundedKeys addObject:[keys[index] substringToIndex:MIN(keys[index].length,80u)]];
+    return [NSString stringWithFormat:@"exists=1 identity=%p model=%p parent=%p class=%@ frame=%@ bounds=%@ position=%@ anchor=%@ anchorZ=%g hidden=%d opacity=%g z=%g backgroundAlpha=%g contents=%d mask=%d shadow=%g clips=%d corner=%g transformIdentity=%d sublayerTransformIdentity=%d speed=%g timeOffset=%g beginTime=%g animationCount=%lu keysFirst8=%@",
+        layer, layer.modelLayer, layer.superlayer, NSStringFromClass(layer.class), NSStringFromCGRect(layer.frame), NSStringFromCGRect(layer.bounds), NSStringFromCGPoint(layer.position), NSStringFromCGPoint(layer.anchorPoint), (double)layer.anchorPointZ,
+        layer.hidden, (double)layer.opacity, (double)layer.zPosition, (double)(layer.backgroundColor ? CGColorGetAlpha(layer.backgroundColor) : 0), layer.contents != nil, layer.mask != nil, (double)layer.shadowOpacity,
+        layer.masksToBounds, (double)layer.cornerRadius, CATransform3DIsIdentity(layer.transform), CATransform3DIsIdentity(layer.sublayerTransform), (double)layer.speed, layer.timeOffset, layer.beginTime, (unsigned long)keys.count, boundedKeys];
+}
+static BOOL MTPNativeCoverReachesRoot(CALayer *layer, CALayer *root) {
+    if (!root) return NO;
+    for (NSUInteger depth = 0; layer && depth < 16; depth++, layer = layer.superlayer) if (layer == root) return YES;
+    return NO;
+}
+static void MTPAppendCoverGeometry(NSMutableArray<NSString *> *lines, NSString *role, CALayer *layer,
+                                   CALayer *root, CGRect originalRequired, CGRect currentRequired) {
+    BOOL connected = layer && MTPNativeCoverReachesRoot(layer,root);
+    CGRect rect = connected ? [root convertRect:layer.bounds fromLayer:layer] : CGRectNull;
+    [lines addObject:[NSString stringWithFormat:@"role=%@ %@ connectedToCurrentParentWithin16=%d rectInParent=%@ intersectsOriginalRequired=%d containsOriginalRequired=%d intersectsCurrentRequired=%d containsCurrentRequired=%d",
+        role, MTPNativeCoverLayerState(layer), connected, NSStringFromCGRect(rect),
+        connected && CGRectIntersectsRect(rect,originalRequired), connected && CGRectContainsRect(rect,originalRequired),
+        connected && CGRectIntersectsRect(rect,currentRequired), connected && CGRectContainsRect(rect,currentRequired)]];
+}
+static void MTPAppendCoverChildren(NSMutableArray<NSString *> *lines, NSString *tree, NSArray<CALayer *> *children,
+                                   NSArray<CALayer *> *modelChildren, CALayer *parent, CALayer *root,
+                                   CALayer *board, CALayer *cover, CALayer *descendant, NSSet<CALayer *> *owned,
+                                   CGRect originalRequired, CGRect currentRequired, BOOL presented) {
+    NSUInteger count = 0, markers = 0, coverLinks = 0, descendantLinks = 0;
+    for (CALayer *child in children) {
+        if (count == 32) break;
+        CALayer *model = presented ? child.modelLayer : child;
+        BOOL marked = [child.name isEqualToString:MTPNativeCoverMarker];
+        markers += marked; coverLinks += model == cover; descendantLinks += descendant && model == descendant;
+        NSString *role = [NSString stringWithFormat:@"%@[%lu] parentLink=%d modelInCurrentChildren=%d fixedCoverMarker=%d isBoard=%d isCover=%d isDescendant=%d isOwnedRoot=%d",
+            tree, (unsigned long)count, child.superlayer == parent, model && [modelChildren containsObject:model], marked,
+            model == board, model == cover, descendant && model == descendant, model && [owned containsObject:model]];
+        MTPAppendCoverGeometry(lines,role,child,root,originalRequired,currentRequired);
+        count++;
+    }
+    [lines addObject:[NSString stringWithFormat:@"tree=%@ parent=%p parentExists=%d parentConnectedToCurrentRootWithin16=%d total=%lu enumerated=%lu complete=%d currentTreeFixedMarkerMatches=%lu currentTreeCoverModelLinks=%lu currentTreeDescendantModelLinks=%lu childLimit=32",
+        tree, parent, parent != nil, MTPNativeCoverReachesRoot(parent,root), (unsigned long)children.count, (unsigned long)count, count == children.count, (unsigned long)markers, (unsigned long)coverLinks, (unsigned long)descendantLinks]];
+}
+static NSString *MTPNativeCoverObservation(MultiplicativePlaceValueBoardView *board, CALayer *parent,
+                                          CALayer *cover, CALayer *descendant, MultiplicativeTeachingAction *action,
+                                          void *originalClockIdentity, BOOL originalClockPaused, void *originalTransactionIdentity,
+                                          CGRect originalRequired, NSString *mode, BOOL inside, NSString *phase) {
+    CFTimeInterval monotonic = CACurrentMediaTime(); NSTimeInterval wall = NSDate.date.timeIntervalSince1970;
+    CADisplayLink *clock = [board valueForKey:@"clock"]; id transaction = [board valueForKey:@"transaction"];
+    CALayer *paint = parent.presentationLayer;
+    NSArray<CALayer *> *modelChildren = parent.sublayers.copy, *paintChildren = paint.sublayers.copy;
+    CALayer *coverPaint = nil, *boardPaint = parent == board.layer ? paint : nil;
+    // Match only the freshly read CURRENT parent's children, never a retained getter.
+    for (NSUInteger index = 0; index < MIN(paintChildren.count,32u); index++) { CALayer *child = paintChildren[index]; if (child.modelLayer == cover) coverPaint = child; if (child.modelLayer == board.layer) boardPaint = child; }
+    BOOL modelConnected = MTPNativeCoverReachesRoot(board.layer,parent), paintConnected = MTPNativeCoverReachesRoot(boardPaint,paint);
+    CGRect required = board.requiredActionRect;
+    CGRect modelOriginal = modelConnected ? [parent convertRect:originalRequired fromLayer:board.layer] : CGRectNull;
+    CGRect modelRequired = modelConnected ? [parent convertRect:required fromLayer:board.layer] : CGRectNull;
+    CGRect paintOriginal = paintConnected ? [paint convertRect:originalRequired fromLayer:boardPaint] : CGRectNull;
+    CGRect paintRequired = paintConnected ? [paint convertRect:required fromLayer:boardPaint] : CGRectNull;
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
+        @"case mode=%@ inside=%d phase=%@ monotonic=%.9f wallUnix=%.6f state=%ld interruption=%ld generation=%lu endpoint=%ld fullSnapshot=%d action=%p originalAction=%p sameAction=%d snapshot=%p originalBefore=%p originalAfter=%p snapshotIsBefore=%d snapshotIsAfter=%d clock=%p originalClock=%p sameOriginalClock=%d clockExists=%d clockPaused=%d originalClockWasPaused=%d transaction=%p originalTransaction=%p sameOriginalTransaction=%d callerDisableActions=%d callerDuration=%g",
+        mode, inside, phase, monotonic, wall, (long)board.playbackState, (long)board.interruptionReason, (unsigned long)board.playbackGeneration, (long)board.endpoint, board.displayingFullSnapshot,
+        board.action, action, board.action == action, board.snapshot, action.before, action.after, board.snapshot == action.before, board.snapshot == action.after,
+        clock, originalClockIdentity, clock && (__bridge void *)clock == originalClockIdentity, clock != nil, clock ? clock.paused : NO, originalClockPaused,
+        transaction, originalTransactionIdentity, transaction && (__bridge void *)transaction == originalTransactionIdentity, CATransaction.disableActions, CATransaction.animationDuration]];
+    [lines addObject:[NSString stringWithFormat:@"geometry boardFrame=%@ boardBounds=%@ originalRequiredInBoard=%@ currentRequiredInBoard=%@ requestedInBoard=%@ modelBoardConnected=%d paintBoardConnected=%d originalRequiredInModelParent=%@ currentRequiredInModelParent=%@ originalRequiredInPaintParent=%@ currentRequiredInPaintParent=%@ boardClips=%d retainedCoverNameMatches=%d retainedCoverAttachedToModelParent=%d retainedDescendantAttachedToCover=%d legacyModelMarkerMatchesMeansRetainedNameOnly=1",
+        NSStringFromCGRect(board.frame), NSStringFromCGRect(board.bounds), NSStringFromCGRect(originalRequired), NSStringFromCGRect(required), NSStringFromCGRect([[board valueForKey:@"requestedVisibleRect"] CGRectValue]),
+        modelConnected, paintConnected, NSStringFromCGRect(modelOriginal), NSStringFromCGRect(modelRequired), NSStringFromCGRect(paintOriginal), NSStringFromCGRect(paintRequired), board.clipsToBounds,
+        [cover.name isEqualToString:MTPNativeCoverMarker], cover.superlayer == parent, descendant && descendant.superlayer == cover]];
+    NSSet<CALayer *> *owned = [board ownedRootLayers];
+    MTPAppendCoverGeometry(lines,@"modelBoard",board.layer,parent,modelOriginal,modelRequired);
+    MTPAppendCoverGeometry(lines,@"currentTreeBoardPaint",boardPaint,paint,paintOriginal,paintRequired);
+    MTPAppendCoverGeometry(lines,@"retainedModelCover",cover,parent,modelOriginal,modelRequired);
+    MTPAppendCoverGeometry(lines,@"currentTreeCoverPaint",coverPaint,paint,paintOriginal,paintRequired);
+    MTPAppendCoverGeometry(lines,@"coverPresentationGetterNotMembershipProof",cover.presentationLayer,paint,paintOriginal,paintRequired);
+    MTPAppendCoverGeometry(lines,@"retainedModelDescendant",descendant,parent,modelOriginal,modelRequired);
+    MTPAppendCoverGeometry(lines,@"descendantPresentationGetterNotMembershipProof",descendant.presentationLayer,paint,paintOriginal,paintRequired);
+    MTPAppendCoverChildren(lines,@"parent.model",modelChildren,modelChildren,parent,parent,board.layer,cover,descendant,owned,modelOriginal,modelRequired,NO);
+    MTPAppendCoverChildren(lines,@"parent.currentPaint",paintChildren,modelChildren,paint,paint,board.layer,cover,descendant,owned,paintOriginal,paintRequired,YES);
+    if (descendant) {
+        NSArray<CALayer *> *descendantModels = cover.sublayers.copy, *descendantPaints = coverPaint.sublayers.copy;
+        MTPAppendCoverChildren(lines,@"cover.retainedModelChildren",descendantModels,descendantModels,cover,parent,board.layer,cover,descendant,owned,modelOriginal,modelRequired,NO);
+        MTPAppendCoverChildren(lines,@"cover.currentTreePaintChildren",descendantPaints,descendantModels,coverPaint,paint,board.layer,cover,descendant,owned,paintOriginal,paintRequired,YES);
+    }
+    for (NSNumber *presented in @[@NO,@YES]) {
+        CALayer *ancestor = presented.boolValue ? paint : parent; NSUInteger depth = 0;
+        for (; ancestor && depth < 8; depth++, ancestor = ancestor.superlayer)
+            [lines addObject:[NSString stringWithFormat:@"parentAncestry presented=%d depth=%lu %@", presented.boolValue, (unsigned long)depth, MTPNativeCoverLayerState(ancestor)]];
+        [lines addObject:[NSString stringWithFormat:@"parentAncestry presented=%d enumerated=%lu complete=%d depthLimit=8", presented.boolValue, (unsigned long)depth, ancestor == nil]];
+    }
+    [lines addObject:[NSString stringWithFormat:@"observationEnd monotonic=%.9f wallUnix=%.6f publicTreesOnly=1 pixelsNotEstablished=1", CACurrentMediaTime(), NSDate.date.timeIntervalSince1970]];
+    return [lines componentsJoinedByString:@"\n"];
+}
 static void MTPAddFrozenPaintAnimation(CALayer *layer, NSString *keyPath, id destination) {
     CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:keyPath];
     animation.fromValue = [layer valueForKeyPath:keyPath]; animation.toValue = destination;
@@ -794,6 +891,10 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
     MultiplicativeTeachingAction *action = [self action:[self plan:126 op:@"×" b:4] kind:MultiplicativeTeachingActionKindExchangeUp column:2 last:NO];
     for (NSNumber *inside in @[@NO,@YES]) for (NSString *mode in @[@"sameZAbove",@"highZBelowIndex",@"animatedZ",@"animatedPosition",@"uncommittedReorder",@"uncommittedRemoval",@"uncommittedHiddenRemoval",@"uncommittedZeroOpacityRemoval",@"uncommittedDescendantRemoval"]) {
         [self fitAction:action width:self.viewport.bounds.size.width]; [self startPaused];
+        void *originalClockIdentity = (__bridge void *)[self.board valueForKey:@"clock"];
+        BOOL originalClockPaused = ((CADisplayLink *)[self.board valueForKey:@"clock"]).paused;
+        void *originalTransactionIdentity = (__bridge void *)[self.board valueForKey:@"transaction"];
+        CGRect originalRequired = self.board.requiredActionRect;
         CALayer *cover = [self addStandaloneCoverInsideBoard:inside.boolValue z:[mode isEqualToString:@"animatedZ"] ? -1 : ([mode isEqualToString:@"highZBelowIndex"] ? 10 : 0)
             first:[mode isEqualToString:@"highZBelowIndex"] outside:([mode isEqualToString:@"animatedPosition"] || [mode isEqualToString:@"uncommittedDescendantRemoval"]) hidden:NO];
         CALayer *parent = cover.superlayer, *descendant = nil;
@@ -802,14 +903,22 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
             [cover addSublayer:descendant]; [self presentFrame]; XCTAssertNotNil(descendant.presentationLayer);
         }
         NSString *removalDiagnostic = nil;
+        NSMutableArray<NSString *> *observations = [NSMutableArray array];
+        void (^observe)(NSString *) = ^(NSString *phase) {
+            [observations addObject:MTPNativeCoverObservation(self.board,parent,cover,descendant,action,
+                originalClockIdentity,originalClockPaused,originalTransactionIdentity,originalRequired,mode,inside.boolValue,phase)];
+        };
         @try {
+            observe(@"before mode mutation; after original fixture boundary");
             if ([mode isEqualToString:@"animatedZ"]) {
-                MTPAddFrozenPaintAnimation(cover,@"zPosition",@3); [self presentFrame];
+                MTPAddFrozenPaintAnimation(cover,@"zPosition",@3);
+                observe(@"immediately after frozen z mutation before existing native boundary"); [self presentFrame];
                 XCTAssertEqual(cover.zPosition,-1); XCTAssertGreaterThan(cover.presentationLayer.zPosition,0);
             }
             if ([mode isEqualToString:@"animatedPosition"]) {
                 CGRect target = [parent convertRect:self.board.requiredActionRect fromLayer:self.board.layer]; CGPoint center = CGPointMake(CGRectGetMidX(target),CGRectGetMidY(target));
-                MTPAddFrozenPaintAnimation(cover,@"position",[NSValue valueWithCGPoint:CGPointMake(2*center.x-cover.position.x,2*center.y-cover.position.y)]); [self presentFrame];
+                MTPAddFrozenPaintAnimation(cover,@"position",[NSValue valueWithCGPoint:CGPointMake(2*center.x-cover.position.x,2*center.y-cover.position.y)]);
+                observe(@"immediately after frozen position mutation before existing native boundary"); [self presentFrame];
                 XCTAssertFalse(CGRectIntersectsRect(cover.frame,target)); XCTAssertTrue(CGRectIntersectsRect(cover.presentationLayer.frame,target));
             }
             BOOL pending = [mode hasPrefix:@"uncommitted"];
@@ -818,14 +927,17 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
                 [CATransaction begin]; [CATransaction setDisableActions:YES]; [CATransaction setAnimationDuration:6.5];
             }
             @try {
+                if (pending) observe(@"before pending mutation; caller transaction open");
                 if ([mode isEqualToString:@"uncommittedReorder"]) [parent insertSublayer:cover atIndex:0];
                 if ([mode isEqualToString:@"uncommittedRemoval"]) [cover removeFromSuperlayer];
                 if ([mode isEqualToString:@"uncommittedHiddenRemoval"] || [mode isEqualToString:@"uncommittedZeroOpacityRemoval"]) {
                     NSString *beforeHide = MTPCurrentParentPaintDiagnostic(parent, cover, @"before hide");
                     if ([mode isEqualToString:@"uncommittedHiddenRemoval"]) cover.hidden = YES; else cover.opacity = 0;
                     NSString *afterHide = MTPCurrentParentPaintDiagnostic(parent, cover, @"after hide before removal");
+                    observe(@"after scalar mutation before removal; caller transaction open");
                     [cover removeFromSuperlayer]; XCTAssertNil(cover.superlayer);
                     NSString *afterRemoval = MTPCurrentParentPaintDiagnostic(parent, cover, @"after removal");
+                    observe(@"immediately after scalar cover removal; caller transaction open");
                     removalDiagnostic = [NSString stringWithFormat:@"mode=%@ inside=%@\n%@\n%@\n%@", mode, inside, beforeHide, afterHide, afterRemoval];
                     CALayer *oldPaint = nil;
                     for (CALayer *paint in parent.presentationLayer.sublayers) if (paint.modelLayer == cover) oldPaint = paint;
@@ -834,12 +946,18 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
                     XCTAssertNotNil(oldPaint); XCTAssertFalse(oldPaint.hidden); XCTAssertGreaterThan(oldPaint.opacity,0);
                 }
                 if ([mode isEqualToString:@"uncommittedDescendantRemoval"]) [descendant removeFromSuperlayer];
+                observe(@"after mode mutation before original recheck");
                 XCTAssertNotNil(parent.presentationLayer); [self.board recheckVisibility];
+                observe(@"immediately after original recheck");
                 XCTAssertEqual(self.board.playbackState,MTPPlaceValuePlaybackStateInterrupted); XCTAssertEqual(self.board.snapshot,action.after); XCTAssertNil([self.board valueForKey:@"clock"]);
                 if (pending) XCTAssertEqualWithAccuracy(CATransaction.animationDuration,6.5,.0001);
             } @finally { if (pending) [CATransaction commit]; }
         } @finally {
             [cover removeAllAnimations]; [cover removeFromSuperlayer]; [self presentFrame];
+            observe(@"after original cleanup and native boundary");
+            XCTAttachment *observationAttachment = [XCTAttachment attachmentWithString:[observations componentsJoinedByString:@"\n\n"]];
+            observationAttachment.name = [NSString stringWithFormat:@"native-cover-observations-%@-%@", inside.boolValue ? @"inside" : @"outside", mode];
+            observationAttachment.lifetime = XCTAttachmentLifetimeKeepAlways; [self addAttachment:observationAttachment];
             if (removalDiagnostic) {
                 XCTAttachment *attachment = [XCTAttachment attachmentWithString:removalDiagnostic];
                 attachment.name = @"native-cover-removal-current-presentation"; attachment.lifetime = XCTAttachmentLifetimeKeepAlways;

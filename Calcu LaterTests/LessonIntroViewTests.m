@@ -2319,6 +2319,39 @@
     XCTAssertFalse(narration.adjustsFontSizeToFitWidth);
     [self assertRequiredActionIsContainedInActualClips:intro];
 }
+- (CGRect)questionExplanationRectForIntro:(LessonIntroView *)intro {
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    UILabel *question = [intro valueForKey:@"problemLabel"];
+    return CGRectUnion([self explanationRectForIntro:intro includeRead:NO],
+        [question convertRect:question.bounds toView:scroll]);
+}
+- (void)assertOriginalQuestionAndExplanationInViewport:(LessonIntroView *)intro {
+    [self assertCompleteExplanationInViewport:intro includeRead:NO];
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    CGRect questionAndExplanation = [self questionExplanationRectForIntro:intro];
+    XCTAssertLessThanOrEqual(questionAndExplanation.size.height, scroll.bounds.size.height);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, -0.5, -0.5), questionAndExplanation),
+        @"The original question, complete causal scene and narration must fit before any test scroll.");
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(intro.window.bounds, -0.5, -0.5),
+        [scroll convertRect:questionAndExplanation toView:intro.window]));
+    CGRect withRead = CGRectUnion(questionAndExplanation, [self explanationRectForIntro:intro includeRead:YES]);
+    if (withRead.size.width <= scroll.bounds.size.width && withRead.size.height <= scroll.bounds.size.height) {
+        [self assertCompleteExplanationInViewport:intro includeRead:YES];
+    }
+}
+- (void)assertInlineListeningReachableByScrolling:(LessonIntroView *)intro {
+    UIScrollView *scroll = [intro valueForKey:@"scrollView"];
+    UIButton *read = [intro valueForKey:@"readButton"];
+    XCTAssertTrue([read isDescendantOfView:scroll]);
+    XCTAssertFalse(read.hidden);
+    XCTAssertTrue(read.enabled);
+    CGRect rect = [read convertRect:read.bounds toView:scroll];
+    [scroll scrollRectToVisible:rect animated:NO];
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, -0.5, -0.5), rect));
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(intro.window.bounds, -0.5, -0.5),
+        [read convertRect:read.bounds toView:intro.window]));
+    [self assertPinnedListeningAndFooterFit:intro];
+}
 - (BOOL)contentHasVisibleArea:(UIView *)content inButton:(UIButton *)button {
     if (!content || !button.window || content.window != button.window
         || CGRectIsEmpty(content.bounds)
@@ -2399,10 +2432,12 @@
         NSArray *identities = [[intro valueForKey:@"dots"] copy];
         XCTAssertEqualWithAccuracy(scroll.bounds.size.height, 485, 0.5);
         XCTAssertEqualWithAccuracy([[intro valueForKey:@"buttonStack"] bounds].size.height, 132, 0.5);
+        [self assertOriginalQuestionAndExplanationInViewport:intro];
         for (NSInteger step = 1; step < intro.numberOfSteps; step++) {
             [intro goToNextStep];
             // Observe the public transition, before Stop, Replay or any scroll.
-            [self assertCompleteExplanationInViewport:intro includeRead:YES];
+            // Prefer the original question over the duplicate inline Read.
+            [self assertOriginalQuestionAndExplanationInViewport:intro];
             [self assertPinnedListeningAndFooterFit:intro];
             XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
             [self assertVisibleDotsFitWithoutOverlapping:intro];
@@ -2411,9 +2446,10 @@
             [intro stopPlayback];
             [intro replayCurrentStep];
             XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, offset));
-            [self assertCompleteExplanationInViewport:intro includeRead:YES];
+            [self assertOriginalQuestionAndExplanationInViewport:intro];
             XCTAssertEqual(intro.currentStepIndex, step);
             [intro stopPlayback];
+            [self assertInlineListeningReachableByScrolling:intro];
         }
     }
 }
@@ -2425,6 +2461,7 @@
     CGRect withRead = [self explanationRectForIntro:intro includeRead:YES];
     CGRect withoutRead = [self explanationRectForIntro:intro includeRead:NO];
     XCTAssertGreaterThan(withRead.size.height, scroll.bounds.size.height);
+    XCTAssertGreaterThan([self questionExplanationRectForIntro:intro].size.height, scroll.bounds.size.height);
     XCTAssertLessThanOrEqual(withoutRead.size.height, scroll.bounds.size.height);
     [self assertCompleteExplanationInViewport:intro includeRead:NO];
     [self assertPinnedListeningAndFooterFit:intro];
@@ -2452,14 +2489,24 @@
     [intro goToPreviousStep];
     XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, CGPointZero));
     [intro goToNextStep];
-    [self assertCompleteExplanationInViewport:intro includeRead:YES];
+    [self assertOriginalQuestionAndExplanationInViewport:intro];
     XCTAssertGreaterThan(scroll.contentOffset.y, 0);
     XCTAssertEqual(intro.currentStepIndex, 3);
     [self assertEquationHidden:intro a:2 b:9 make:YES];
 }
 - (void)testUncappedLargeNarrationDoesNotBlockOrWeakenCausalAdmission {
-    LessonIntroView *intro = [self showNarrationProblemA:2 make:YES size:CGSizeMake(377, 661)
+    LessonIntroView *intro = [self showPresentationProblemA:2 width:377
         category:UIContentSizeCategoryAccessibilityExtraExtraExtraLarge];
+    if (!intro) return;
+    UIWindow *physicalWindow = intro.window;
+    CGRect physicalBounds = physicalWindow.bounds;
+    CGRect sceneBounds = physicalWindow.windowScene.coordinateSpace.bounds;
+    UIView *host = intro.superview;
+    intro.frame = CGRectMake(floor((host.bounds.size.width - 377) / 2),
+        floor((host.bounds.size.height - 661) / 2), 377, 661);
+    [intro setNeedsLayout]; [intro layoutIfNeeded];
+    XCTAssertNotNil(physicalWindow.windowScene);
+    XCTAssertTrue(CGRectContainsRect(physicalBounds, [intro convertRect:intro.bounds toView:physicalWindow]));
     [intro goToNextStep]; [intro goToNextStep]; [intro goToNextStep];
     UILabel *narration = [intro valueForKey:@"narration"];
     UIFont *expected = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
@@ -2482,6 +2529,7 @@
         [read.titleLabel sizeThatFits:CGSizeMake(read.bounds.size.width - 24, CGFLOAT_MAX)].height + 24);
     UIScrollView *scroll = [intro valueForKey:@"scrollView"];
     XCTAssertGreaterThan([self explanationRectForIntro:intro includeRead:NO].size.height, scroll.bounds.size.height);
+    XCTAssertGreaterThan([self questionExplanationRectForIntro:intro].size.height, scroll.bounds.size.height);
     [self assertRequiredActionIsContainedInActualClips:intro];
     [self assertPinnedListeningAndFooterFit:intro];
     XCTAssertEqual(intro.playbackState, UIAccessibilityIsReduceMotionEnabled()
@@ -2489,6 +2537,78 @@
     XCTAssertEqual(intro.currentStepIndex, 3);
     XCTAssertEqual([self visibleDotsInIntro:intro].count, 11u);
     [self assertEquationHidden:intro a:2 b:9 make:YES];
+    [intro stopPlayback];
+    [self assertInlineListeningReachableByScrolling:intro];
+
+    // A child's real text inspection is not framing permission. Previous must
+    // preserve it; only the subsequent fresh Next may restore question + scene.
+    NSArray<UIView *> *identities = [[intro valueForKey:@"dots"] copy];
+    XCTAssertEqual(identities.count, 11u);
+    UIView *remainder = identities.lastObject;
+    CGPoint remainderCenter = remainder.center;
+    UIColor *remainderColor = [remainder valueForKey:@"fillColor"];
+    CGPoint inspectionOffset = scroll.contentOffset;
+    UILabel *question = [intro valueForKey:@"problemLabel"];
+    XCTAssertFalse(CGRectContainsRect(scroll.bounds, [question convertRect:question.bounds toView:scroll]));
+    NSUInteger generation = intro.playbackGeneration;
+    [intro goToPreviousStep];
+    XCTAssertEqual(intro.currentStepIndex, 2);
+    XCTAssertEqual(intro.playbackGeneration, generation);
+    XCTAssertNil([intro valueForKey:@"stepAnimator"]);
+    XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, inspectionOffset));
+    XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 2);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 9);
+    XCTAssertTrue(CGPointEqualToPoint(remainder.center, remainderCenter));
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
+    [intro goToNextStep];
+    // Observe before any corrective test scroll, stop or Replay. The action
+    // includes both snapshots, all annotations and the complete transfer route.
+    UIView *stage = [intro valueForKey:@"stage"];
+    CGRect required = [[intro valueForKey:@"requiredActionBounds"] CGRectValue];
+    CGRect questionAndScene = CGRectUnion(required, [question convertRect:question.bounds toView:stage]);
+    CGRect fullExplanation = CGRectUnion(required, [narration convertRect:narration.bounds toView:stage]);
+    CGRect actualViewport = [stage convertRect:physicalWindow.bounds fromView:physicalWindow];
+    for (UIView *ancestor = stage; ancestor; ancestor = ancestor.superview) {
+        if (ancestor.clipsToBounds) actualViewport = CGRectIntersection(actualViewport,
+            [stage convertRect:ancestor.bounds fromView:ancestor]);
+    }
+    XCTAssertFalse(CGRectIsNull(actualViewport) || CGRectIsEmpty(actualViewport));
+    XCTAssertGreaterThan(fullExplanation.size.height, actualViewport.size.height);
+    XCTAssertLessThanOrEqual(questionAndScene.size.width, actualViewport.size.width);
+    XCTAssertLessThanOrEqual(questionAndScene.size.height, actualViewport.size.height);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(scroll.bounds, -0.5, -0.5),
+        [stage convertRect:questionAndScene toView:scroll]));
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(physicalBounds, -0.5, -0.5),
+        [stage convertRect:questionAndScene toView:physicalWindow]));
+    for (UIView *ancestor = stage; ancestor; ancestor = ancestor.superview) {
+        if (ancestor.clipsToBounds) XCTAssertTrue(CGRectContainsRect(CGRectInset(ancestor.bounds, -0.5, -0.5),
+            [stage convertRect:questionAndScene toView:ancestor]));
+    }
+    [self assertRequiredActionIsContainedInActualClips:intro];
+    XCTAssertEqual(intro.playbackGeneration, generation + 1);
+    XCTAssertEqual(intro.currentStepIndex, 3);
+    XCTAssertEqual(intro.playbackState, UIAccessibilityIsReduceMotionEnabled()
+        ? LessonIntroPlaybackStateReducedMotion : LessonIntroPlaybackStateRunning);
+    XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
+    XCTAssertEqual([self visibleDotsInIntro:intro].count, 11u);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:intro], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:intro], 1);
+    XCTAssertEqual([self crossedCount:intro], 0);
+    XCTAssertTrue(CGPointEqualToPoint(remainder.center, remainderCenter));
+    XCTAssertEqualObjects([remainder valueForKey:@"fillColor"], remainderColor);
+    XCTAssertFalse([[remainder valueForKey:@"selectedForTen"] boolValue]);
+    [self assertVisibleDotsFitWithoutOverlapping:intro];
+    [self assertEquationHidden:intro a:2 b:9 make:YES];
+    XCTAssertEqualObjects(narration.text, intro.currentNarration);
+    XCTAssertEqual(narration.numberOfLines, 0);
+    XCTAssertFalse(narration.adjustsFontSizeToFitWidth);
+    XCTAssertEqualWithAccuracy(narration.font.pointSize, expected.pointSize, 0.5);
+    XCTAssertGreaterThanOrEqual(narration.bounds.size.height + 0.5,
+        [narration sizeThatFits:CGSizeMake(narration.bounds.size.width, CGFLOAT_MAX)].height);
+    [self assertPinnedListeningAndFooterFit:intro];
+    XCTAssertTrue(CGRectEqualToRect(physicalWindow.bounds, physicalBounds));
+    XCTAssertTrue(CGRectEqualToRect(physicalWindow.windowScene.coordinateSpace.bounds, sceneBounds));
 }
 - (void)testPinnedListeningAndNavigationFitCompactAndAX5WithoutFontCaps {
     for (UIContentSizeCategory category in @[UIContentSizeCategoryLarge, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
@@ -2592,21 +2712,23 @@
     NSUInteger generation = intro.playbackGeneration;
     UIViewPropertyAnimator *animator = [intro valueForKey:@"stepAnimator"];
     UIButton *pinned = [intro valueForKey:@"pinnedReadButton"];
+    NSString *spoken = [@"原來的題目是 2 加 9。" stringByAppendingString:intro.currentNarration];
     for (NSUInteger repeat = 0; repeat < 2; repeat++) [pinned sendActionsForControlEvents:UIControlEventTouchUpInside];
-    XCTAssertEqualObjects(intro.recorder.requests, (@[intro.currentNarration, intro.currentNarration]));
+    XCTAssertEqualObjects(intro.recorder.requests, (@[spoken, spoken]));
     XCTAssertEqual(intro.currentStepIndex, 3);
     XCTAssertEqual(intro.playbackGeneration, generation);
     XCTAssertEqual([intro valueForKey:@"stepAnimator"], animator);
     XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, offset));
     [[intro valueForKey:@"readButton"] sendActionsForControlEvents:UIControlEventTouchUpInside];
     XCTAssertEqual(intro.recorder.requests.count, 3u);
-    XCTAssertEqualObjects(intro.recorder.requests.lastObject, intro.currentNarration);
+    XCTAssertEqualObjects(intro.recorder.requests.lastObject, spoken);
     NSUInteger stops = intro.recorder.stopCount;
     [intro goToPreviousStep];
     XCTAssertGreaterThan(intro.recorder.stopCount, stops);
     XCTAssertEqual(intro.recorder.requests.count, 3u);
     [pinned sendActionsForControlEvents:UIControlEventTouchUpInside];
-    XCTAssertEqualObjects(intro.recorder.requests.lastObject, intro.currentNarration);
+    XCTAssertEqualObjects(intro.recorder.requests.lastObject,
+        [@"原來的題目是 2 加 9。" stringByAppendingString:intro.currentNarration]);
     XCTAssertTrue([intro.recorder.requests.lastObject containsString:@"有雙圈的 8 個"]);
     stops = intro.recorder.stopCount;
     [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
@@ -2620,6 +2742,48 @@
     XCTAssertFalse(pinned.enabled);
     [pinned sendActionsForControlEvents:UIControlEventTouchUpInside];
     XCTAssertEqual(intro.recorder.requests.count, 4u);
+    // Intercept only the actual text supplied to SpeechManager. This is not
+    // audible-speech proof. Both controls name each current problem, including
+    // 9 + 9 and subtraction, without modifying or pre-revealing visible text.
+    for (NSNumber *a in @[@2, @9, @18]) {
+        BOOL make = a.integerValue < 10;
+        CLSpeechRecordingIntroView *context = [[CLSpeechRecordingIntroView alloc]
+            initWithProblem:[self problemA:a.integerValue b:9 make:make] lesson:[self lessonAtIndex:make ? 3 : 4]];
+        [self hostIntro:context width:377 height:661];
+        NSString *prefix = [NSString stringWithFormat:@"原來的題目是 %ld %@ 9。", (long)a.integerValue, make ? @"加" : @"減"];
+        NSString *finalAnswer = [NSString stringWithFormat:@"= %ld", (long)(make ? a.integerValue + 9 : a.integerValue - 9)];
+        for (NSInteger step = 0; step < context.numberOfSteps; step++) {
+            if (step > 0) [context goToNextStep];
+            XCTAssertEqual(context.recorder.requests.count, (NSUInteger)step * 2, @"Selecting a step never starts speech.");
+            UILabel *narration = [context valueForKey:@"narration"];
+            NSString *visibleText = [narration.text copy];
+            CGSize visibleSize = narration.bounds.size;
+            NSString *expected = [prefix stringByAppendingString:visibleText];
+            XCTAssertFalse([visibleText hasPrefix:prefix], @"Spoken context must not increase visible narration height.");
+            XCTAssertTrue([[[context valueForKey:@"stage"] accessibilityValue] containsString:expected]);
+            if (step < context.numberOfSteps - 1) {
+                XCTAssertFalse([expected containsString:finalAnswer]);
+                [self assertEquationHidden:context a:a.integerValue b:9 make:make];
+            } else {
+                XCTAssertTrue([expected containsString:finalAnswer]);
+            }
+            UIScrollView *content = [context valueForKey:@"scrollView"];
+            CGPoint inspection = content.contentOffset;
+            NSUInteger playback = context.playbackGeneration;
+            UIViewPropertyAnimator *currentAnimator = [context valueForKey:@"stepAnimator"];
+            for (NSString *key in @[@"readButton", @"pinnedReadButton"]) {
+                [[context valueForKey:key] sendActionsForControlEvents:UIControlEventTouchUpInside];
+                XCTAssertEqualObjects(context.recorder.requests.lastObject, expected);
+                XCTAssertEqual(context.currentStepIndex, step);
+                XCTAssertEqual(context.playbackGeneration, playback);
+                XCTAssertEqual([context valueForKey:@"stepAnimator"], currentAnimator);
+                XCTAssertTrue(CGPointEqualToPoint(content.contentOffset, inspection));
+                XCTAssertEqualObjects(narration.text, visibleText);
+                XCTAssertTrue(CGSizeEqualToSize(narration.bounds.size, visibleSize));
+            }
+            XCTAssertEqual(context.recorder.requests.count, (NSUInteger)(step + 1) * 2);
+        }
+    }
 }
 - (void)testReducedMotionKeepsExplicitListeningAndTheSameSelectedStaticStep {
     CLSpeechRecordingIntroView *intro = [[CLSpeechRecordingIntroView alloc] initWithProblem:[self problemA:18 b:9 make:NO]
@@ -2635,7 +2799,9 @@
     CGPoint offset = scroll.contentOffset;
     [self assertPinnedListeningAndFooterFit:intro];
     [[intro valueForKey:@"pinnedReadButton"] sendActionsForControlEvents:UIControlEventTouchUpInside];
-    XCTAssertEqualObjects(intro.recorder.requests, (@[intro.currentNarration]));
+    NSString *spoken = [@"原來的題目是 18 減 9。" stringByAppendingString:intro.currentNarration];
+    XCTAssertEqualObjects(intro.recorder.requests, (@[spoken]));
+    XCTAssertTrue([[[intro valueForKey:@"stage"] accessibilityValue] containsString:spoken]);
     XCTAssertEqual(intro.currentStepIndex, 2);
     XCTAssertTrue(CGPointEqualToPoint(scroll.contentOffset, offset));
     XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);

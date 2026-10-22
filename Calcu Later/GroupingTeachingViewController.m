@@ -50,6 +50,7 @@
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableSet<NSNumber *> *> *attemptedValues;
 @property (nonatomic, strong) NSMutableIndexSet *answeredSteps;
 - (BOOL)frameCurrentTransformation;
+- (SpeechManager *)speechManager;
 @end
 
 @implementation GroupingTeachingViewController
@@ -278,7 +279,7 @@
     return self.sequence.isSupported && self.stepIndex < self.sequence.steps.count ? self.sequence.steps[self.stepIndex] : nil;
 }
 - (void)showCurrentStepAnimated:(BOOL)animated {
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     GroupingTeachingStep *step = self.currentStep;
     if (!step) {
         self.heading.text = @"先回到題目看看";
@@ -414,6 +415,7 @@
     GroupingTeachingStep *step = self.currentStep;
     if (step.kind != GroupingTeachingStepKindPredict || !button.enabled
         || ![self.choices.arrangedSubviews containsObject:button] || [self.answeredSteps containsIndex:self.stepIndex]) return;
+    [[self speechManager] stop]; // Retire the previous attempt's requested coaching before replacing it.
     NSNumber *key = @(self.stepIndex);
     NSMutableSet<NSNumber *> *attempts = self.attemptedValues[key];
     if (!attempts) self.attemptedValues[key] = attempts = [NSMutableSet set];
@@ -448,7 +450,7 @@
     [self showCurrentStepAnimated:NO];
 }
 - (void)replay {
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
     if (self.selectedAction) {
         if (self.showingOverview) self.overviewOffset = self.scroll.contentOffset;
         self.showingOverview = NO; [self presentSelectedAction]; [self playSelectedAction]; return;
@@ -477,7 +479,7 @@
     [self.view setNeedsLayout]; [self.view layoutIfNeeded]; [self updateBoardHeight]; [self.view layoutIfNeeded];
 }
 - (void)showSelectedActionAnimated:(BOOL)animated {
-    [SpeechManager.sharedInstance stop]; self.inspectingBefore = NO;
+    [[self speechManager] stop]; self.inspectingBefore = NO;
     if (self.showingOverview) self.overviewOffset = self.scroll.contentOffset;
     self.showingOverview = NO;
     [self.board configureWithAction:self.selectedAction]; [self.focusView configureWithAction:self.selectedAction];
@@ -563,12 +565,18 @@
     self.stepIndex = 0;
     [self showCurrentStepAnimated:NO];
 }
+- (SpeechManager *)speechManager { return SpeechManager.sharedInstance; }
 - (void)readStep {
     GroupingTeachingStep *step = self.currentStep;
     if (!step) return;
     NSString *spoken = step.spokenExplanation;
     if (self.selectedAction) spoken = self.showingOverview ? self.selectedAction.snapshot.spokenExplanation : self.focusView.spokenDescription;
-    [SpeechManager.sharedInstance speak:spoken];
+    else if (step.kind == GroupingTeachingStepKindPredict && self.lastPredictedValues[@(self.stepIndex)]) {
+        // Read the current attempt's visible coaching only on explicit request.
+        // The immutable explanation already includes the prediction prompt.
+        spoken = [NSString stringWithFormat:@"%@ %@", spoken, self.choiceFeedback.text];
+    }
+    [[self speechManager] speak:spoken];
 }
 - (void)changeMeaning {
     if (!self.alternativeSequence) return;
@@ -585,7 +593,7 @@
 }
 - (void)pausePlayback {
     [self.board cancelAnimations]; [self.focusView cancelPlayback];
-    [SpeechManager.sharedInstance stop];
+    [[self speechManager] stop];
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];

@@ -346,6 +346,14 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 - (NSInteger)numberOfSteps { return self.lessonKind == LessonKindMakeTen ? 5 : 4; }
 - (NSInteger)lastStep { return self.numberOfSteps - 1; }
 - (NSString *)currentNarration { return self.narration.text ?: @""; }
+- (NSString *)currentSpokenNarration {
+    // Keep the original operands available even when a large-text explanation
+    // needs scrolling. This spoken-only context never changes measured text or
+    // introduces the answer ahead of the existing final-step narration.
+    if (![self isTenStrategy]) return self.currentNarration;
+    return [NSString stringWithFormat:@"原來的題目是 %ld %@ %ld。%@",
+        (long)self.a, [self isAddition] ? @"加" : @"減", (long)self.b, self.currentNarration];
+}
 
 - (UILabel *)labelWithSize:(CGFloat)size weight:(UIFontWeight)weight {
     UILabel *label = [[ChildWrappingLabel alloc] init];
@@ -780,7 +788,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     [self renderStepAnimated:NO];
     // This is an in-place step change. Moving VoiceOver focus to narration
     // below the diagram could override the child's chosen viewport.
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentNarration);
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentSpokenNarration);
 }
 - (void)goToNextStep {
     if (self.finished) return;
@@ -790,18 +798,18 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     self.step++;
     [self renderStepAnimated:YES frameNewStep:YES];
     [SoundManager.sharedInstance play:self.step == [self lastStep] ? SoundEffectCheer : SoundEffectReveal];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentNarration);
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentSpokenNarration);
 }
 - (void)replayCurrentStep {
     if (self.finished) return;
     [self cancelStepAnimation];
     [[self speechManager] stop];
     [self renderStepAnimated:YES];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentNarration);
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, self.currentSpokenNarration);
 }
 - (SpeechManager *)speechManager { return SpeechManager.sharedInstance; }
 - (void)readCurrentStep {
-    if (!self.finished) [[self speechManager] speak:self.currentNarration];
+    if (!self.finished) [[self speechManager] speak:self.currentSpokenNarration];
 }
 
 #pragma mark - One countable renderer
@@ -1047,7 +1055,7 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
     // Do not describe those quantities as an observed animation completion.
     NSString *quantityPrefix = self.playbackState == LessonIntroPlaybackStateRunning ? @"這一步完成後：" : @"";
     self.stage.accessibilityValue = [NSString stringWithFormat:@"%@第一框 %ld 個，第二框 %ld 個；劃掉 %ld 個。%@",
-        quantityPrefix, (long)first, (long)second, (long)crossed, self.currentNarration];
+        quantityPrefix, (long)first, (long)second, (long)crossed, self.currentSpokenNarration];
     NSString *state;
     switch (self.playbackState) {
         case LessonIntroPlaybackStateRunning: state = @"動態播放中"; break;
@@ -1095,17 +1103,30 @@ static const NSTimeInterval CLIntroTransferPauseDuration = 0.12;
 /// Pedagogical framing is not motion admission. Long narration must never
 /// make an otherwise fully visible causal action fail its independent gate.
 /// All bounds are actual laid-out rectangles in the stage's coordinate space;
-/// narration/listen are siblings, not additions to requiredActionBounds.
+/// equation/narration/listen are siblings, not additions to requiredActionBounds.
 - (CGRect)explanationFramingBoundsForScene:(CGRect)scene {
     if (![self isTenStrategy] || CGRectIsNull(scene) || CGRectIsEmpty(scene)) return CGRectNull;
     CGRect viewport = [self visibleStageRect];
     if (CGRectIsNull(viewport) || CGRectIsEmpty(viewport)) return CGRectNull;
     CGRect explanation = CGRectUnion(scene, [self.narration convertRect:self.narration.bounds toView:self.stage]);
     CGRect withRead = CGRectUnion(explanation, [self.readButton convertRect:self.readButton.bounds toView:self.stage]);
-    for (NSValue *candidate in @[[NSValue valueWithCGRect:withRead], [NSValue valueWithCGRect:explanation]]) {
+    CGRect withQuestion = CGRectUnion(explanation, [self.problemLabel convertRect:self.problemLabel.bounds toView:self.stage]);
+    CGRect withQuestionAndRead = CGRectUnion(withQuestion, withRead);
+    // The original problem is more useful than a duplicate listening action.
+    // Prefer its exact union with the complete causal scene and narration only
+    // when all of it fits. Otherwise retain the honest existing fallback; the
+    // inline Read still scrolls normally and its pinned twin is always present.
+    for (NSValue *candidate in @[[NSValue valueWithCGRect:withQuestionAndRead], [NSValue valueWithCGRect:withQuestion],
+        [NSValue valueWithCGRect:withRead], [NSValue valueWithCGRect:explanation]]) {
         CGRect bounds = candidate.CGRectValue;
         if (bounds.size.width <= viewport.size.width && bounds.size.height <= viewport.size.height) return bounds;
     }
+    // If full narration cannot fit, keep the original question with the whole
+    // causal scene when their exact union fits the real clipped viewport.
+    CGRect questionAndScene = CGRectUnion(scene,
+        [self.problemLabel convertRect:self.problemLabel.bounds toView:self.stage]);
+    if (questionAndScene.size.width <= viewport.size.width
+        && questionAndScene.size.height <= viewport.size.height) return questionAndScene;
     return CGRectNull; // The fixed speaker still reads the full current text.
 }
 

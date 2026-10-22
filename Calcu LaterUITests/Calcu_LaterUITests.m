@@ -795,13 +795,14 @@
     // This observation must precede any inspection scroll. Existence or a
     // sliver of hittable text does not establish a readable causal explanation.
     [self assertTenFrameListeningIsReachable];
+    XCUIElement *question = self.app.staticTexts[@"lessonIntro.equation"];
     XCUIElement *stage = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"];
     XCUIElement *narration = self.app.staticTexts[@"lessonIntro.narration"];
     XCUIElement *read = self.app.buttons[@"lessonIntro.read"];
-    CGRect viewport = self.app.scrollViews[@"lessonIntro.content"].frame;
     CGRect window = self.app.windows.firstMatch.frame;
-    XCTAssertTrue(stage.exists && narration.exists && read.exists);
-    for (NSValue *value in @[[NSValue valueWithCGRect:stage.frame], [NSValue valueWithCGRect:narration.frame],
+    CGRect viewport = CGRectIntersection(self.app.scrollViews[@"lessonIntro.content"].frame, window);
+    XCTAssertTrue(question.exists && stage.exists && narration.exists && read.exists);
+    for (NSValue *value in @[[NSValue valueWithCGRect:question.frame], [NSValue valueWithCGRect:stage.frame], [NSValue valueWithCGRect:narration.frame],
         [NSValue valueWithCGRect:read.frame]]) {
         CGRect rect = value.CGRectValue;
         XCTAssertTrue(isfinite(rect.origin.x) && isfinite(rect.origin.y)
@@ -811,14 +812,23 @@
     }
     CGRect explanation = CGRectUnion(stage.frame, narration.frame);
     CGRect withRead = CGRectUnion(explanation, read.frame);
-    BOOL wholeUnitFits = withRead.size.width <= viewport.size.width && withRead.size.height <= viewport.size.height;
-    BOOL explanationFits = explanation.size.width <= viewport.size.width && explanation.size.height <= viewport.size.height;
-    if (wholeUnitFits || explanationFits) {
-        CGRect required = wholeUnitFits ? withRead : explanation;
+    CGRect withQuestion = CGRectUnion(question.frame, explanation);
+    CGRect withQuestionAndRead = CGRectUnion(withQuestion, withRead);
+    // The complete original problem takes priority over the duplicate Read,
+    // not over any part of the causal scene or its full narration.
+    for (NSValue *candidate in @[[NSValue valueWithCGRect:withQuestionAndRead], [NSValue valueWithCGRect:withQuestion],
+        [NSValue valueWithCGRect:withRead], [NSValue valueWithCGRect:explanation]]) {
+        CGRect required = candidate.CGRectValue;
+        if (required.size.width > viewport.size.width || required.size.height > viewport.size.height) continue;
         XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -0.5, -0.5), required),
             @"The full explanation %@ fits %@ and must already be framed without test scrolling.",
             NSStringFromCGRect(required), NSStringFromCGRect(viewport));
         XCTAssertTrue(CGRectContainsRect(CGRectInset(window, -0.5, -0.5), required));
+        if (withQuestion.size.width <= viewport.size.width && withQuestion.size.height <= viewport.size.height) {
+            XCTAssertTrue(CGRectContainsRect(CGRectInset(viewport, -0.5, -0.5), question.frame),
+                @"The original equation must be fully visible before any inspection scroll when its teaching unit fits.");
+        }
+        break;
     }
 }
 - (void)assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused {
@@ -866,7 +876,7 @@
     XCUIElement *progress = self.app.staticTexts[@"lessonIntro.progress"];
     NSString *expected = [NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，點點圖未完整顯示，先看圖再重播",
         (unsigned long)generation];
-    NSString *endpoint = [@"第一框 10 個，第二框 1 個；劃掉 0 個。"
+    NSString *endpoint = [@"第一框 10 個，第二框 1 個；劃掉 0 個。原來的題目是 2 加 9。"
         stringByAppendingString:self.app.staticTexts[@"lessonIntro.narration"].label];
     XCTAssertEqualObjects([progress.value description], expected);
     XCTAssertEqualObjects(progress.label, selectedProgress);
@@ -947,9 +957,61 @@
     [self capture:@"43-make-ten-transfer-eight-existing-dots"];
     [self.app.buttons[@"lessonIntro.previous"] tap];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 2 個，第二框 9 個"]);
+    // Inspect the previous step's real text with bounded ordinary scrolling.
+    // This is static comparison, not a Replay that is already safely framed.
+    NSUInteger beforeTextInspection = [self tenFramePlaybackGeneration];
+    NSString *staticComparison = [self.app.staticTexts[@"lessonIntro.progress"].value description];
+    XCUIElement *comparisonNarration = self.app.staticTexts[@"lessonIntro.narration"];
+    XCUIElement *comparisonRead = self.app.buttons[@"lessonIntro.read"];
+    XCUIElement *comparisonContent = self.app.scrollViews[@"lessonIntro.content"];
+    XCTAssertTrue(comparisonNarration.exists && comparisonRead.exists && comparisonContent.exists);
+    [self frameBoardForInspection:comparisonNarration in:comparisonContent];
+    CGRect visibleNarration = CGRectIntersection(comparisonNarration.frame,
+        CGRectIntersection(comparisonContent.frame, self.app.windows.firstMatch.frame));
+    XCTAssertFalse(CGRectIsNull(visibleNarration) || CGRectIsEmpty(visibleNarration));
+    XCTAssertTrue([comparisonNarration.label containsString:@"9 拆成 8 和 1"]);
+    [self frameBoardForInspection:comparisonRead in:comparisonContent];
+    XCTAssertTrue(comparisonRead.enabled && comparisonRead.hittable);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(comparisonContent.frame, -0.5, -0.5), comparisonRead.frame));
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(self.app.windows.firstMatch.frame, -0.5, -0.5), comparisonRead.frame));
+    XCTAssertEqual([self tenFramePlaybackGeneration], beforeTextInspection);
+    XCTAssertEqualObjects([self.app.staticTexts[@"lessonIntro.progress"].value description], staticComparison);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self capture:@"43c-make-ten-narration-inspection-before-fresh-next"];
     NSUInteger beforeBackNext = [self tenFramePlaybackGeneration];
     [self.app.buttons[@"lessonIntro.next"] tap];
     [self waitForTenFrameNaturalCompletionAfterGeneration:beforeBackNext step:3];
+    // Fresh selection owes the original equation plus the FULL causal action
+    // when their actual union fits. Observe before any corrective test scroll;
+    // full narration may remain below it, without being shrunk or capped.
+    CGRect selectedQuestion = self.app.staticTexts[@"lessonIntro.equation"].frame;
+    CGRect selectedScene = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"].frame;
+    CGRect selectedWindow = self.app.windows.firstMatch.frame;
+    CGRect selectedViewport = CGRectIntersection(comparisonContent.frame, selectedWindow);
+    CGRect questionAndScene = CGRectUnion(selectedQuestion, selectedScene);
+    for (NSValue *value in @[[NSValue valueWithCGRect:selectedQuestion], [NSValue valueWithCGRect:selectedScene],
+        [NSValue valueWithCGRect:selectedViewport]]) {
+        CGRect rect = value.CGRectValue;
+        XCTAssertTrue(isfinite(rect.origin.x) && isfinite(rect.origin.y)
+            && isfinite(rect.size.width) && isfinite(rect.size.height));
+        XCTAssertGreaterThan(rect.size.width, 0);
+        XCTAssertGreaterThan(rect.size.height, 0);
+    }
+    if (questionAndScene.size.width <= selectedViewport.size.width
+        && questionAndScene.size.height <= selectedViewport.size.height) {
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(selectedViewport, -0.5, -0.5), questionAndScene),
+            @"Fresh Next must frame the original question and complete fitting scene before test scrolling.");
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(selectedWindow, -0.5, -0.5), questionAndScene));
+    }
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    for (NSString *identifier in @[@"lessonIntro.previous", @"lessonIntro.next", @"lessonIntro.replay",
+        @"lessonIntro.start", @"lessonIntro.readPinned"]) {
+        XCUIElement *control = self.app.buttons[identifier];
+        XCTAssertTrue(control.exists && control.enabled && control.hittable);
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(selectedWindow, -0.5, -0.5), control.frame));
+        XCTAssertFalse(CGRectIntersectsRect(control.frame, selectedViewport));
+    }
+    [self capture:@"43c-make-ten-fresh-next-question-scene-before-inspection"];
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
     [self assertTenFrameExplanationIsVisibleWhenItFits];
@@ -1063,7 +1125,7 @@
         [self.app.buttons[@"lessonIntro.replay"] tap];
         [self waitForTenFrameNaturalCompletionAfterGeneration:beforeLandscapeReplay + 1 step:3];
         XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.progress"].label, progress);
-        XCTAssertEqualObjects(self.tenFrameStageValue, ([@"第一框 10 個，第二框 1 個；劃掉 0 個。"
+        XCTAssertEqualObjects(self.tenFrameStageValue, ([@"第一框 10 個，第二框 1 個；劃掉 0 個。原來的題目是 2 加 9。"
             stringByAppendingString:self.app.staticTexts[@"lessonIntro.narration"].label]));
         XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
         [self capture:@"44c-make-ten-portrait-explicit-replay-naturally-completed"];
@@ -1071,6 +1133,22 @@
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, @"2 + 9 = 11");
     XCTAssertTrue([self.app.staticTexts[@"lessonIntro.narration"].label containsString:@"10 + 1 = 11"]);
+    [self assertTenFrameExplanationIsVisibleWhenItFits];
+    // Only after all first-play observations: the duplicate inline Read must
+    // remain reachable by ordinary scrolling, not disappear behind the footer.
+    XCUIElement *inlineRead = self.app.buttons[@"lessonIntro.read"];
+    XCUIElement *content = self.app.scrollViews[@"lessonIntro.content"];
+    [self frameBoardForInspection:inlineRead in:content];
+    XCTAssertTrue(inlineRead.exists && inlineRead.enabled && inlineRead.hittable);
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(content.frame, -0.5, -0.5), inlineRead.frame));
+    XCTAssertTrue(CGRectContainsRect(CGRectInset(self.app.windows.firstMatch.frame, -0.5, -0.5), inlineRead.frame));
+    [self assertTenFrameListeningIsReachable];
+    CGRect beforeInlineRead = self.app.staticTexts[@"lessonIntro.narration"].frame;
+    NSUInteger generationBeforeInlineRead = [self tenFramePlaybackGeneration];
+    [inlineRead tap];
+    XCTAssertEqual([self tenFramePlaybackGeneration], generationBeforeInlineRead);
+    XCTAssertTrue(CGRectEqualToRect(self.app.staticTexts[@"lessonIntro.narration"].frame, beforeInlineRead));
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, @"2 + 9 = 11");
     [self.app.buttons[@"lessonIntro.next"] tap];
     [self assertTenFrameReturnedToUnansweredQuestion:question];
 }
