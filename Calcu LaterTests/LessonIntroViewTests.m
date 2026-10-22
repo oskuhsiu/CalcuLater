@@ -1544,6 +1544,166 @@
     [self assertRequiredActionIsContainedInActualClips:intro];
     XCTAssertEqualObjects([intro valueForKey:@"dots"], identities);
     [self assertEquationHidden:intro a:9 b:9 make:YES];
+
+    // Separate native AX5 regression for the observed 2 + 9 landscape pause.
+    // Keep the original 9 + 9 fixture above intact. Only this CHILD changes
+    // size; the real foreground iPad window and scene must never be resized.
+    LessonIntroView *maximumText = [self showPresentationProblemA:2 width:718
+        category:UIContentSizeCategoryAccessibilityExtraExtraExtraLarge];
+    if (!maximumText) return;
+    UIWindow *physicalWindow = self.hostWindow;
+    CGRect physicalBounds = physicalWindow.bounds;
+    CGRect sceneBounds = physicalWindow.windowScene.coordinateSpace.bounds;
+    UIView *host = maximumText.superview;
+    CGRect landscapeChild = CGRectMake(floor((host.bounds.size.width - 718) / 2),
+        floor((host.bounds.size.height - 284) / 2), 718, 284);
+    XCTAssertTrue(CGRectContainsRect(physicalBounds, [host convertRect:landscapeChild toView:physicalWindow]));
+    NSArray<UIView *> *nativeIdentities = [[maximumText valueForKey:@"dots"] copy];
+    XCTAssertEqual(nativeIdentities.count, 11u);
+    XCTAssertEqual(maximumText.currentStepIndex, 0);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:maximumText], 2);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:maximumText], 0);
+    XCTAssertEqual([self crossedCount:maximumText], 0);
+    maximumText.frame = landscapeChild;
+    [maximumText setNeedsLayout]; [maximumText layoutIfNeeded];
+    XCTAssertEqualObjects(maximumText.traitCollection.preferredContentSizeCategory,
+        UIContentSizeCategoryAccessibilityExtraExtraExtraLarge);
+    XCTAssertTrue(CGRectEqualToRect(physicalWindow.bounds, physicalBounds));
+    XCTAssertTrue(CGRectEqualToRect(physicalWindow.windowScene.coordinateSpace.bounds, sceneBounds));
+    XCTAssertTrue(CGRectContainsRect(physicalBounds, [maximumText convertRect:maximumText.bounds toView:physicalWindow]));
+    UIScrollView *nativeScroll = [maximumText valueForKey:@"scrollView"];
+    UIView *footer = [maximumText valueForKey:@"buttonStack"];
+    UIView *nativeStage = [maximumText valueForKey:@"stage"];
+    UIView *sourceFrame = [maximumText valueForKey:@"secondFrame"];
+    UILabel *guidance = [maximumText valueForKey:@"visibilityInstruction"];
+    XCTAssertTrue(guidance.hidden);
+    XCTAssertEqualWithAccuracy(footer.bounds.size.height, 132, 0.001);
+    XCTAssertEqualWithAccuracy(CGRectGetMaxY(nativeScroll.frame), CGRectGetMinY(footer.frame) - 12, 0.001);
+    CGRect unobstructed = CGRectIntersection([nativeScroll convertRect:nativeScroll.bounds toView:physicalWindow], physicalBounds);
+    XCTAssertEqualWithAccuracy(unobstructed.size.height, 108, 0.001);
+    UIView *remainder = nativeIdentities.lastObject;
+    CGPoint landscapeRemainder = remainder.center;
+    XCTAssertEqualWithAccuracy(landscapeRemainder.x - CGRectGetMinX(sourceFrame.frame), sourceFrame.bounds.size.width * 3.5 / 5, 0.001);
+    XCTAssertEqualWithAccuracy(landscapeRemainder.y - CGRectGetMinY(sourceFrame.frame), 75, 0.001);
+    for (NSInteger selected = 1; selected <= 3; selected++) {
+        NSUInteger beforeNext = maximumText.playbackGeneration;
+        [maximumText goToNextStep];
+        XCTAssertEqual(maximumText.playbackGeneration, beforeNext + 1);
+        XCTAssertEqual(maximumText.currentStepIndex, selected);
+        XCTAssertEqual(maximumText.playbackStepIndex, selected);
+        [self assertVisibilityPausedWithoutObscuringInspection:maximumText];
+        CGRect required = [[maximumText valueForKey:@"requiredActionBounds"] CGRectValue];
+        XCTAssertEqualWithAccuracy(required.size.width, 584, 0.001);
+        XCTAssertEqualWithAccuracy(required.size.height, 134, 0.001);
+        XCTAssertGreaterThan(required.size.height, unobstructed.size.height + 0.5);
+        XCTAssertEqualObjects([maximumText valueForKey:@"dots"], nativeIdentities);
+        XCTAssertEqual([self visibleDotsInIntro:maximumText].count, 11u);
+        XCTAssertEqual([self countInFrame:@"firstFrame" intro:maximumText], selected < 3 ? 2 : 10);
+        XCTAssertEqual([self countInFrame:@"secondFrame" intro:maximumText], selected < 3 ? 9 : 1);
+        XCTAssertEqual([self crossedCount:maximumText], 0);
+        XCTAssertTrue(CGPointEqualToPoint(remainder.center, landscapeRemainder));
+        [self assertVisibleDotsFitWithoutOverlapping:maximumText];
+        [self assertEquationHidden:maximumText a:2 b:9 make:YES];
+    }
+    NSUInteger pausedGeneration = maximumText.playbackGeneration;
+    NSString *pausedValue = [NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，點點圖未完整顯示，先看圖再重播",
+        (unsigned long)pausedGeneration];
+    XCTAssertEqualObjects([[maximumText valueForKey:@"progressLabel"] accessibilityValue], pausedValue);
+    if (![self assertCommittedPresentationForDots:nativeIdentities centers:[nativeIdentities valueForKey:@"center"]
+        intro:maximumText context:@"AX5 2 + 9 insufficient landscape paused destination"]) return;
+    [self assertVisibilityPausedWithoutObscuringInspection:maximumText];
+    XCTAssertEqual(maximumText.playbackGeneration, pausedGeneration);
+    XCTAssertEqualObjects([[maximumText valueForKey:@"progressLabel"] accessibilityValue], pausedValue);
+
+    CGRect portraitChild = CGRectMake(floor((host.bounds.size.width - 377) / 2),
+        floor((host.bounds.size.height - 661) / 2), 377, 661);
+    XCTAssertTrue(CGRectContainsRect(physicalBounds, [host convertRect:portraitChild toView:physicalWindow]));
+    maximumText.frame = portraitChild;
+    [maximumText setNeedsLayout]; [maximumText layoutIfNeeded];
+    XCTAssertTrue(CGRectEqualToRect(physicalWindow.bounds, physicalBounds));
+    XCTAssertTrue(CGRectEqualToRect(physicalWindow.windowScene.coordinateSpace.bounds, sceneBounds));
+    XCTAssertTrue(CGRectContainsRect(physicalBounds, [maximumText convertRect:maximumText.bounds toView:physicalWindow]));
+    XCTAssertEqualObjects(maximumText.traitCollection.preferredContentSizeCategory,
+        UIContentSizeCategoryAccessibilityExtraExtraExtraLarge);
+    CGRect portraitRequired = [[maximumText valueForKey:@"requiredActionBounds"] CGRectValue];
+    CGRect portraitCapacity = CGRectIntersection([nativeScroll convertRect:nativeScroll.bounds toView:physicalWindow], physicalBounds);
+    XCTAssertLessThanOrEqual(portraitRequired.size.width, portraitCapacity.size.width + 0.5);
+    XCTAssertLessThanOrEqual(portraitRequired.size.height, portraitCapacity.size.height + 0.5);
+    // Expansion may lay out the endpoint but has no permission to frame or
+    // resume it. Commit those real pixels before checking the quiet state.
+    if (![self assertCommittedPresentationForDots:nativeIdentities centers:[nativeIdentities valueForKey:@"center"]
+        intro:maximumText context:@"AX5 2 + 9 expanded portrait remains paused"]) return;
+    [self assertVisibilityPausedWithoutObscuringInspection:maximumText];
+    XCTAssertEqual(maximumText.playbackGeneration, pausedGeneration);
+    XCTAssertEqual(maximumText.currentStepIndex, 3);
+    XCTAssertEqual(maximumText.playbackStepIndex, 3);
+    XCTAssertEqualObjects([[maximumText valueForKey:@"progressLabel"] accessibilityValue], pausedValue);
+    XCTAssertEqualObjects([maximumText valueForKey:@"dots"], nativeIdentities);
+    XCTAssertEqual([self visibleDotsInIntro:maximumText].count, 11u);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:maximumText], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:maximumText], 1);
+    XCTAssertEqual([self crossedCount:maximumText], 0);
+    CGPoint portraitRemainder = remainder.center;
+    XCTAssertEqualWithAccuracy(portraitRemainder.x - CGRectGetMinX(sourceFrame.frame), sourceFrame.bounds.size.width * 3.5 / 5, 0.001);
+    XCTAssertEqualWithAccuracy(portraitRemainder.y - CGRectGetMinY(sourceFrame.frame), 75, 0.001);
+    [self assertVisibleDotsFitWithoutOverlapping:maximumText];
+    [self assertEquationHidden:maximumText a:2 b:9 make:YES];
+
+    CFTimeInterval requestedAt = CACurrentMediaTime();
+    [maximumText replayCurrentStep];
+    NSUInteger recoveryGeneration = maximumText.playbackGeneration;
+    XCTAssertEqual(recoveryGeneration, pausedGeneration + 1);
+    XCTAssertEqual(maximumText.currentStepIndex, 3);
+    XCTAssertEqual(maximumText.playbackStepIndex, 3);
+    XCTAssertEqual(maximumText.playbackState, LessonIntroPlaybackStateRunning);
+    UIViewPropertyAnimator *nativeAnimator = [maximumText valueForKey:@"stepAnimator"];
+    XCTAssertNotNil(nativeAnimator);
+    XCTAssertEqualObjects([maximumText valueForKey:@"activeAnimationGeneration"], @(recoveryGeneration));
+    __block CFTimeInterval completedAt = 0;
+    __block UIViewAnimatingPosition completionPosition = UIViewAnimatingPositionCurrent;
+    [nativeAnimator addCompletion:^(UIViewAnimatingPosition position) {
+        completedAt = CACurrentMediaTime();
+        completionPosition = position;
+    }];
+    [self assertRequiredActionIsContainedInActualClips:maximumText];
+    XCTAssertTrue(guidance.hidden);
+    XCTAssertTrue(CGPointEqualToPoint(remainder.center, portraitRemainder));
+    XCTAssertEqualObjects([maximumText valueForKey:@"dots"], nativeIdentities);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:maximumText], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:maximumText], 1);
+    XCTAssertEqual([self crossedCount:maximumText], 0);
+    NSPredicate *naturallyCompleted = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+        LessonIntroView *view = object;
+        return view.playbackGeneration == recoveryGeneration && view.playbackStepIndex == 3 && view.currentStepIndex == 3
+            && view.playbackState == LessonIntroPlaybackStateCompleted;
+    }];
+    XCTNSPredicateExpectation *completed = [[XCTNSPredicateExpectation alloc] initWithPredicate:naturallyCompleted object:maximumText];
+    [self waitForExpectations:@[completed] timeout:8];
+    XCTAssertEqual(completionPosition, UIViewAnimatingPositionEnd);
+    XCTAssertGreaterThan(completedAt, 0);
+    XCTAssertGreaterThanOrEqual(completedAt - requestedAt + 1.0 / 60.0, [maximumText makeTenTransferDuration]);
+    XCTAssertLessThanOrEqual(completedAt - requestedAt, 8);
+    if (![self assertCommittedPresentationForDots:nativeIdentities centers:[nativeIdentities valueForKey:@"center"]
+        intro:maximumText context:@"AX5 2 + 9 explicit portrait Replay naturally completed destination"]) return;
+    [self assertRequiredActionIsContainedInActualClips:maximumText];
+    XCTAssertEqual(maximumText.playbackGeneration, recoveryGeneration);
+    XCTAssertEqual(maximumText.currentStepIndex, 3);
+    XCTAssertEqual(maximumText.playbackStepIndex, 3);
+    XCTAssertEqual(maximumText.playbackState, LessonIntroPlaybackStateCompleted);
+    XCTAssertNil([maximumText valueForKey:@"stepAnimator"]);
+    XCTAssertNil([maximumText valueForKey:@"visibilityDisplayLink"]);
+    XCTAssertEqualObjects([maximumText valueForKey:@"activeAnimationGeneration"], @0);
+    XCTAssertEqualObjects([[maximumText valueForKey:@"progressLabel"] accessibilityValue],
+        ([NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，動態播放完成", (unsigned long)recoveryGeneration]));
+    XCTAssertEqualObjects([maximumText valueForKey:@"dots"], nativeIdentities);
+    XCTAssertEqual([self visibleDotsInIntro:maximumText].count, 11u);
+    XCTAssertEqual([self countInFrame:@"firstFrame" intro:maximumText], 10);
+    XCTAssertEqual([self countInFrame:@"secondFrame" intro:maximumText], 1);
+    XCTAssertEqual([self crossedCount:maximumText], 0);
+    XCTAssertTrue(CGPointEqualToPoint(remainder.center, portraitRemainder));
+    XCTAssertTrue(CGRectContainsRect(nativeStage.bounds, remainder.frame));
+    [self assertVisibleDotsFitWithoutOverlapping:maximumText];
+    [self assertEquationHidden:maximumText a:2 b:9 make:YES];
 }
 
 - (void)testHistoricalLandscapeClippedReplayMinimallyFramesTheEntireAction {

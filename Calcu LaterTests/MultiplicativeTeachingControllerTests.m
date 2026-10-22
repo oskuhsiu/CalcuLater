@@ -1,11 +1,79 @@
 #import <XCTest/XCTest.h>
 #import <QuartzCore/QuartzCore.h>
+#import <math.h>
 #import "MultiplicativeTeachingViewController.h"
 #import "MultiplicativeTeachingPresentation.h"
 #import "MultiplicativePlaceValueBoardView.h"
 #import "MultiplicativeWrittenWorkView.h"
 #import "ChildUIKit.h"
 #import "WordProblem.h"
+
+// Fixture isolation only: never hide foreign windows or infer order from key status.
+// Include a hidden model if its native presentation or animation may still paint.
+static BOOL MTPFixtureWindowMayPaint(UIWindow *window) {
+    CALayer *layer = window.layer, *paint = layer.presentationLayer;
+    return layer.animationKeys.count || !((layer.hidden || layer.opacity <= 0)
+        && (!paint || paint.hidden || paint.opacity <= 0));
+}
+static CGFloat MTPFixtureLevelAboveScene(UIWindowScene *scene, UIWindow *fixture) {
+    CGFloat highest = UIWindowLevelNormal;
+    for (UIWindow *window in scene.windows) if (window != fixture && MTPFixtureWindowMayPaint(window)) {
+        if (!isfinite(window.windowLevel)) return NAN;
+        highest = MAX(highest, window.windowLevel);
+    }
+    CGFloat level = highest + 1;
+    return isfinite(level) && level > highest ? level : NAN;
+}
+static BOOL MTPFixtureHasStrictWindowOrder(UIWindow *fixture, UIWindowScene *scene) {
+    if (!fixture || !scene || fixture.windowScene != scene || ![scene.windows containsObject:fixture]
+        || !isfinite(fixture.windowLevel)) return NO;
+    for (UIWindow *window in scene.windows) if (window != fixture && MTPFixtureWindowMayPaint(window)
+        && (!isfinite(window.windowLevel) || !(fixture.windowLevel > window.windowLevel))) return NO;
+    return YES;
+}
+// Only public, read-only metadata. Never load a root view or inspect UI text.
+// Bound both the tree depth and the total visited nodes, including paint-only nodes.
+static void MTPAppendWindowLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer *layer,
+                                            NSUInteger depth, NSUInteger *remaining, BOOL presented) {
+    if (!layer || !*remaining) return;
+    --*remaining;
+    CALayer *paint = presented ? layer : layer.presentationLayer;
+    [lines addObject:[NSString stringWithFormat:@"windowLayer depth=%lu presented=%d class=%@ delegateClass=%@ model=%p frame=%@ bounds=%@ position=%@ hidden=%d opacity=%g z=%g clips=%d mask=%d contents=%d backgroundAlpha=%g shadow=%g animated=%d transformIdentity=%d sublayerTransformIdentity=%d; paint=%p modelLink=%d frame=%@ bounds=%@ position=%@ hidden=%d opacity=%g z=%g clips=%d mask=%d contents=%d backgroundAlpha=%g shadow=%g transformIdentity=%d sublayerTransformIdentity=%d children=%lu/%lu",
+        (unsigned long)depth, presented, NSStringFromClass(layer.class), NSStringFromClass([(id)layer.delegate class]), layer.modelLayer,
+        NSStringFromCGRect(layer.frame), NSStringFromCGRect(layer.bounds), NSStringFromCGPoint(layer.position), layer.hidden, (double)layer.opacity, (double)layer.zPosition,
+        layer.masksToBounds, layer.mask != nil, layer.contents != nil, (double)(layer.backgroundColor ? CGColorGetAlpha(layer.backgroundColor) : 0), (double)layer.shadowOpacity, layer.animationKeys.count != 0,
+        CATransform3DIsIdentity(layer.transform), CATransform3DIsIdentity(layer.sublayerTransform), paint, paint.modelLayer == (presented ? layer.modelLayer : layer),
+        NSStringFromCGRect(paint.frame), NSStringFromCGRect(paint.bounds), NSStringFromCGPoint(paint.position), paint.hidden, (double)paint.opacity, (double)paint.zPosition,
+        paint.masksToBounds, paint.mask != nil, paint.contents != nil, (double)(paint.backgroundColor ? CGColorGetAlpha(paint.backgroundColor) : 0), (double)paint.shadowOpacity,
+        CATransform3DIsIdentity(paint.transform), CATransform3DIsIdentity(paint.sublayerTransform), (unsigned long)layer.sublayers.count, (unsigned long)paint.sublayers.count]];
+    if (depth >= 3) return;
+    for (CALayer *child in layer.sublayers) {
+        if (!*remaining) break;
+        MTPAppendWindowLayerDiagnostic(lines, child, depth + 1, remaining, presented);
+    }
+    if (!presented) for (CALayer *child in paint.sublayers) {
+        if (!*remaining) break;
+        if (!child.modelLayer || ![layer.sublayers containsObject:child.modelLayer])
+            MTPAppendWindowLayerDiagnostic(lines, child, depth + 1, remaining, YES);
+    }
+}
+static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixture) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
+        @"sceneWindowSnapshot sceneState=%ld totalWindows=%lu windowLimit=16 layerNodesPerWindow=16 depthLimit=3",
+        (long)scene.activationState, (unsigned long)scene.windows.count]];
+    NSUInteger windows = 0;
+    for (UIWindow *window in scene.windows) {
+        if (windows++ == 16) { [lines addObject:@"additional windows omitted"]; break; }
+        UIViewController *root = window.rootViewController; UIView *loadedRoot = root.viewIfLoaded;
+        [lines addObject:[NSString stringWithFormat:@"sceneWindow=%p class=%@ current=%d key=%d level=%g hidden=%d alpha=%g frame=%@ potentiallyVisible=%d rootClass=%@ loadedRootClass=%@",
+            window, NSStringFromClass(window.class), window == fixture, window.isKeyWindow, (double)window.windowLevel, window.hidden, (double)window.alpha,
+            NSStringFromCGRect(window.frame), MTPFixtureWindowMayPaint(window), NSStringFromClass(root.class), NSStringFromClass(loadedRoot.class)]];
+        NSUInteger remaining = 16;
+        MTPAppendWindowLayerDiagnostic(lines, window.layer, 0, &remaining, NO);
+        if (!remaining) [lines addObject:@"window layer node limit reached"];
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
 
 @interface MultiplicativeTeachingViewController (ComponentTesting)
 - (void)selectActionIndex:(NSInteger)index play:(BOOL)play;
@@ -44,7 +112,9 @@
 }
 @end
 
-@interface MultiplicativeTeachingControllerTests : XCTestCase
+@interface MultiplicativeTeachingControllerTests : XCTestCase {
+    NSString *_preElevationWindowDiagnostic;
+}
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) UIWindow *priorKeyWindow;
 @property (nonatomic, strong) MultiplicativeTeachingViewController *controller;
@@ -62,16 +132,33 @@
     }
     XCTAssertNotNil(foreground, @"Native component acceptance requires a real foreground UIWindowScene.");
     if (foreground) {
+        _preElevationWindowDiagnostic = MTPFixtureWindowSnapshot(foreground, nil);
         self.window = [[UIWindow alloc] initWithWindowScene:foreground];
-        // Key status alone does not prove paint order between visible windows.
-        // Leave the app window untouched and make only this fixture provably above it.
-        self.window.windowLevel = (self.priorKeyWindow ? self.priorKeyWindow.windowLevel : UIWindowLevelNormal) + 1;
+        CGFloat fixtureLevel = MTPFixtureLevelAboveScene(foreground, self.window);
+        XCTAssertTrue(isfinite(fixtureLevel), @"No finite strictly higher fixture level: %@", _preElevationWindowDiagnostic);
+        if (!isfinite(fixtureLevel)) return;
+        // Set only this owned window once; do not compensate for later overlays.
+        self.window.windowLevel = fixtureLevel;
+        XCTAssertTrue(MTPFixtureHasStrictWindowOrder(self.window, foreground), @"%@", MTPFixtureWindowSnapshot(foreground, self.window));
         self.window.frame = foreground.coordinateSpace.bounds;
         self.window.rootViewController = [[UIViewController alloc] init];
         [self.window makeKeyAndVisible];
+        XCTAssertTrue(MTPFixtureHasStrictWindowOrder(self.window, foreground), @"Order changed during makeKeyAndVisible: %@", MTPFixtureWindowSnapshot(foreground, self.window));
+        [self.window layoutIfNeeded]; [CATransaction flush];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.025]];
+        XCTAssertEqual(foreground.activationState, UISceneActivationStateForegroundActive);
+        XCTAssertTrue(MTPFixtureHasStrictWindowOrder(self.window, foreground), @"Order changed after native presentation: %@", MTPFixtureWindowSnapshot(foreground, self.window));
+        CALayer *paint = self.window.layer.presentationLayer;
+        XCTAssertNotNil(paint); XCTAssertEqual(paint.modelLayer, self.window.layer); XCTAssertFalse(paint.hidden); XCTAssertGreaterThan(paint.opacity, 0);
     }
 }
 - (void)tearDown {
+    if (_preElevationWindowDiagnostic.length && self.testRun.failureCount) {
+        XCTAttachment *attachment = [XCTAttachment attachmentWithString:_preElevationWindowDiagnostic];
+        attachment.name = @"native-pre-elevation-scene-windows";
+        attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:attachment];
+    }
     [self.controller cancelPlayback:MTPPlaceValueInterruptionReasonDetached];
     [self.controller.traitOverrides removeTrait:UITraitPreferredContentSizeCategory.class];
     [self.controller willMoveToParentViewController:nil]; [self.controller.view removeFromSuperview];

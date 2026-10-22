@@ -697,7 +697,11 @@ typedef struct {
     VABExchangeQuantities q = [self exchangeQuantities];
     if (!q.valid) return layout;
     ArithmeticTeachingStep *step = self.currentStep;
-    CGFloat inset = 6, groupGap = 12, labelGap = 4;
+    CGFloat inset = 6, groupGap = 12;
+    // Only exchanged material has an outline: the 3 pt path outset plus
+    // half its 2 pt stroke needs 4 pt above and below the material rect.
+    // Headers and unoutlined retained groups need separation, not that outset.
+    CGFloat outlineOutset = 4, headerGap = 2, retainedLabelGap = 2, countsGap = 2;
     CGFloat innerWidth = width - 2 * inset;
     CGFloat sourceWidth = MAX([self unwrappedWidthForText:[self exchangedSourceText] font:self.exchangeFont],
         [self shortRowWidthForCount:q.exchangedSource column:step.sourceColumn]);
@@ -731,26 +735,31 @@ typedef struct {
             [self heightForText:[self exchangePlayingText] font:self.exchangeFont width:exchangeWidth]));
     layout.mode = CGRectMake(inset, inset, exchangeWidth, headerHeight);
     layout.scope = CGRectMake(retainedSourceX, inset, scopeAvailable, headerHeight);
-    CGFloat y = inset + headerHeight + labelGap;
+    CGFloat y = inset + headerHeight + headerGap;
     CGFloat labelHeight = MAX([self heightForText:[self exchangedSourceText] font:self.exchangeFont width:sourceWidth],
         [self heightForText:[self exchangedDestinationText] font:self.exchangeFont width:destinationWidth]);
     layout.sourceLabel = CGRectMake(inset, y, sourceWidth, labelHeight);
     layout.destinationLabel = CGRectMake(destinationX, y, destinationWidth, labelHeight);
     CGFloat unitsHeight = MAX([self exchangeUnitHeightForCount:q.exchangedSource column:step.sourceColumn width:sourceWidth],
         [self exchangeUnitHeightForCount:q.exchangedDestination column:step.destinationColumn width:destinationWidth]);
-    layout.sourceUnits = CGRectMake(inset, y + labelHeight + labelGap, sourceWidth, unitsHeight);
-    layout.destinationUnits = CGRectMake(destinationX, y + labelHeight + labelGap, destinationWidth, unitsHeight);
+    layout.sourceUnits = CGRectMake(inset, y + labelHeight + outlineOutset, sourceWidth, unitsHeight);
+    layout.destinationUnits = CGRectMake(destinationX, y + labelHeight + outlineOutset, destinationWidth, unitsHeight);
     layout.sign = CGRectMake(inset + sourceWidth + (VABExchangeLane - 28) / 2, CGRectGetMidY(layout.sourceUnits) - 20, 28, 40);
     labelHeight = [self heightForText:[self retainedSourceText] font:self.exchangeFont width:retainedSourceWidth];
     layout.retainedSourceLabel = CGRectMake(retainedSourceX, y, retainedSourceWidth, labelHeight);
     unitsHeight = [self exchangeUnitHeightForCount:q.sourceAfter column:step.sourceColumn width:retainedSourceWidth];
-    layout.retainedSourceUnits = CGRectMake(retainedSourceX, y + labelHeight + labelGap, retainedSourceWidth, unitsHeight);
+    layout.retainedSourceUnits = CGRectMake(retainedSourceX, y + labelHeight + retainedLabelGap, retainedSourceWidth, unitsHeight);
     labelHeight = [self heightForText:[self retainedDestinationText] font:self.exchangeFont width:retainedDestinationWidth];
     layout.retainedDestinationLabel = CGRectMake(retainedDestinationX, y, retainedDestinationWidth, labelHeight);
     unitsHeight = [self exchangeUnitHeightForCount:q.destinationBefore column:step.destinationColumn width:retainedDestinationWidth];
-    layout.retainedDestinationUnits = CGRectMake(retainedDestinationX, y + labelHeight + labelGap, retainedDestinationWidth, unitsHeight);
-    y = MAX(MAX(CGRectGetMaxY(layout.sourceUnits), CGRectGetMaxY(layout.sign)),
-        MAX(CGRectGetMaxY(layout.retainedSourceUnits), CGRectGetMaxY(layout.retainedDestinationUnits))) + 6;
+    layout.retainedDestinationUnits = CGRectMake(retainedDestinationX, y + labelHeight + retainedLabelGap, retainedDestinationWidth, unitsHeight);
+    // Place the footer below actual painted content, including both outlines.
+    // A retained group's bottom does not need the exchanged group's outset;
+    // when empty, its explicit zero caption is the bottom of that group.
+    CGFloat exchangedBottom = MAX(CGRectGetMaxY(layout.sourceUnits), CGRectGetMaxY(layout.destinationUnits)) + outlineOutset;
+    CGFloat retainedSourceBottom = q.sourceAfter > 0 ? CGRectGetMaxY(layout.retainedSourceUnits) : CGRectGetMaxY(layout.retainedSourceLabel);
+    CGFloat retainedDestinationBottom = q.destinationBefore > 0 ? CGRectGetMaxY(layout.retainedDestinationUnits) : CGRectGetMaxY(layout.retainedDestinationLabel);
+    y = MAX(MAX(exchangedBottom, CGRectGetMaxY(layout.sign)), MAX(retainedSourceBottom, retainedDestinationBottom)) + countsGap;
     layout.counts = CGRectMake(inset, y, innerWidth, [self heightForText:[self exchangeCountsText] font:self.bodyFont width:innerWidth]);
     layout.height = CGRectGetMaxY(layout.counts) + inset;
     return layout;

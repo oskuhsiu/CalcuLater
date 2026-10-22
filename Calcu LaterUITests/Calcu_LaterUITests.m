@@ -861,6 +861,48 @@
         XCTAssertTrue(answer.hittable);
     }
 }
+- (void)assertTenFrameVisibilityPausedForGeneration:(NSUInteger)generation
+    selectedProgress:(NSString *)selectedProgress question:(NSString *)question {
+    XCUIElement *progress = self.app.staticTexts[@"lessonIntro.progress"];
+    NSString *expected = [NSString stringWithFormat:@"第 %lu 次播放，第 4 小步，點點圖未完整顯示，先看圖再重播",
+        (unsigned long)generation];
+    NSString *endpoint = [@"第一框 10 個，第二框 1 個；劃掉 0 個。"
+        stringByAppendingString:self.app.staticTexts[@"lessonIntro.narration"].label];
+    XCTAssertEqualObjects([progress.value description], expected);
+    XCTAssertEqualObjects(progress.label, selectedProgress);
+    XCTAssertEqual([self tenFramePlaybackGeneration], generation);
+    XCTAssertEqualObjects(self.tenFrameStageValue, endpoint);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+    [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
+    XCUIElement *instruction = self.app.staticTexts[@"lessonIntro.visibilityInstruction"];
+    CGRect viewport = self.app.scrollViews[@"lessonIntro.content"].frame;
+    CGRect window = self.app.windows.firstMatch.frame;
+    XCTAssertTrue(instruction.exists && instruction.hittable);
+    XCTAssertTrue(CGRectContainsRect(window, instruction.frame));
+    XCTAssertFalse(CGRectIntersectsRect(instruction.frame, viewport));
+    NSMutableArray<NSValue *> *controlFrames = [NSMutableArray array];
+    for (NSString *identifier in @[@"lessonIntro.previous", @"lessonIntro.next", @"lessonIntro.replay",
+        @"lessonIntro.start", @"lessonIntro.readPinned"]) {
+        XCUIElement *control = self.app.buttons[identifier];
+        XCTAssertTrue(control.exists && control.enabled && control.hittable, @"%@", identifier);
+        CGRect frame = control.frame;
+        XCTAssertGreaterThan(frame.size.width, 0);
+        XCTAssertGreaterThan(frame.size.height, 0);
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(window, -0.5, -0.5), frame));
+        XCTAssertFalse(CGRectIntersectsRect(frame, viewport));
+        XCTAssertFalse(CGRectIntersectsRect(frame, instruction.frame));
+        for (NSValue *other in controlFrames) XCTAssertFalse(CGRectIntersectsRect(frame, other.CGRectValue));
+        [controlFrames addObject:[NSValue valueWithCGRect:frame]];
+    }
+    // Geometry and accessibility observations must not resume or replace it.
+    XCTAssertEqualObjects([progress.value description], expected);
+    XCTAssertFalse([[progress.value description] containsString:@"動態播放中"]);
+    XCTAssertFalse([[progress.value description] containsString:@"動態播放完成"]);
+    XCTAssertEqualObjects(progress.label, selectedProgress);
+    XCTAssertEqual([self tenFramePlaybackGeneration], generation);
+    XCTAssertEqualObjects(self.tenFrameStageValue, endpoint);
+    XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+}
 - (void)testMakeTenCurrentNineDotsReplayBackRotateAndFinish {
     NSString *question = [self openTenFrameLesson:@"L4" title:@"合十法（進位加）" scenario:@"make-ten-nine"];
     XCTAssertEqualObjects(question, @"2 + 9 = ?");
@@ -948,15 +990,63 @@
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
     [self capture:@"44-make-ten-rotation-preserves-selected-step"];
-    // Explicit landscape Replay must recover the historical onscreen-button /
-    // clipped-diagram path without a helper scroll. Rotation itself stays quiet.
+    // Measure capacity BEFORE Replay can reserve space for pause guidance.
+    // A misplaced but fitting action still owes a real natural completion.
     NSUInteger beforeLandscapeReplay = [self tenFramePlaybackGeneration];
+    XCTAssertEqual(beforeLandscapeReplay, beforeInterruption + 1);
+    XCTAssertEqualObjects([self.app.staticTexts[@"lessonIntro.progress"].value description], afterRotationPlayback);
+    XCTAssertFalse(self.app.staticTexts[@"lessonIntro.visibilityInstruction"].exists);
+    CGRect requiredAction = [self.app descendantsMatchingType:XCUIElementTypeAny][@"lessonIntro.stage"].frame;
+    CGRect unobstructedScroll = self.app.scrollViews[@"lessonIntro.content"].frame;
+    CGRect landscapeWindow = self.app.windows.firstMatch.frame;
+    for (NSValue *value in @[[NSValue valueWithCGRect:requiredAction],
+        [NSValue valueWithCGRect:unobstructedScroll], [NSValue valueWithCGRect:landscapeWindow]]) {
+        CGRect frame = value.CGRectValue;
+        XCTAssertTrue(isfinite(frame.origin.x) && isfinite(frame.origin.y)
+            && isfinite(frame.size.width) && isfinite(frame.size.height));
+        XCTAssertGreaterThan(frame.size.width, 0);
+        XCTAssertGreaterThan(frame.size.height, 0);
+    }
+    CGFloat footerTop = CGFLOAT_MAX;
+    for (NSString *identifier in @[@"lessonIntro.previous", @"lessonIntro.next", @"lessonIntro.replay",
+        @"lessonIntro.start", @"lessonIntro.readPinned"]) {
+        XCUIElement *control = self.app.buttons[identifier];
+        XCTAssertTrue(control.exists && control.enabled && control.hittable);
+        CGRect frame = control.frame;
+        XCTAssertTrue(isfinite(frame.origin.x) && isfinite(frame.origin.y)
+            && isfinite(frame.size.width) && isfinite(frame.size.height));
+        XCTAssertGreaterThan(frame.size.width, 0);
+        XCTAssertGreaterThan(frame.size.height, 0);
+        XCTAssertTrue(CGRectContainsRect(CGRectInset(landscapeWindow, -0.5, -0.5), frame));
+        footerTop = MIN(footerTop, CGRectGetMinY(frame));
+    }
+    XCTAssertEqualWithAccuracy(CGRectGetMaxY(unobstructedScroll), footerTop - 12, 0.5);
+    CGRect available = CGRectIntersection(unobstructedScroll, landscapeWindow);
+    XCTAssertFalse(CGRectIsNull(available) || CGRectIsEmpty(available));
+    BOOL insufficientLandscapeCapacity = MAX(requiredAction.size.width - available.size.width,
+        requiredAction.size.height - available.size.height) > 0.5;
+    XCTAttachment *capacity = [XCTAttachment attachmentWithString:[NSString stringWithFormat:
+        @"Settled playback before Replay: %@\nRequired action: %@\nUnobstructed scroll: %@\n"
+         "Physical window: %@\nMinimum top of all five footer controls: %.3f\nAvailable: %@\nInsufficient dimensions: %d",
+        afterRotationPlayback, NSStringFromCGRect(requiredAction), NSStringFromCGRect(unobstructedScroll),
+        NSStringFromCGRect(landscapeWindow), (double)footerTop, NSStringFromCGRect(available), insufficientLandscapeCapacity]];
+    capacity.name = @"44a-make-ten-landscape-pre-replay-capacity";
+    capacity.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:capacity];
+    XCTAssertEqualObjects([self.app.staticTexts[@"lessonIntro.progress"].value description], afterRotationPlayback);
+    XCTAssertFalse(self.app.staticTexts[@"lessonIntro.visibilityInstruction"].exists);
     [self.app.buttons[@"lessonIntro.replay"] tap];
     [self assertTenFrameRequiredSceneIsVisibleOrExplicitlyPaused];
-    [self waitForTenFrameNaturalCompletionAfterGeneration:beforeLandscapeReplay step:3];
+    if (insufficientLandscapeCapacity) {
+        [self assertTenFrameVisibilityPausedForGeneration:beforeLandscapeReplay + 1 selectedProgress:progress question:question];
+        [self capture:@"44a-make-ten-landscape-insufficient-capacity-paused"];
+        [self assertTenFrameVisibilityPausedForGeneration:beforeLandscapeReplay + 1 selectedProgress:progress question:question];
+    } else {
+        [self waitForTenFrameNaturalCompletionAfterGeneration:beforeLandscapeReplay step:3];
+        [self capture:@"44a-make-ten-landscape-replay-naturally-completed"];
+    }
     XCTAssertTrue([self.tenFrameStageValue containsString:@"第一框 10 個，第二框 1 個"]);
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
-    [self capture:@"44a-make-ten-landscape-replay-naturally-completed"];
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
     NSPredicate *portrait = [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
         XCUIElement *window = object;
@@ -966,6 +1056,18 @@
     XCTestExpectation *upright = [self expectationForPredicate:portrait
         evaluatedWithObject:self.app.windows.firstMatch handler:nil];
     [self waitForExpectations:@[upright] timeout:5];
+    if (insufficientLandscapeCapacity) {
+        [self assertTenFrameVisibilityPausedForGeneration:beforeLandscapeReplay + 1 selectedProgress:progress question:question];
+        [self capture:@"44b-make-ten-portrait-still-paused-before-explicit-replay"];
+        [self assertTenFrameVisibilityPausedForGeneration:beforeLandscapeReplay + 1 selectedProgress:progress question:question];
+        [self.app.buttons[@"lessonIntro.replay"] tap];
+        [self waitForTenFrameNaturalCompletionAfterGeneration:beforeLandscapeReplay + 1 step:3];
+        XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.progress"].label, progress);
+        XCTAssertEqualObjects(self.tenFrameStageValue, ([@"第一框 10 個，第二框 1 個；劃掉 0 個。"
+            stringByAppendingString:self.app.staticTexts[@"lessonIntro.narration"].label]));
+        XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, question);
+        [self capture:@"44c-make-ten-portrait-explicit-replay-naturally-completed"];
+    }
     [self.app.buttons[@"lessonIntro.next"] tap];
     XCTAssertEqualObjects(self.app.staticTexts[@"lessonIntro.equation"].label, @"2 + 9 = 11");
     XCTAssertTrue([self.app.staticTexts[@"lessonIntro.narration"].label containsString:@"10 + 1 = 11"]);

@@ -20,6 +20,97 @@
 - (void)advanceClockAtTimestamp:(CFTimeInterval)timestamp transaction:(id)transaction clock:(CADisplayLink *)clock;
 - (void)renderElapsed:(NSTimeInterval)elapsed transaction:(id)transaction clock:(CADisplayLink *)clock;
 @end
+// Fixture isolation only: never hide foreign windows or infer order from key status.
+// Include a hidden model if its native presentation or animation may still paint.
+static BOOL MTPFixtureWindowMayPaint(UIWindow *window) {
+    CALayer *layer = window.layer, *paint = layer.presentationLayer;
+    return layer.animationKeys.count || !((layer.hidden || layer.opacity <= 0)
+        && (!paint || paint.hidden || paint.opacity <= 0));
+}
+static CGFloat MTPFixtureLevelAboveScene(UIWindowScene *scene, UIWindow *fixture) {
+    CGFloat highest = UIWindowLevelNormal;
+    for (UIWindow *window in scene.windows) if (window != fixture && MTPFixtureWindowMayPaint(window)) {
+        if (!isfinite(window.windowLevel)) return NAN;
+        highest = MAX(highest, window.windowLevel);
+    }
+    CGFloat level = highest + 1;
+    return isfinite(level) && level > highest ? level : NAN;
+}
+static BOOL MTPFixtureHasStrictWindowOrder(UIWindow *fixture, UIWindowScene *scene) {
+    if (!fixture || !scene || fixture.windowScene != scene || ![scene.windows containsObject:fixture]
+        || !isfinite(fixture.windowLevel)) return NO;
+    for (UIWindow *window in scene.windows) if (window != fixture && MTPFixtureWindowMayPaint(window)
+        && (!isfinite(window.windowLevel) || !(fixture.windowLevel > window.windowLevel))) return NO;
+    return YES;
+}
+// Only public, read-only metadata. Never load a root view or inspect UI text.
+// Bound both the tree depth and the total visited nodes, including paint-only nodes.
+static void MTPAppendWindowLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer *layer,
+                                            NSUInteger depth, NSUInteger *remaining, BOOL presented) {
+    if (!layer || !*remaining) return;
+    --*remaining;
+    CALayer *paint = presented ? layer : layer.presentationLayer;
+    [lines addObject:[NSString stringWithFormat:@"windowLayer depth=%lu presented=%d class=%@ delegateClass=%@ model=%p frame=%@ bounds=%@ position=%@ hidden=%d opacity=%g z=%g clips=%d mask=%d contents=%d backgroundAlpha=%g shadow=%g animated=%d transformIdentity=%d sublayerTransformIdentity=%d; paint=%p modelLink=%d frame=%@ bounds=%@ position=%@ hidden=%d opacity=%g z=%g clips=%d mask=%d contents=%d backgroundAlpha=%g shadow=%g transformIdentity=%d sublayerTransformIdentity=%d children=%lu/%lu",
+        (unsigned long)depth, presented, NSStringFromClass(layer.class), NSStringFromClass([(id)layer.delegate class]), layer.modelLayer,
+        NSStringFromCGRect(layer.frame), NSStringFromCGRect(layer.bounds), NSStringFromCGPoint(layer.position), layer.hidden, (double)layer.opacity, (double)layer.zPosition,
+        layer.masksToBounds, layer.mask != nil, layer.contents != nil, (double)(layer.backgroundColor ? CGColorGetAlpha(layer.backgroundColor) : 0), (double)layer.shadowOpacity, layer.animationKeys.count != 0,
+        CATransform3DIsIdentity(layer.transform), CATransform3DIsIdentity(layer.sublayerTransform), paint, paint.modelLayer == (presented ? layer.modelLayer : layer),
+        NSStringFromCGRect(paint.frame), NSStringFromCGRect(paint.bounds), NSStringFromCGPoint(paint.position), paint.hidden, (double)paint.opacity, (double)paint.zPosition,
+        paint.masksToBounds, paint.mask != nil, paint.contents != nil, (double)(paint.backgroundColor ? CGColorGetAlpha(paint.backgroundColor) : 0), (double)paint.shadowOpacity,
+        CATransform3DIsIdentity(paint.transform), CATransform3DIsIdentity(paint.sublayerTransform), (unsigned long)layer.sublayers.count, (unsigned long)paint.sublayers.count]];
+    if (depth >= 3) return;
+    for (CALayer *child in layer.sublayers) {
+        if (!*remaining) break;
+        MTPAppendWindowLayerDiagnostic(lines, child, depth + 1, remaining, presented);
+    }
+    if (!presented) for (CALayer *child in paint.sublayers) {
+        if (!*remaining) break;
+        if (!child.modelLayer || ![layer.sublayers containsObject:child.modelLayer])
+            MTPAppendWindowLayerDiagnostic(lines, child, depth + 1, remaining, YES);
+    }
+}
+static NSString *MTPFixtureWindowSnapshot(UIWindowScene *scene, UIWindow *fixture) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
+        @"sceneWindowSnapshot sceneState=%ld totalWindows=%lu windowLimit=16 layerNodesPerWindow=16 depthLimit=3",
+        (long)scene.activationState, (unsigned long)scene.windows.count]];
+    NSUInteger windows = 0;
+    for (UIWindow *window in scene.windows) {
+        if (windows++ == 16) { [lines addObject:@"additional windows omitted"]; break; }
+        UIViewController *root = window.rootViewController; UIView *loadedRoot = root.viewIfLoaded;
+        [lines addObject:[NSString stringWithFormat:@"sceneWindow=%p class=%@ current=%d key=%d level=%g hidden=%d alpha=%g frame=%@ potentiallyVisible=%d rootClass=%@ loadedRootClass=%@",
+            window, NSStringFromClass(window.class), window == fixture, window.isKeyWindow, (double)window.windowLevel, window.hidden, (double)window.alpha,
+            NSStringFromCGRect(window.frame), MTPFixtureWindowMayPaint(window), NSStringFromClass(root.class), NSStringFromClass(loadedRoot.class)]];
+        NSUInteger remaining = 16;
+        MTPAppendWindowLayerDiagnostic(lines, window.layer, 0, &remaining, NO);
+        if (!remaining) [lines addObject:@"window layer node limit reached"];
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+static NSString * const MTPNativeCoverMarker = @"mtp.native.standalone.cover";
+// Serialize each CURRENT parent tree separately. A retained old presentation
+// object would not prove that it remains in the current native paint tree.
+static NSString *MTPCurrentParentPaintDiagnostic(CALayer *parent, CALayer *cover, NSString *phase) {
+    CALayer *paint = parent.presentationLayer;
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:[NSString stringWithFormat:
+        @"%@ parent=%p currentPaint=%p parentModelLink=%d modelChildren=%lu paintChildren=%lu cover=%p coverParent=%p coverHidden=%d coverOpacity=%g childLimit=256",
+        phase, parent, paint, paint.modelLayer == parent, (unsigned long)parent.sublayers.count, (unsigned long)paint.sublayers.count,
+        cover, cover.superlayer, cover.hidden, (double)cover.opacity]];
+    NSArray<CALayer *> *children = paint.sublayers;
+    NSUInteger count = 0, markerMatches = 0;
+    for (CALayer *child in children) {
+        if (count == 256) { [lines addObject:@"additional paint children omitted"]; break; }
+        BOOL marked = [child.name isEqualToString:MTPNativeCoverMarker];
+        if (marked) markerMatches++;
+        [lines addObject:[NSString stringWithFormat:@"paintChild index=%lu identity=%p class=%@ model=%p modelClass=%@ isCover=%d markerMatches=%d inModelChildren=%d frame=%@ bounds=%@ hidden=%d opacity=%g z=%g backgroundAlpha=%g contents=%d mask=%d shadow=%g",
+            (unsigned long)count, child, NSStringFromClass(child.class), child.modelLayer, NSStringFromClass(((CALayer *)child.modelLayer).class), child.modelLayer == cover, marked,
+            child.modelLayer && [parent.sublayers containsObject:child.modelLayer], NSStringFromCGRect(child.frame), NSStringFromCGRect(child.bounds), child.hidden, (double)child.opacity, (double)child.zPosition,
+            (double)(child.backgroundColor ? CGColorGetAlpha(child.backgroundColor) : 0), child.contents != nil, child.mask != nil, (double)child.shadowOpacity]];
+        count++;
+    }
+    [lines addObject:[NSString stringWithFormat:@"enumerated=%lu complete=%d fixedMarkerMatches=%lu modelMarkerMatches=%d",
+        (unsigned long)count, count == children.count, (unsigned long)markerMatches, [cover.name isEqualToString:MTPNativeCoverMarker]]];
+    return [lines componentsJoinedByString:@"\n"];
+}
 static void MTPAddFrozenPaintAnimation(CALayer *layer, NSString *keyPath, id destination) {
     CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:keyPath];
     animation.fromValue = [layer valueForKeyPath:keyPath]; animation.toValue = destination;
@@ -122,6 +213,7 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
             window, window == self.window, window.isKeyWindow, (double)window.windowLevel, (double)self.window.windowLevel,
             window.hidden, (double)window.alpha, NSStringFromCGRect(window.frame), window != self.window && [self occluderMayCoverAction:window]]];
     }
+    [lines addObject:MTPFixtureWindowSnapshot(self.window.windowScene, self.window)];
     return [lines componentsJoinedByString:@"\n"];
 }
 - (void)installScenePaint {
@@ -135,7 +227,9 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
 
 /// These fixtures require a real attached UIWindowScene. Pure scene assertions do
 /// not substitute for the presentation-layer and visibility checks in this suite.
-@interface MultiplicativePlaceValueBoardViewTests : XCTestCase
+@interface MultiplicativePlaceValueBoardViewTests : XCTestCase {
+    NSString *_preElevationWindowDiagnostic;
+}
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, weak) UIWindow *previousKeyWindow;
 @property (nonatomic, strong) UIScrollView *viewport;
@@ -146,20 +240,36 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
     [super setUp]; UIWindowScene *scene = nil;
     for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) if ([candidate isKindOfClass:UIWindowScene.class] && candidate.activationState == UISceneActivationStateForegroundActive) { scene = (UIWindowScene *)candidate; break; }
     XCTAssertNotNil(scene, @"This suite must execute in the foreground application's real UIWindowScene.");
+    if (!scene) return;
     for (UIWindow *window in scene.windows) if (window.isKeyWindow) self.previousKeyWindow = window;
+    _preElevationWindowDiagnostic = MTPFixtureWindowSnapshot(scene, nil);
     self.window = [[UIWindow alloc] initWithWindowScene:scene]; self.window.rootViewController = [[UIViewController alloc] init];
-    // Keep the legitimate underlying app window untouched. A known higher level,
-    // rather than key status or array order, certifies this test window is above it.
-    self.window.windowLevel = self.previousKeyWindow.windowLevel + 1;
+    CGFloat fixtureLevel = MTPFixtureLevelAboveScene(scene, self.window);
+    XCTAssertTrue(isfinite(fixtureLevel), @"No finite strictly higher fixture level: %@", _preElevationWindowDiagnostic);
+    if (!isfinite(fixtureLevel)) return;
+    // Set the owned window once. Later higher windows must fail, never cause a raise.
+    self.window.windowLevel = fixtureLevel;
+    XCTAssertTrue(MTPFixtureHasStrictWindowOrder(self.window, scene), @"%@", MTPFixtureWindowSnapshot(scene, self.window));
     self.window.rootViewController.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge; [self.window makeKeyAndVisible];
+    XCTAssertTrue(MTPFixtureHasStrictWindowOrder(self.window, scene), @"Order changed during makeKeyAndVisible: %@", MTPFixtureWindowSnapshot(scene, self.window));
     [self.window layoutIfNeeded]; [self.window.rootViewController.view layoutIfNeeded];
     CGRect safe = self.window.rootViewController.view.safeAreaLayoutGuide.layoutFrame;
     self.viewport = [[UIScrollView alloc] initWithFrame:safe]; self.viewport.clipsToBounds = YES; [self.window.rootViewController.view addSubview:self.viewport];
     self.board = [[MTPNativeBoard alloc] initWithFrame:CGRectMake(0, 0, safe.size.width, safe.size.height)]; self.board.allowsMotion = YES;
     self.board.traitOverrides.preferredContentSizeCategory = UIContentSizeCategoryLarge; [self.viewport addSubview:self.board];
     [self presentFrame]; XCTAssertEqual(self.board.window.windowScene, scene); XCTAssertGreaterThan(self.viewport.bounds.size.width, 0);
+    XCTAssertEqual(scene.activationState, UISceneActivationStateForegroundActive);
+    XCTAssertTrue(MTPFixtureHasStrictWindowOrder(self.window, scene), @"Order changed after native presentation: %@", MTPFixtureWindowSnapshot(scene, self.window));
+    CALayer *paint = self.window.layer.presentationLayer;
+    XCTAssertNotNil(paint); XCTAssertEqual(paint.modelLayer, self.window.layer); XCTAssertFalse(paint.hidden); XCTAssertGreaterThan(paint.opacity, 0);
 }
 - (void)tearDown {
+    if (_preElevationWindowDiagnostic.length && (self.board.captureVisibilityFailure || self.testRun.failureCount)) {
+        XCTAttachment *attachment = [XCTAttachment attachmentWithString:_preElevationWindowDiagnostic];
+        attachment.name = @"native-pre-elevation-scene-windows";
+        attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+        [self addAttachment:attachment];
+    }
     if (self.board.visibilityFailureDiagnostic.length) {
         XCTAttachment *attachment = [XCTAttachment attachmentWithString:self.board.visibilityFailureDiagnostic];
         attachment.name = @"native-first-visibility-rejection";
@@ -546,6 +656,11 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
         [self fitAction:action width:MIN(320,self.viewport.bounds.size.width)]; if (during.boolValue) [self startPaused];
         CALayer *parent = self.board.layer.superlayer, *wrapper = [CALayer layer]; UIView *viewParent = self.board.superview;
         NSUInteger index = [parent.sublayers indexOfObjectIdenticalTo:self.board.layer];
+        NSUInteger viewIndex = [viewParent.subviews indexOfObjectIdenticalTo:self.board];
+        UIWindow *viewWindow = self.board.window; CGRect boardFrame = self.board.frame;
+        XCTAssertEqual(viewParent, self.viewport); XCTAssertEqual(parent, viewParent.layer); XCTAssertEqual(viewWindow, self.window);
+        XCTAssertNotEqual(index, NSNotFound); XCTAssertNotEqual(viewIndex, NSNotFound);
+        XCTAssertEqual(self.board.layer.presentationLayer.superlayer.modelLayer, parent);
         [CATransaction begin]; [CATransaction setDisableActions:YES];
         @try {
             wrapper.frame = parent.bounds;
@@ -556,16 +671,32 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
             [parent insertSublayer:wrapper atIndex:(unsigned)index]; [wrapper addSublayer:self.board.layer];
         } @finally { [CATransaction commit]; }
         @try {
-            [self presentFrame]; XCTAssertEqual(self.board.superview,viewParent); XCTAssertEqual(self.board.layer.superlayer,wrapper); XCTAssertNil(wrapper.delegate);
+            [self presentFrame]; XCTAssertEqual(self.board.layer.superlayer,wrapper); XCTAssertEqual(wrapper.superlayer,parent); XCTAssertNil(wrapper.delegate);
+            // Raw reparenting may make UIKit report nil superview; that does not
+            // prove window detachment. Assert the real mismatch, not a fake parent.
+            XCTAssertNotEqual(self.board.layer.superlayer, self.board.superview.layer,
+                @"mode=%@ during=%@ nativeSuperviewClass=%@ sameWindow=%d", mode, during, NSStringFromClass(self.board.superview.class), self.board.window == viewWindow);
+            CALayer *boardPaint = self.board.layer.presentationLayer;
+            if (boardPaint) XCTAssertEqual(boardPaint.superlayer.modelLayer, wrapper);
             if (!wrapper.hidden) { XCTAssertNotNil(wrapper.presentationLayer); XCTAssertEqualWithAccuracy(wrapper.presentationLayer.opacity,wrapper.opacity,.0001); }
             if (during.boolValue) { [self.board recheckVisibility]; XCTAssertEqual(self.board.playbackState,MTPPlaceValuePlaybackStateInterrupted); }
             else XCTAssertEqual([self.board playInVisibleRect:self.board.bounds],MTPPlaceValuePlaybackStateInsufficientSpace);
             XCTAssertEqual(self.board.snapshot,action.after); XCTAssertNil([self.board valueForKey:@"clock"]);
         } @finally {
             [CATransaction begin]; [CATransaction setDisableActions:YES];
-            @try { [parent insertSublayer:self.board.layer atIndex:(unsigned)MIN(index,parent.sublayers.count)]; [wrapper removeFromSuperlayer]; }
-            @finally { [CATransaction commit]; }
+            @try {
+                [self.board removeFromSuperview];
+                [viewParent insertSubview:self.board atIndex:MIN(viewIndex,viewParent.subviews.count)];
+                [wrapper removeFromSuperlayer];
+            } @finally { [CATransaction commit]; }
             [self presentFrame];
+            XCTAssertEqual(self.board.superview,viewParent); XCTAssertEqual(self.board.window,viewWindow);
+            XCTAssertEqual(self.board.layer.superlayer,parent); XCTAssertNil(wrapper.superlayer);
+            XCTAssertEqual([viewParent.subviews indexOfObjectIdenticalTo:self.board],viewIndex);
+            XCTAssertEqual([parent.sublayers indexOfObjectIdenticalTo:self.board.layer],index);
+            XCTAssertTrue(CGRectEqualToRect(self.board.frame,boardFrame));
+            XCTAssertNotNil(self.board.layer.presentationLayer);
+            XCTAssertEqual(self.board.layer.presentationLayer.superlayer.modelLayer,parent);
         }
         XCTAssertNil([self.board valueForKey:@"clock"]);
     }
@@ -614,7 +745,7 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
 }
 - (CALayer *)addStandaloneCoverInsideBoard:(BOOL)inside z:(CGFloat)z first:(BOOL)first outside:(BOOL)outside hidden:(BOOL)hidden {
     CALayer *parent = inside ? self.board.layer : self.viewport.layer;
-    CALayer *cover = [CALayer layer];
+    CALayer *cover = [CALayer layer]; cover.name = MTPNativeCoverMarker;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     @try {
         cover.frame = [parent convertRect:self.board.requiredActionRect fromLayer:self.board.layer];
@@ -670,6 +801,7 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
             descendant = [CALayer layer]; descendant.frame = [cover convertRect:self.board.requiredActionRect fromLayer:self.board.layer]; descendant.backgroundColor = UIColor.redColor.CGColor;
             [cover addSublayer:descendant]; [self presentFrame]; XCTAssertNotNil(descendant.presentationLayer);
         }
+        NSString *removalDiagnostic = nil;
         @try {
             if ([mode isEqualToString:@"animatedZ"]) {
                 MTPAddFrozenPaintAnimation(cover,@"zPosition",@3); [self presentFrame];
@@ -689,8 +821,12 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
                 if ([mode isEqualToString:@"uncommittedReorder"]) [parent insertSublayer:cover atIndex:0];
                 if ([mode isEqualToString:@"uncommittedRemoval"]) [cover removeFromSuperlayer];
                 if ([mode isEqualToString:@"uncommittedHiddenRemoval"] || [mode isEqualToString:@"uncommittedZeroOpacityRemoval"]) {
+                    NSString *beforeHide = MTPCurrentParentPaintDiagnostic(parent, cover, @"before hide");
                     if ([mode isEqualToString:@"uncommittedHiddenRemoval"]) cover.hidden = YES; else cover.opacity = 0;
+                    NSString *afterHide = MTPCurrentParentPaintDiagnostic(parent, cover, @"after hide before removal");
                     [cover removeFromSuperlayer]; XCTAssertNil(cover.superlayer);
+                    NSString *afterRemoval = MTPCurrentParentPaintDiagnostic(parent, cover, @"after removal");
+                    removalDiagnostic = [NSString stringWithFormat:@"mode=%@ inside=%@\n%@\n%@\n%@", mode, inside, beforeHide, afterHide, afterRemoval];
                     CALayer *oldPaint = nil;
                     for (CALayer *paint in parent.presentationLayer.sublayers) if (paint.modelLayer == cover) oldPaint = paint;
                     // Require the actual old paint. Do not assume whether a
@@ -702,7 +838,14 @@ static void MTPAppendLayerDiagnostic(NSMutableArray<NSString *> *lines, CALayer 
                 XCTAssertEqual(self.board.playbackState,MTPPlaceValuePlaybackStateInterrupted); XCTAssertEqual(self.board.snapshot,action.after); XCTAssertNil([self.board valueForKey:@"clock"]);
                 if (pending) XCTAssertEqualWithAccuracy(CATransaction.animationDuration,6.5,.0001);
             } @finally { if (pending) [CATransaction commit]; }
-        } @finally { [cover removeAllAnimations]; [cover removeFromSuperlayer]; [self presentFrame]; }
+        } @finally {
+            [cover removeAllAnimations]; [cover removeFromSuperlayer]; [self presentFrame];
+            if (removalDiagnostic) {
+                XCTAttachment *attachment = [XCTAttachment attachmentWithString:removalDiagnostic];
+                attachment.name = @"native-cover-removal-current-presentation"; attachment.lifetime = XCTAttachmentLifetimeKeepAlways;
+                [self addAttachment:attachment];
+            }
+        }
         XCTAssertNil([self.board valueForKey:@"clock"]);
     }
     for (NSString *target in @[@"material",@"caption"]) for (NSNumber *hidden in @[@NO,@YES]) {

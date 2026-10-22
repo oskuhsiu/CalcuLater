@@ -783,7 +783,10 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
     XCTAssertTrue(CGRectEqualToRect(action, board.currentConcreteTransformationRect));
     XCTAssertTrue(CGRectContainsRect(board.bounds, action));
     NSArray<UIView *> *units = [self allExchangeUnits:board];
+    UILabel *counts = [self label:@"verticalExchangeCounts" inView:board];
+    CGFloat paintedBottom = 0;
     for (UIView *view in illustration.subviews) {
+        if (view != counts) paintedBottom = MAX(paintedBottom, CGRectGetMaxY(view.frame));
         XCTAssertTrue(CGRectContainsRect(illustration.bounds, view.frame), @"%@ must fit the real illustration.", view.accessibilityIdentifier);
         XCTAssertTrue(CGRectContainsRect(action, [view convertRect:view.bounds toView:board]));
         if ([view isKindOfClass:UILabel.class]) {
@@ -791,6 +794,11 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
             XCTAssertFalse(label.adjustsFontSizeToFitWidth);
             CGFloat measured = [label sizeThatFits:CGSizeMake(CGRectGetWidth(label.bounds), CGFLOAT_MAX)].height;
             XCTAssertLessThanOrEqual(measured, CGRectGetHeight(label.bounds) + 1, @"%@ must fit its wrapped text.", label.accessibilityIdentifier);
+            for (UIView *other in illustration.subviews) {
+                if (other != label && [other isKindOfClass:UILabel.class]) {
+                    XCTAssertFalse(CGRectIntersectsRect(label.frame, other.frame), @"%@ and %@ must not overlap.", label.accessibilityIdentifier, other.accessibilityIdentifier);
+                }
+            }
         }
     }
     for (NSUInteger index = 0; index < units.count; index++) {
@@ -808,11 +816,13 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
     for (NSString *key in @[@"exchangeSourceOutline", @"exchangeDestinationOutline"]) {
         CAShapeLayer *outline = [board valueForKey:key];
         CGRect ink = CGRectInset(CGPathGetBoundingBox(outline.path), -outline.lineWidth / 2, -outline.lineWidth / 2);
+        paintedBottom = MAX(paintedBottom, CGRectGetMaxY(ink));
         XCTAssertTrue(CGRectContainsRect(illustration.bounds, ink));
         for (UIView *view in illustration.subviews) {
             if ([view isKindOfClass:UILabel.class]) XCTAssertFalse(CGRectIntersectsRect(ink, view.frame), @"Outline ink must not invade %@.", view.accessibilityIdentifier);
         }
     }
+    XCTAssertGreaterThanOrEqual(CGRectGetMinY(counts.frame) - paintedBottom, 2, @"The counts footer needs real clearance below retained material and complete outline ink.");
     UILabel *mode = [self label:@"verticalExchangeMode" inView:board];
     NSString *rest = mode.text;
     mode.text = @"圈起這一組，再換一換";
@@ -867,13 +877,23 @@ static CFTimeInterval VABTimeAtOrAfterElapsed(CFTimeInterval start, CFTimeInterv
                     for (UIView *view in illustration.subviews) {
                         XCTAssertTrue(CGRectContainsRect(unobscured, [view convertRect:view.bounds toView:viewport]), @"%@ must fit the fixed 664 × 192 pt admission region. %@", view.accessibilityIdentifier, geometry);
                     }
+                    NSArray<UIView *> *retained = [self retainedUnits:board];
+                    NSArray<NSValue *> *retainedFrames = [self framesOfUnits:retained];
+                    for (NSString *key in @[@"exchangeSourceOutline", @"exchangeDestinationOutline"]) {
+                        CAShapeLayer *outline = [board valueForKey:key];
+                        CGRect ink = CGRectInset(CGPathGetBoundingBox(outline.path), -outline.lineWidth / 2, -outline.lineWidth / 2);
+                        XCTAssertTrue(CGRectContainsRect(unobscured, [illustration convertRect:ink toView:viewport]), @"All outline ink must fit the fixed admission region. %@", geometry);
+                    }
                     board.allowMotion = YES;
                     XCTAssertTrue([board playCurrentActionInVisibleRect:[viewport convertRect:unobscured toView:board]], @"%@", geometry);
                     XCTAssertTrue(board.isPlaying);
                     XCTAssertFalse([[board valueForKey:@"playsWrittenExchange"] boolValue]);
                     XCTAssertTrue(CGRectEqualToRect(board.currentPlaybackRect, action));
                     [self assertMeasuredExchangeGeometry:board];
+                    [self assertRetainedUnits:retained frames:retainedFrames inBoard:board];
                     [board cancelAnimations];
+                    [self assertRetainedUnits:retained frames:retainedFrames inBoard:board];
+                    [self assertMeasuredExchangeGeometry:board];
                     [board removeFromSuperview];
                     [host addSubview:board];
                     [viewport removeFromSuperview];
