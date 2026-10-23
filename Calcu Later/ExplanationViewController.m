@@ -50,6 +50,9 @@
     [super viewDidLoad];
     self.view.backgroundColor = ChildUI.creamBackground;
     self.view.accessibilityIdentifier = @"explanation.screen";
+#if DEBUG
+    if (self.helpPresentationObservation) self.helpPresentationObservation(self, @"explanation-viewDidLoad");
+#endif
     self.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.largeDetent];
     self.sheetPresentationController.prefersGrabberVisible = YES;
     self.sheetPresentationController.preferredCornerRadius = 28;
@@ -215,6 +218,9 @@
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+#if DEBUG
+    if (self.helpPresentationObservation) self.helpPresentationObservation(self, @"explanation-viewDidAppear");
+#endif
     if (self.tenFrameTeaching) [self.tenFrameTeaching play];
     else [self replay];
     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.heading);
@@ -257,8 +263,17 @@
 }
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+#if DEBUG
+    if (self.helpPresentationObservation) self.helpPresentationObservation(self, @"explanation-viewWillDisappear");
+#endif
     [SpeechManager.sharedInstance stop];
     [self.tenFrameTeaching stopPlayback];
     if ([self.visual isKindOfClass:AnimatedHintView.class]) [(AnimatedHintView *)self.visual cancelAnimations];
 }
+#if DEBUG
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    if (self.helpPresentationObservation) self.helpPresentationObservation(self, @"explanation-viewDidDisappear");
+}
+#endif
 @end

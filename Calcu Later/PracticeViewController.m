@@ -86,6 +86,13 @@
 @property (nonatomic, strong) NSArray<NSLayoutConstraint *> *wideConstraints;
 @property (nonatomic, strong) NSLayoutConstraint *trayHeight;
 @property (nonatomic) BOOL wideLayout;
+#if DEBUG
+@property (nonatomic) BOOL helpPresentationDiagnosticsEnabled;
+@property (nonatomic, strong) NSMutableArray<NSString *> *helpPresentationEvents;
+@property (nonatomic) NSUInteger helpPresentationSequence;
+@property (nonatomic) NSUInteger helpPresentationDroppedEvents;
+@property (nonatomic, weak) ExplanationViewController *helpDiagnosticExplanation;
+#endif
 @end
 
 @implementation PracticeViewController
@@ -130,6 +137,14 @@
     [DecorativeBackgroundView installInViewController:self
         theme:self.kind == PracticeKindDrill ? BackgroundThemeDrill : BackgroundThemeLessons];
     [self setupInterface];
+#if DEBUG
+    self.helpPresentationDiagnosticsEnabled = [NSProcessInfo.processInfo.arguments
+        containsObject:@"-CalcuLaterHelpPresentationDiagnostics"];
+    if (self.helpPresentationDiagnosticsEnabled) {
+        self.helpPresentationEvents = [NSMutableArray array];
+        [self recordHelpPresentationEvent:@"armed" destination:nil];
+    }
+#endif
     [self beginNewRun];
     if (self.lesson && self.lesson.kind != LessonKindMultiplication) [self showIntro];
 }
@@ -600,8 +615,67 @@
     if (![self.session advance]) return;
     [self loadCurrentQuestion];
 }
+#if DEBUG
+- (NSString *)helpPresentationIdentity:(UIViewController *)controller {
+    return controller ? [NSString stringWithFormat:@"%@:%p", NSStringFromClass(controller.class),
+        (__bridge void *)controller] : @"none";
+}
+- (void)recordHelpPresentationEvent:(NSString *)event destination:(UIViewController *)destination {
+    if (!self.helpPresentationDiagnosticsEnabled) return;
+    UIViewController *presented = self.presentedViewController;
+    UIViewController *presenting = self.presentingViewController;
+    UIView *practiceView = self.viewIfLoaded;
+    UIView *destinationView = destination.viewIfLoaded;
+    self.helpPresentationSequence += 1;
+    NSString *line = [NSString stringWithFormat:
+        @"seq=%lu uptime=%.6f event=%@ question=%d summary=%d practice=%@ window=%d "
+         "beingPresented=%d beingDismissed=%d presented=%@ presentedBeingPresented=%d presentedBeingDismissed=%d "
+         "presenting=%@ presentingBeingPresented=%d presentingBeingDismissed=%d "
+         "destination=%@ destinationWindow=%d destinationBeingPresented=%d destinationBeingDismissed=%d "
+         "helpEnabled=%d helpHidden=%d",
+        (unsigned long)self.helpPresentationSequence, NSProcessInfo.processInfo.systemUptime, event,
+        self.session.currentQuestion != nil, self.showingSummary, [self helpPresentationIdentity:self],
+        practiceView.window != nil, self.isBeingPresented, self.isBeingDismissed,
+        [self helpPresentationIdentity:presented], presented.isBeingPresented, presented.isBeingDismissed,
+        [self helpPresentationIdentity:presenting], presenting.isBeingPresented, presenting.isBeingDismissed,
+        [self helpPresentationIdentity:destination], destinationView.window != nil,
+        destination.isBeingPresented, destination.isBeingDismissed, self.helpButton.enabled, self.helpButton.hidden];
+    [self.helpPresentationEvents addObject:line];
+    // A bounded, opt-in observation, not a delivery guarantee or a completion signal.
+    while (self.helpPresentationEvents.count > 24) {
+        [self.helpPresentationEvents removeObjectAtIndex:0];
+        self.helpPresentationDroppedEvents += 1;
+    }
+    NSString *trace;
+    while (YES) {
+        trace = [NSString stringWithFormat:
+            @"help-presentation-trace-v1 seen=%lu retained=%lu dropped=%lu status=%@\n%@",
+            (unsigned long)self.helpPresentationSequence, (unsigned long)self.helpPresentationEvents.count,
+            (unsigned long)self.helpPresentationDroppedEvents,
+            self.helpPresentationDroppedEvents ? @"truncated-inconclusive" : @"retained-events-only",
+            [self.helpPresentationEvents componentsJoinedByString:@"\n"]];
+        if ([trace lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= 16 * 1024) break;
+        [self.helpPresentationEvents removeObjectAtIndex:0];
+        self.helpPresentationDroppedEvents += 1;
+    }
+    self.scroll.accessibilityValue = trace;
+    // Never load a destination view, change accessibility membership, or force layout.
+    self.helpDiagnosticExplanation.viewIfLoaded.accessibilityValue = trace;
+}
+#endif
 - (void)helpTapped {
-    if (!self.session.currentQuestion || self.presentedViewController || self.showingSummary) return;
+#if DEBUG
+    [self recordHelpPresentationEvent:@"helpTapped-entry" destination:nil];
+#endif
+    if (!self.session.currentQuestion || self.presentedViewController || self.showingSummary) {
+#if DEBUG
+        [self recordHelpPresentationEvent:@"guard-rejected" destination:nil];
+#endif
+        return;
+    }
+#if DEBUG
+    [self recordHelpPresentationEvent:@"guard-passed" destination:nil];
+#endif
     [self.session markHelpUsed];
     [SpeechManager.sharedInstance stop];
     ArithmeticProblem *problem = self.arithmeticProblem;
@@ -618,7 +692,24 @@
         explanation = [[ExplanationViewController alloc]
             initWithArithmeticProblem:problem wordProblem:self.wordProblem lesson:self.lesson];
     }
+#if DEBUG
+    if (self.helpPresentationDiagnosticsEnabled) {
+        if ([explanation isKindOfClass:ExplanationViewController.class]) {
+            ExplanationViewController *observedExplanation = (ExplanationViewController *)explanation;
+            self.helpDiagnosticExplanation = observedExplanation;
+            __weak typeof(self) weakSelf = self;
+            observedExplanation.helpPresentationObservation = ^(ExplanationViewController *controller, NSString *event) {
+                [weakSelf recordHelpPresentationEvent:event destination:controller];
+            };
+        }
+        [self recordHelpPresentationEvent:@"destination-selected" destination:explanation];
+        [self recordHelpPresentationEvent:@"presentation-request" destination:explanation];
+    }
+#endif
     [self presentViewController:explanation animated:YES completion:nil];
+#if DEBUG
+    [self recordHelpPresentationEvent:@"presentation-returned" destination:explanation];
+#endif
 }
 - (void)revealEquation {
     if (!self.wordProblem || self.equationRevealed) return;
@@ -657,6 +748,9 @@
     self.intro = nil;
     self.scroll.hidden = NO; self.tray.hidden = NO; self.helpButton.hidden = NO;
     [self loadCurrentQuestion];
+#if DEBUG
+    [self recordHelpPresentationEvent:@"intro-returned" destination:nil];
+#endif
 }
 
 - (void)showSummary {

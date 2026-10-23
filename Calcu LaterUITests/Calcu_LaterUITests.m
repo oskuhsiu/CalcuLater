@@ -29,6 +29,23 @@
         tree.name = @"native-failure-hierarchy";
         tree.lifetime = XCTAttachmentLifetimeKeepAlways;
         [self addAttachment:tree];
+        if ([self.app.launchArguments containsObject:@"-CalcuLaterHelpPresentationDiagnostics"]) {
+            NSMutableString *observations = [NSMutableString stringWithString:
+                @"Observation only. Missing or truncated traces are INCONCLUSIVE, not proof that Help was not invoked.\n"];
+            for (NSString *identifier in @[@"practice.content", @"explanation.screen"]) {
+                XCUIElement *container = [[self.app descendantsMatchingType:XCUIElementTypeAny]
+                    matchingIdentifier:identifier].firstMatch;
+                id value = container.exists ? container.value : nil;
+                NSString *trace = [value isKindOfClass:NSString.class] ? value : nil;
+                BOOL recognized = [trace hasPrefix:@"help-presentation-trace-v1 "];
+                [observations appendFormat:@"\ncontainer=%@\n%@\n", identifier,
+                    recognized ? trace : @"trace=missing-or-unrecognized; INCONCLUSIVE"];
+            }
+            XCTAttachment *trace = [XCTAttachment attachmentWithString:observations];
+            trace.name = @"native-failure-help-presentation-trace";
+            trace.lifetime = XCTAttachmentLifetimeKeepAlways;
+            [self addAttachment:trace];
+        }
     }
     [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
     [super tearDown];
@@ -1227,6 +1244,7 @@
     [self assertTenFrameReturnedToUnansweredQuestion:question];
 }
 - (void)testTenFrameVerticalComparisonAndSwipeReturnToTheOriginalQuestion {
+    self.app.launchArguments = [self.app.launchArguments arrayByAddingObject:@"-CalcuLaterHelpPresentationDiagnostics"];
     NSString *question = [self openTenFrameLesson:@"L4" title:@"合十法（進位加）" scenario:@"make-ten-eighteen"];
     XCTAssertEqualObjects(question, @"9 + 9 = ?");
     [self.app.buttons[@"lessonIntro.next"] tap];
